@@ -1,0 +1,105 @@
+{
+  "key": "026e37b56c724ac0a60f015673e108972a0efd68462c580a5e648eee3cf54815",
+  "cases": [
+    {
+      "name": "truncated",
+      "file": "truncated.jsonl",
+      "flags": [],
+      "exit": 3,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "allow-prefix",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--allow-prefix"
+      ],
+      "exit": 0,
+      "status": "VALID PREFIX, END UNPROVEN",
+      "proven": false
+    },
+    {
+      "name": "closed",
+      "file": "closed.jsonl",
+      "flags": [],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "middle-gap",
+      "file": "middle-gap.jsonl",
+      "flags": [],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "pin-head-match",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--expect-head",
+        "2e7f8ed8dbf507418beca6d206f0c0560f1b8127be5a5ef20aee96abf29a7b60"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "pin-head-mismatch",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--expect-head",
+        "28916933c67ec3bebd8eb101d28274731b0d0995edc2ef6061cb3eb83a129137"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "pin-seq-match",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--expect-seq",
+        "3"
+      ],
+      "exit": 0,
+      "status": "CHAIN VALID",
+      "proven": true
+    },
+    {
+      "name": "pin-seq-mismatch",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--expect-seq",
+        "4"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "allow-prefix-invalid",
+      "file": "middle-gap.jsonl",
+      "flags": [
+        "--allow-prefix"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    },
+    {
+      "name": "pin-mismatch-allow-prefix",
+      "file": "truncated.jsonl",
+      "flags": [
+        "--expect-head",
+        "28916933c67ec3bebd8eb101d28274731b0d0995edc2ef6061cb3eb83a129137",
+        "--allow-prefix"
+      ],
+      "exit": 1,
+      "status": "CHAIN BROKEN",
+      "proven": false
+    }
+  ]
+}

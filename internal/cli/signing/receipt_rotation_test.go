@@ -189,7 +189,7 @@ func TestVerifyReceiptCmd_BlankKeyDoesNotDowngradeToTOFU(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--chain", dir, "--key", " "})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--key", " "}))
 	err := cmd.Execute()
 	if err == nil {
 		t.Fatal("expected blank --key to fail instead of falling back to trust-on-first-use")
@@ -209,7 +209,7 @@ func TestVerifyReceiptCmd_RotatedChainNeedsBothKeys(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--chain", dir, "--key", keyA})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--key", keyA}))
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected failure: rotation to an untrusted key must be flagged")
 	}
@@ -222,12 +222,12 @@ func TestVerifyReceiptCmd_RotatedChainNeedsBothKeys(t *testing.T) {
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--chain", dir, "--key", keyA, "--key", keyB})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--key", keyA, "--key", keyB}))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("rotated chain with both keys trusted must verify: %v\n%s", err, buf.String())
 	}
 	out := buf.String()
-	if !strings.Contains(out, "CHAIN VALID") {
+	if !strings.Contains(out, "VALID PREFIX, END UNPROVEN") {
 		t.Errorf("expected CHAIN VALID, got: %s", out)
 	}
 	if !strings.Contains(out, "signing key rotated") {
@@ -247,7 +247,7 @@ func TestVerifyReceiptCmd_RotatedChainTrustOnFirstUseFlags(t *testing.T) {
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
 	// No --key: trust-on-first-use adopts A; rotation to B must be flagged.
-	cmd.SetArgs([]string{"--chain", dir})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir}))
 	if err := cmd.Execute(); err == nil {
 		t.Fatal("expected failure: trust-on-first-use must flag the rotation")
 	}
@@ -264,11 +264,11 @@ func TestVerifyReceiptCmd_RotationEndorsementAuthorizesSuccessor(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--chain", dir, "--key", keyA, "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--key", keyA, "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("endorsed CLI verification failed: %v\n%s", err, buf.String())
 	}
-	if out := buf.String(); !strings.Contains(out, "CHAIN VALID") || !strings.Contains(out, "(endorsed)") {
+	if out := buf.String(); !strings.Contains(out, "VALID PREFIX, END UNPROVEN") || !strings.Contains(out, "(endorsed)") {
 		t.Fatalf("endorsed trust basis missing from output:\n%s", out)
 	}
 
@@ -276,7 +276,7 @@ func TestVerifyReceiptCmd_RotationEndorsementAuthorizesSuccessor(t *testing.T) {
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--chain", dir, "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "trusted root key") {
 		t.Fatalf("unpinned endorsement verification did not fail closed: err=%v output=%s", err, buf.String())
 	}
@@ -290,7 +290,7 @@ func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationMatchesFinalSegmentSeal(t
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("whole-recorder endorsed rotation verification failed: %v\n%s", err, buf.String())
 	}
@@ -309,7 +309,7 @@ func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationVerifiesSuccessorSignedCh
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("successor-signed checkpoints must verify through the endorsement: %v\n%s", err, buf.String())
 	}
@@ -325,7 +325,7 @@ func TestVerifyReceiptCmd_WholeRecorderEndorsedRotationVerifiesSuccessorSignedCh
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA)})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--whole-recorder", "--chain", dir, "--key", hex.EncodeToString(pubA)}))
 	if err := cmd.Execute(); err == nil || strings.Contains(buf.String(), "Seal:      sealed at seq") {
 		t.Fatalf("unendorsed successor must fail err=%v:\n%s", err, buf.String())
 	}
@@ -379,7 +379,7 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "mixes recorder sessions") {
 		t.Fatalf("foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
 	}
@@ -391,7 +391,7 @@ func TestVerifyReceiptCmd_RotationEndorsementRejectsJSONLSessionMismatch(t *test
 	cmd = VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs([]string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{foreignPath, "--session", "proxy", "--key", hex.EncodeToString(pubA), "--rotation-endorsement", endorsementPath}))
 	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), `endorsed receipt session "proxy" does not match evidence session "other"`) {
 		t.Fatalf("consistent foreign-session JSONL accepted: err=%v output=%s", err, buf.String())
 	}
@@ -442,7 +442,7 @@ func TestVerifyReceiptCmd_RotationEndorsementFlagConflicts(t *testing.T) {
 			cmd := VerifyReceiptCmd()
 			cmd.SetOut(&buf)
 			cmd.SetErr(&buf)
-			cmd.SetArgs(tc.args)
+			cmd.SetArgs(legacyReceiptPrefixArgs(cmd, tc.args))
 			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err=%v, want %q; output=%s", err, tc.wantErr, buf.String())
 			}

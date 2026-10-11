@@ -70,7 +70,7 @@ func TestChainDirOrdinarySessionReadFailureIsReported(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--allow-unpinned", "--json")
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--allow-unpinned", "--json")
 	if code != cliutil.ExitGeneral {
 		t.Fatalf("exit %d, want %d\n%s\n%s", code, cliutil.ExitGeneral, stdout, stderr)
 	}
@@ -81,7 +81,7 @@ func TestChainDirOrdinarySessionReadFailureIsReported(t *testing.T) {
 	if report.Valid || !strings.Contains(report.Error, "sequence") {
 		t.Fatalf("report=%+v, want invalid naming the ambiguous sequence start", report)
 	}
-	stdout, stderr, code = runRoot(t, "chain", dir, "--dir", "--allow-unpinned")
+	stdout, stderr, code = runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--allow-unpinned")
 	if code != cliutil.ExitGeneral || !strings.Contains(stderr, "CHAIN BROKEN") || strings.Contains(stdout, "VALID") {
 		t.Fatalf("text mode must report a broken chain and fail: exit %d stdout=%q stderr=%q", code, stdout, stderr)
 	}

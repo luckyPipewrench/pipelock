@@ -35,12 +35,14 @@ go run ./cmd/pipelock-verifier receipt \
 
 # Verify the recorder chain:
 EVIDENCE_FILE="$(find /tmp/shadow-verify-check/recorder -maxdepth 1 -type f -name 'evidence-*.jsonl' -print -quit)"
-go run ./cmd/pipelock-verifier chain \
+go run ./cmd/pipelock-verifier chain --allow-prefix \
   --key /tmp/shadow-verify-check/receipt-signing.pub \
   --expect-payload-kind shadow_delta \
   --expect-contract sha256:example-contract \
   "$EVIDENCE_FILE"
 ```
+
+The example inspects an open receipt prefix with `--allow-prefix`. It prints `VALID PREFIX, END UNPROVEN`; the flag acknowledges that the fixture has no independently proven endpoint.
 
 ## How the receipts are verified
 

@@ -42,6 +42,9 @@ struct ParsedArgs {
     session_explicit: bool,
     rotation_endorsements: Vec<String>,
     group_id: String,
+    allow_prefix: bool,
+    expect_head: String,
+    expect_seq: Option<u64>,
 }
 
 pub fn run(args: &[String]) -> Result<i32> {
@@ -140,9 +143,24 @@ fn chain_report_for(
     };
     let lifecycle = analyze_lifecycle(receipts, &result);
     let lifecycle_broken = lifecycle.status == "BROKEN";
+    let closed = result.valid
+        && !lifecycle_broken
+        && receipts
+            .last()
+            .and_then(|r| r.pointer("/action_record/session_control/kind"))
+            .and_then(|v| v.as_str())
+            == Some("session_close");
     ChainCommandReport {
         path: label,
         valid: result.valid && !lifecycle_broken,
+        end_proof: crate::types::EndProof {
+            proven: closed,
+            evidence: if closed {
+                vec!["session_close".into()]
+            } else {
+                vec![]
+            },
+        },
         unpinned: (key_hex.is_empty()
             && (result.error.as_deref().unwrap_or("").contains("UNPINNED")
                 || (result.valid && !lifecycle_broken)))
@@ -213,26 +231,34 @@ fn both_chains_report(
             session_id,
         );
     }
-    let primary = chain_report_for(
-        label.clone(),
-        &typed.action,
-        key_hex,
-        allow_unpinned,
-        endorsements,
-        session_id,
-    );
     if typed.evidence.is_empty() {
-        return primary;
+        return chain_report_for(
+            label,
+            &typed.action,
+            key_hex,
+            allow_unpinned,
+            endorsements,
+            session_id,
+        );
     }
-    let evidence = chain_report_for(
-        label,
+    let mut primary = chain_report_for(
+        label.clone(),
         &typed.evidence,
         &evidence_chain_key(key_hex, &typed.evidence),
         allow_unpinned,
         &[],
         session_id,
     );
+    let evidence = chain_report_for(
+        label,
+        &typed.action,
+        key_hex,
+        allow_unpinned,
+        endorsements,
+        session_id,
+    );
     if primary.valid && evidence.valid {
+        primary.companion_end_proven = Some(evidence.end_proof.proven);
         return primary;
     }
     // Without a key and without --allow-unpinned both chains fail only for
@@ -243,13 +269,13 @@ fn both_chains_report(
     let mut reasons = Vec::new();
     if !primary.valid {
         reasons.push(format!(
-            "action receipt chain: {}",
+            "evidence receipt chain: {}",
             primary.error.as_deref().unwrap_or("")
         ));
     }
     if !evidence.valid {
         reasons.push(format!(
-            "evidence receipt chain: {}",
+            "action receipt chain: {}",
             evidence.error.as_deref().unwrap_or("")
         ));
     }
@@ -329,6 +355,14 @@ fn run_chain_set_command(
             verify_base(dir, base, &opts).map(|report| (sessions, report))
         })?;
         let mut chains = Vec::new();
+        if (!parsed.expect_head.is_empty() || parsed.expect_seq.is_some())
+            && targets.as_ref().unwrap_or(&sessions).len() > 1
+        {
+            return Err(VerifierError::Usage(
+                "endpoint pins require one selected run; pass --session-id".into(),
+            )
+            .to_string());
+        }
         for session in targets.as_ref().unwrap_or(&sessions) {
             let label = format!("{} (session {session})", display_dir.display());
             let (keys, own) =
@@ -350,11 +384,36 @@ fn run_chain_set_command(
             };
             chains.push(ChainSetEntry {
                 session: session.clone(),
-                report: chain,
+                report: with_end_proof(chain, parsed),
             });
         }
         let healthy = base_report.healthy();
+        let valid = healthy && chains.iter().all(|c: &ChainSetEntry| c.report.valid);
+        let proven = valid && chains.iter().all(|c| c.report.end_proof.proven);
         let report = ChainSetReport {
+            integrity: if healthy && chains.iter().all(|c| c.report.valid) {
+                "valid"
+            } else {
+                "invalid"
+            }
+            .into(),
+            end_proof: crate::types::EndProof {
+                proven,
+                evidence: if proven {
+                    vec!["selected_chain_ends".into()]
+                } else {
+                    vec![]
+                },
+            },
+            scope: "chain_set".into(),
+            status: if !valid {
+                "CHAIN BROKEN"
+            } else if proven {
+                "CHAIN VALID"
+            } else {
+                crate::output::PREFIX_STATUS
+            }
+            .into(),
             path: display_dir.display().to_string(),
             base: base.to_string(),
             valid: healthy && chains.iter().all(|c| c.report.valid),
@@ -435,7 +494,13 @@ fn run_chain_set_command(
             reasons.join("; ")
         ));
     }
-    Ok(if report.valid { 0 } else { 1 })
+    Ok(if !report.valid {
+        1
+    } else if report.end_proof.proven || parsed.allow_prefix {
+        0
+    } else {
+        3
+    })
 }
 
 /// Folds the recorder entry hash chain into a chain report: a report whose
@@ -458,19 +523,55 @@ fn with_recorder_chain(report: ChainCommandReport, outer: Option<String>) -> Cha
     }
 }
 
-fn emit_chain_result(report: &ChainCommandReport, json: bool) -> Result<i32> {
-    emit_chain(report, json)?;
+fn with_end_proof(mut report: ChainCommandReport, parsed: &ParsedArgs) -> ChainCommandReport {
     if report.valid {
-        return Ok(0);
+        if (!parsed.expect_head.is_empty()
+            && Some(&parsed.expect_head) != report.root_hash.as_ref())
+            || parsed.expect_seq.is_some_and(|seq| seq != report.final_seq)
+        {
+            report.valid = false;
+            report.error = Some("chain endpoint does not match expected head/seq (tail truncated or different scope)".into());
+        } else {
+            if !parsed.expect_head.is_empty() {
+                report.end_proof.evidence.push("operator_head".into());
+            }
+            if parsed.expect_seq.is_some() {
+                report.end_proof.evidence.push("operator_seq".into());
+            }
+        }
+    }
+    if !report.valid {
+        report.end_proof.evidence.clear();
+    }
+    report.end_proof.proven = report.valid
+        && !report.end_proof.evidence.is_empty()
+        && report.companion_end_proven != Some(false);
+    report.integrity = if report.valid { "valid" } else { "invalid" }.into();
+    report.scope = "receipt_chain".into();
+    report.status = if !report.valid {
+        "CHAIN BROKEN"
+    } else if report.end_proof.proven {
+        "CHAIN VALID"
+    } else {
+        crate::output::PREFIX_STATUS
+    }
+    .into();
+    report
+}
+
+fn emit_chain_result(report: &ChainCommandReport, parsed: &ParsedArgs) -> Result<i32> {
+    let report = with_end_proof(report.clone(), parsed);
+    emit_chain(&report, parsed.json)?;
+    if report.valid {
+        return Ok(if report.end_proof.proven || parsed.allow_prefix {
+            0
+        } else {
+            3
+        });
     }
     report_failure(&format!(
-        "{}: {}: {}",
+        "{}: chain broken: {}",
         report.path,
-        if report.unpinned == Some(true) {
-            "chain unpinned"
-        } else {
-            "chain broken"
-        },
         report.error.as_deref().unwrap_or("no receipts in chain")
     ));
     Ok(1)
@@ -500,7 +601,7 @@ fn run_chain_command(args: &[String]) -> Result<i32> {
                     error: Some(err.message),
                     ..ChainCommandReport::default()
                 };
-                return emit_chain_result(&report, parsed.json);
+                return emit_chain_result(&report, &parsed);
             }
             Err(err) => {
                 return Err(VerifierError::Runtime(format!(
@@ -556,7 +657,7 @@ fn run_chain_at(
                 ),
                 ..ChainCommandReport::default()
             };
-            return emit_chain_result(&report, parsed.json);
+            return emit_chain_result(&report, parsed);
         }
         let base = run_session_base(&parsed.session_id).unwrap_or(&parsed.session_id);
         let has_runs = resolve_base_sessions(clean, base)
@@ -598,7 +699,7 @@ fn run_chain_at(
                 error: Some(err.message),
                 ..ChainCommandReport::default()
             };
-            return emit_chain_result(&report, parsed.json);
+            return emit_chain_result(&report, parsed);
         }
         Err(err) => {
             return Err(VerifierError::Runtime(format!(
@@ -610,7 +711,7 @@ fn run_chain_at(
 
     if typed.action.is_empty() && typed.evidence.is_empty() {
         let report = chain_report_for(label, &[], key_hex, false, &[], &parsed.session_id);
-        return emit_chain_result(&with_recorder_chain(report, outer), parsed.json);
+        return emit_chain_result(&with_recorder_chain(report, outer), parsed);
     }
 
     let endorsements = load_endorsements(
@@ -626,7 +727,7 @@ fn run_chain_at(
         &endorsements,
         &parsed.session_id,
     );
-    emit_chain_result(&with_recorder_chain(report, outer), parsed.json)
+    emit_chain_result(&with_recorder_chain(report, outer), parsed)
 }
 
 /// Reads one recorder file: its hash chain verdict and its two receipt chains.
@@ -676,9 +777,19 @@ fn run_group_command(args: &[String]) -> Result<i32> {
     let report =
         crate::receipt_group::verify_receipt_group(Path::new(target), &parsed.group_id, &trusted);
     if parsed.json {
+        let valid = report.verdict == "GROUP_VALID";
+        let mut value = serde_json::to_value(&report)
+            .map_err(|e| VerifierError::Runtime(format!("encode group report: {e}")))?;
+        value["integrity"] = serde_json::json!(if valid { "valid" } else { "invalid" });
+        value["scope"] = serde_json::json!("receipt_group");
+        value["status"] = serde_json::json!(if valid { "CHAIN VALID" } else { "CHAIN BROKEN" });
+        value["end_proof"] = serde_json::json!({
+            "proven": valid,
+            "evidence": if valid { vec!["receipt_group_close"] } else { vec![] }
+        });
         println!(
             "{}",
-            serde_json::to_string_pretty(&report)
+            serde_json::to_string_pretty(&value)
                 .map_err(|e| VerifierError::Runtime(format!("encode group report: {e}")))?
         );
     } else {
@@ -711,6 +822,20 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
         let (flag, inline_value) = split_flag_value(arg);
         match arg.as_str() {
             "--json" => parsed.json = true,
+            "--allow-prefix" if command == "chain" => parsed.allow_prefix = true,
+            "--expect-head" | "--expect-seq" if command == "chain" => {
+                index += 1;
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| VerifierError::Usage(format!("{arg} requires a value")))?;
+                if arg == "--expect-head" {
+                    parsed.expect_head = value.clone();
+                } else {
+                    parsed.expect_seq = Some(value.parse().map_err(|_| {
+                        VerifierError::Usage("--expect-seq requires an unsigned integer".into())
+                    })?);
+                }
+            }
             "--offline" if command == "audit-packet" => parsed.offline = true,
             "--allow-self-consistent-only" if command == "audit-packet" => {
                 parsed.allow_self_consistent_only = true;
@@ -785,7 +910,20 @@ fn parse_args(args: &[String], command: &str) -> Result<ParsedArgs> {
                 );
             }
             _ => {
-                if flag == "--key" {
+                if flag == "--expect-head" && command == "chain" {
+                    parsed.expect_head = inline_value.expect("split flag produced value").into();
+                } else if flag == "--expect-seq" && command == "chain" {
+                    parsed.expect_seq = Some(
+                        inline_value
+                            .expect("split flag produced value")
+                            .parse()
+                            .map_err(|_| {
+                                VerifierError::Usage(
+                                    "--expect-seq requires an unsigned integer".into(),
+                                )
+                            })?,
+                    );
+                } else if flag == "--key" {
                     parsed.key = inline_value.expect("split flag produced value").to_string();
                     parsed.keys.push(parsed.key.clone());
                 } else if flag == "--expect-sha256" && command == "audit-packet" {
@@ -836,7 +974,7 @@ fn require_one_arg<'a>(positionals: &'a [String], command: &str) -> Result<&'a s
 fn usage(command: Option<&str>) -> String {
     match command {
         Some("audit-packet") => "Usage: pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]".to_string(),
-        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID]".to_string(),
+        Some("chain") => "Usage: pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--dir] [--session-id ID]".to_string(),
         Some("group") => "Usage: pipelock-verifier-rs group EVIDENCE_DIR --group-id ID --key HEX_OR_FILE... [--json]".to_string(),
         Some("receipt") => "Usage: pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]".to_string(),
         Some("provenance") => {

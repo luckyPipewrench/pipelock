@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/completeness"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -46,6 +47,9 @@ type chainOptions struct {
 	jsonOutput      bool
 	asDir           bool
 	allowUnpinned   bool
+	allowPrefix     bool
+	expectSeq       uint64
+	expectFinalSeq  *uint64
 	excludeGroups   bool
 	groupForBase    bool
 	groupJSONSpool  io.Writer
@@ -83,12 +87,22 @@ names one run to report; the whole base is still checked and any finding in
 it fails the result. A symlinked file inside the directory is refused. A
 single file named on the command line is read as given; its entries must all
 belong to the session its file name claims, and its recorder entry hash chain
-must hold from genesis.`,
+must hold from genesis.
+
+Exit 0 requires a proven endpoint for the declared scope. A valid prefix
+prints VALID PREFIX, END UNPROVEN and exits 3. --allow-prefix returns 0
+while keeping that label. A terminal signed session_close, group close, or
+independently supplied --expect-head/--expect-seq proves its endpoint.
+Restart links and recovery seals do not. JSON separates integrity,
+end_proof, scope, and signer trust.`,
 		Args:          exactOneArg,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.sessionExplicit = cmd.Flags().Changed("session")
+			if cmd.Flags().Changed("expect-seq") {
+				opts.expectFinalSeq = &opts.expectSeq
+			}
 			return runChain(cmd.OutOrStdout(), cmd.ErrOrStderr(), args[0], opts)
 		},
 	}
@@ -103,7 +117,9 @@ must hold from genesis.`,
 	cmd.Flags().StringVar(&opts.expectContractHash, "expect-contract", "", "EvidenceReceipt v2: require contract_hash")
 	cmd.Flags().StringVar(&opts.expectManifestHash, "expect-manifest", "", "EvidenceReceipt v2: require active_manifest_hash")
 	cmd.Flags().StringVar(&opts.expectPayloadKind, "expect-payload-kind", "", "EvidenceReceipt v2: require payload_kind")
-	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "EvidenceReceipt v2: require the chain tip to equal this receipt hash, which is the only check that detects dropped trailing entries; source it from trusted context outside the chain")
+	cmd.Flags().StringVar(&opts.expectHeadHash, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
+	cmd.Flags().BoolVar(&opts.allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
+	cmd.Flags().Uint64Var(&opts.expectSeq, "expect-seq", 0, "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit a structured JSON verdict on stdout")
 	cmd.Flags().BoolVar(&opts.asDir, "dir", false, "treat PATH as a session directory rather than a single file")
 	cmd.Flags().BoolVar(&opts.allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -114,6 +130,7 @@ must hold from genesis.`,
 // chainReport is the structured form emitted by --json on the chain
 // subcommand.
 type chainReport struct {
+	endproof.Report
 	Path               string     `json:"path"`
 	RecordType         string     `json:"record_type,omitempty"`
 	Valid              bool       `json:"valid"`
@@ -171,7 +188,10 @@ func writeGroupJSONSpool(opts chainOptions, result actionreceipt.ReceiptGroupRes
 	if opts.groupJSONSpool == nil || opts.groupJSONCount == nil {
 		return errors.New("group JSON report spool is unavailable")
 	}
-	data, err := json.Marshal(result)
+	data, err := json.Marshal(struct {
+		endproof.Report
+		actionreceipt.ReceiptGroupResult
+	}{endproof.New(result.Verdict == actionreceipt.GroupValid, "receipt_group", "receipt_group_close"), result})
 	if err != nil {
 		return err
 	}
@@ -213,8 +233,29 @@ func emitGroupedChainJSON(stdout io.Writer, groups, legacy *os.File, innerErr er
 		return fmt.Errorf("create combined JSON report: %w", err)
 	}
 	defer func() { _ = os.Remove(combined.Name()) }()
-	valid := innerErr == nil
-	if _, err := fmt.Fprintf(combined, `{"valid":%t,"groups":[`, valid); err != nil {
+	var exitErr *cliutil.ExitError
+	valid := innerErr == nil || (errors.As(innerErr, &exitErr) && exitErr.Code == endproof.ExitPrefix)
+	var legacyEnd endproof.Report
+	if len(legacyReport) > 0 {
+		if err := json.Unmarshal(legacyReport, &legacyEnd); err != nil {
+			return err
+		}
+	}
+	var proof []string
+	if valid && (len(legacyReport) == 0 || legacyEnd.EndProof.Proven) {
+		proof = []string{"receipt_group_close"}
+		if len(legacyReport) > 0 {
+			proof = append(proof, legacyEnd.EndProof.Evidence...)
+		}
+	}
+	header, err := json.Marshal(struct {
+		endproof.Report
+		Valid bool `json:"valid"`
+	}{endproof.New(valid, "chain_set", proof...), valid})
+	if err != nil {
+		return err
+	}
+	if _, err := combined.Write(append(header[:len(header)-1], []byte(`,"groups":[`)...)); err != nil {
 		return err
 	}
 	if _, err := groups.Seek(0, io.SeekStart); err != nil {
@@ -278,7 +319,7 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		return err
 	}
 	if opts.groupID != "" {
-		if !opts.asDir || opts.sessionExplicit || !trust.pinned() || opts.allowUnpinned || len(opts.endorsementPaths) > 0 || opts.anySet() {
+		if !opts.asDir || opts.sessionExplicit || !trust.pinned() || opts.allowUnpinned || len(opts.endorsementPaths) > 0 || opts.anySet() || opts.expectHeadHash != "" || opts.expectFinalSeq != nil {
 			return cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("--group requires --dir and pinned --key without session, endorsement, or shard-only checks"))
 		}
 		location, locationErr := recorder.ResolveEvidenceLocation(target, opts.locationID)
@@ -287,7 +328,10 @@ func runChainInner(stdout, stderr io.Writer, target string, opts chainOptions) e
 		}
 		result := actionreceipt.VerifyReceiptGroup(location.Dir, opts.groupID, trust.keys)
 		if opts.jsonOutput {
-			writeJSON(stdout, result)
+			writeJSON(stdout, struct {
+				endproof.Report
+				actionreceipt.ReceiptGroupResult
+			}{endproof.New(result.Verdict == actionreceipt.GroupValid, "receipt_group", "receipt_group_close"), result})
 		} else {
 			_, _ = fmt.Fprintf(stdout, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA)
 		}
@@ -569,12 +613,17 @@ func parseBareActionReceiptJSONL(input io.Reader) (bool, []actionreceipt.Receipt
 }
 
 func verifyActionChain(stdout, stderr io.Writer, label string, receipts []actionreceipt.Receipt, trust chainTrust, opts chainOptions) error {
-	if opts.anySet() {
+	bindings := opts.evidenceBindingOptions
+	bindings.expectHeadHash = ""
+	if bindings.anySet() {
 		return cliutil.ExitCodeError(cliutil.ExitConfig, fmt.Errorf("EvidenceReceipt expectation flags require record_type=%s", recordTypeEvidenceV2))
 	}
 	report, err := actionChainReport(label, receipts, trust, opts)
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
-	return err
+	if err != nil {
+		return err
+	}
+	return report.Require(opts.allowPrefix)
 }
 
 // actionChainReport verifies an ActionReceipt v1 chain and returns its report
@@ -638,6 +687,16 @@ func actionChainReport(label string, receipts []actionreceipt.Receipt, trust cha
 	if !pinned && !opts.allowUnpinned {
 		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("chain verification unpinned"))
 	}
+	evidence, pinErr := endproof.Pin(res.RootHash, res.FinalSeq, opts.expectHeadHash, opts.expectFinalSeq)
+	if pinErr != nil {
+		report.Valid = false
+		report.Error = pinErr.Error()
+		report.Report = endproof.New(false, "receipt_chain")
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, pinErr)
+	}
+	evidence = append(evidence, endproof.ActionEvidence(receipts)...)
+	report.Report = endproof.New(true, "receipt_chain", evidence...)
+	report.HeadVerified = opts.expectHeadHash != ""
 	return report, nil
 }
 
@@ -711,32 +770,7 @@ func readChainSessionInput(location recorder.EvidenceLocation, session string) (
 // chain checks; a mixture cannot downgrade a recorder to receipt-only input.
 // The caller still verifies every receipt and holds the session snapshot.
 func isBareEvidenceSession(location recorder.EvidenceLocation, session string) (bool, error) {
-	notBare := errors.New("not a bare evidence receipt session")
-	seen := false
-	err := recorder.WalkSessionHistoryFiles(location, session, func(_ recorder.SessionHistoryShard, r io.Reader) error {
-		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64<<10), 10<<20)
-		for scanner.Scan() {
-			line := bytes.TrimSpace(scanner.Bytes())
-			if len(line) == 0 {
-				continue
-			}
-			var fields map[string]json.RawMessage
-			if json.Unmarshal(line, &fields) != nil || len(fields) != 2 || fields["detail"] == nil {
-				return notBare
-			}
-			var kind string
-			if json.Unmarshal(fields["type"], &kind) != nil || kind != contractreceipt.EvidenceEntryType {
-				return notBare
-			}
-			seen = true
-		}
-		return scanner.Err()
-	})
-	if errors.Is(err, notBare) {
-		return false, nil
-	}
-	return seen && err == nil, err
+	return actionreceipt.IsBareEvidenceSession(location, session)
 }
 
 // actionReceiptEntryType is the recorder entry type of an ActionReceipt v1.
@@ -793,7 +827,10 @@ func verifyEvidenceChain(stdout, stderr io.Writer, label string, receipts []cont
 	report, verifyErr := evidenceChainReport(label, receipts, trust, opts)
 	report, verifyErr = withActionChain(report, verifyErr, label, actionReceipts, trust, opts)
 	emitChainReport(stdout, stderr, report, opts.jsonOutput)
-	return verifyErr
+	if verifyErr != nil {
+		return verifyErr
+	}
+	return report.Require(opts.allowPrefix)
 }
 
 // withActionChain folds the ActionReceipt v1 chain into an EvidenceReceipt v2
@@ -807,10 +844,16 @@ func withActionChain(report chainReport, reportErr error, label string, actionRe
 	if len(actionReceipts) == 0 {
 		return report, reportErr
 	}
-	action, actionErr := actionChainReport(label, actionReceipts, trust, opts)
+	actionOpts := opts
+	actionOpts.expectHeadHash = ""
+	actionOpts.expectFinalSeq = nil
+	action, actionErr := actionChainReport(label, actionReceipts, trust, actionOpts)
 	actionOK := actionErr == nil && action.Valid
 	reportOK := reportErr == nil && report.Valid
 	if actionOK && reportOK {
+		if !action.EndProof.Proven {
+			report.Report = endproof.New(true, "receipt_chain")
+		}
 		return report, reportErr
 	}
 	// Without a key and without --allow-unpinned both chains fail only for
@@ -867,5 +910,13 @@ func evidenceChainReport(label string, receipts []contractreceipt.EvidenceReceip
 	if !res.SignaturesVerified && !opts.allowUnpinned {
 		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("evidence chain verification unpinned"))
 	}
+	evidence, pinErr := endproof.Pin(res.RootHash, res.FinalSeq, opts.expectHeadHash, opts.expectFinalSeq)
+	if pinErr != nil {
+		report.Valid = false
+		report.Error = pinErr.Error()
+		report.Report = endproof.New(false, "receipt_chain")
+		return report, cliutil.ExitCodeError(cliutil.ExitGeneral, pinErr)
+	}
+	report.Report = endproof.New(true, "receipt_chain", evidence...)
 	return report, nil
 }

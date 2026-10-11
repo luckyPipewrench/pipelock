@@ -40,7 +40,8 @@ from .line_space import trim_go_space_bytes
 from .provenance_proof import MAX_FIXTURE_BYTES, compact_fixture_json
 from .receipt import (
     UNPINNED_RECEIPT_BANNER,
-    verify_evidence_chain_file,
+    load_receipt_chains,
+    verify_evidence_chain,
     verify_receipt_file,
 )
 from .svid import SVIDConfigError, appraise_with_svid, load_svid_file
@@ -50,6 +51,7 @@ ED25519_PUBLIC_KEY_SIZE = 32
 EXIT_OK = 0
 EXIT_GENERAL = 1
 EXIT_CONFIG = 2
+EXIT_PREFIX = 3
 EXIT_USAGE = 64
 
 # Allowed keys in the trust file (Go uses DisallowUnknownFields on these).
@@ -295,10 +297,23 @@ def _run_receipt(
     chain_mode: bool,
     allow_unpinned: bool,
     group_id: str = "",
+    allow_prefix: bool = False,
+    expect_head: str = "",
+    expect_seq: int | None = None,
 ) -> int:
     if group_id:
         pinned_keys = [key.strip().lower() for key in key_hex.split(",") if key.strip()]
         report = verify_receipt_group(target, group_id, pinned_keys)
+        valid = report.get("verdict") == GROUP_VALID
+        report.update(
+            integrity="valid" if valid else "invalid",
+            end_proof={
+                "proven": valid,
+                "evidence": ["receipt_group_close"] if valid else [],
+            },
+            scope="receipt_group",
+            status="CHAIN VALID" if valid else "CHAIN BROKEN",
+        )
         if json_mode:
             stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
             stdout.write("\n")
@@ -307,16 +322,69 @@ def _run_receipt(
             if report.get("error"):
                 stdout.write(f"  error: {report['error']}\n")
         return EXIT_OK if report.get("verdict") == GROUP_VALID else EXIT_GENERAL
-    report = (
-        verify_evidence_chain_file(target, key_hex, allow_unpinned)
-        if chain_mode
-        else verify_receipt_file(target, key_hex, allow_unpinned)
-    )
+    if chain_mode:
+        proof = []
+        companion_closed = True
+        try:
+            action, evidence = load_receipt_chains(target)
+            receipts = evidence or action
+            companion_closed = True
+            if action and evidence:
+                companion = verify_evidence_chain(action, key_hex, allow_unpinned)
+                if not companion.get("valid"):
+                    raise ValueError(
+                        "action receipt chain: " + companion.get("error", "invalid")
+                    )
+                companion_closed = (
+                    action[-1]
+                    .get("action_record", {})
+                    .get("session_control", {})
+                    .get("kind")
+                    == "session_close"
+                )
+            report = {
+                "path": target,
+                **verify_evidence_chain(receipts, key_hex, allow_unpinned),
+            }
+            if report.get("valid"):
+                control = (
+                    receipts[-1].get("action_record", {}).get("session_control", {})
+                )
+                if control.get("kind") == "session_close":
+                    proof.append("session_close")
+                if expect_head:
+                    if report.get("root_hash") != expect_head:
+                        raise ValueError(
+                            "chain tip does not match expected head (tail truncated)"
+                        )
+                    proof.append("operator_head")
+                if expect_seq is not None:
+                    if report.get("final_seq") != expect_seq:
+                        raise ValueError("final_seq does not match expected seq")
+                    proof.append("operator_seq")
+        except Exception as exc:  # noqa: BLE001 - CLI reports malformed evidence
+            report = {"path": target, "valid": False, "error": str(exc)}
+        if not report.get("valid"):
+            proof = []
+        report.update(
+            integrity="valid" if report.get("valid") else "invalid",
+            end_proof={"proven": bool(proof) and companion_closed, "evidence": proof},
+            scope="receipt_chain",
+            status="CHAIN BROKEN"
+            if not report.get("valid")
+            else "CHAIN VALID"
+            if proof and companion_closed
+            else "VALID PREFIX, END UNPROVEN",
+        )
+    else:
+        report = verify_receipt_file(target, key_hex, allow_unpinned)
     if json_mode:
         stdout.write(json.dumps(report, separators=(",", ":"), ensure_ascii=False))
         stdout.write("\n")
     else:
-        if report.get("unpinned"):
+        if chain_mode:
+            status = report["status"]
+        elif report.get("unpinned"):
             status = "UNPINNED"
         else:
             status = "valid" if report.get("valid") else "invalid"
@@ -326,6 +394,13 @@ def _run_receipt(
             stdout.write(f"  warning: {UNPINNED_RECEIPT_BANNER}\n")
         if report.get("error"):
             stdout.write(f"  error: {report['error']}\n")
+    if (
+        chain_mode
+        and report.get("valid")
+        and not report["end_proof"]["proven"]
+        and not allow_prefix
+    ):
+        return EXIT_PREFIX
     return EXIT_OK if report.get("valid") else EXIT_GENERAL
 
 
@@ -394,6 +469,20 @@ def main(argv: list[str] | None = None) -> int:
             "pinned public keys"
         ),
     )
+    receipt_p.add_argument(
+        "--allow-prefix",
+        action="store_true",
+        help="accept a valid prefix while reporting its unproven end",
+    )
+    receipt_p.add_argument(
+        "--expect-head", default="", help="independently known final receipt hash"
+    )
+    receipt_p.add_argument(
+        "--expect-seq",
+        type=int,
+        default=None,
+        help="independently known final sequence",
+    )
     provenance_p = sub.add_parser(
         "provenance",
         help="verify an experimental fixture-only evidence-provenance proof",
@@ -412,6 +501,18 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.command == "receipt":
+        if (
+            (args.allow_prefix or args.expect_head or args.expect_seq is not None)
+            and not args.chain
+            and not args.group
+        ) or (args.group and (args.expect_head or args.expect_seq is not None)):
+            sys.stderr.write(
+                "endpoint flags require a receipt chain; pins cannot select groups\n"
+            )
+            return EXIT_USAGE
+        if args.expect_seq is not None and not 0 <= args.expect_seq <= (1 << 64) - 1:
+            sys.stderr.write("--expect-seq requires an unsigned 64-bit integer\n")
+            return EXIT_USAGE
         return _run_receipt(
             sys.stdout,
             args.path,
@@ -420,6 +521,9 @@ def main(argv: list[str] | None = None) -> int:
             args.chain,
             args.allow_unpinned,
             args.group,
+            args.allow_prefix,
+            args.expect_head,
+            args.expect_seq,
         )
     if args.command == "provenance":
         return _run_provenance(sys.stdout, sys.stderr, args.path, args.allow_incomplete)

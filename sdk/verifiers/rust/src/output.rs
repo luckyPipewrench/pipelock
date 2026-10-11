@@ -1,6 +1,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+pub const PREFIX_STATUS: &str = "VALID PREFIX, END UNPROVEN";
+
 use crate::types::{AuditPacketReport, ChainCommandReport, ChainSetReport, ReceiptReport};
 use crate::util::{Result, VerifierError};
 
@@ -141,13 +143,21 @@ pub fn emit_chain(report: &ChainCommandReport, json: bool) -> Result<()> {
         return write_json(report);
     }
     if report.valid {
-        if report.unpinned == Some(true) {
+        if !report.end_proof.proven {
+            println!("{PREFIX_STATUS}: {}", report.path);
+        } else if report.unpinned == Some(true) {
             println!("CHAIN UNPINNED: {}", report.path);
-            if let Some(error) = &report.error {
-                println!("  warning:    {error}");
-            }
         } else {
             println!("CHAIN VALID: {}", report.path);
+        }
+        if report.unpinned == Some(true) {
+            println!(
+                "  warning:    {}",
+                report
+                    .error
+                    .as_deref()
+                    .unwrap_or(crate::signing::UNPINNED_RECEIPT_BANNER)
+            );
         }
         println!("  receipts:   {}", report.receipt_count);
         if let (Some(action), Some(evidence)) = (report.action_receipts, report.evidence_receipts) {
@@ -226,9 +236,6 @@ pub fn emit_chain_set(report: &ChainSetReport, json: bool) -> Result<()> {
     }
     println!("  Note: an unlinked run claims no predecessor. That is normal for a first run or concurrent runs,");
     println!("  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.");
-    println!(
-        "  result:     {}",
-        if report.valid { "VALID" } else { "INVALID" }
-    );
+    println!("  result:     {}", report.status.as_str());
     Ok(())
 }

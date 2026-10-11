@@ -58,7 +58,7 @@ func TestVerifyReceiptCmdGroupRejectsDeletedShard(t *testing.T) {
 		var out bytes.Buffer
 		cmd.SetOut(&out)
 		cmd.SetErr(&out)
-		cmd.SetArgs([]string{"--chain", dir, "--group", open.GroupID, "--key", hex.EncodeToString(pub)})
+		cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--group", open.GroupID, "--key", hex.EncodeToString(pub)}))
 		err := cmd.Execute()
 		return out.String(), err
 	}

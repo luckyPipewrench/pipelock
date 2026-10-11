@@ -93,7 +93,7 @@ func TestVerifyReceiptCmd_ChainPastDisplayBudgetVerifies(t *testing.T) {
 		t.Fatalf("whole-recorder verification of a long chain failed: %v\n%s", err, out)
 	}
 	out, err = runVerifyReceipt(t, "--chain", dir, "--key", key)
-	if err != nil || !strings.Contains(out, "CHAIN VALID") {
+	if err != nil || !strings.Contains(out, "VALID PREFIX, END UNPROVEN") {
 		t.Fatalf("receipt-chain verification of a long chain failed: %v\n%s", err, out)
 	}
 }

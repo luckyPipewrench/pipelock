@@ -36,7 +36,7 @@ func TestChainRefusesUnreadableBareV1JSONL(t *testing.T) {
 		t.Skip("fixture remained readable after chmod, so the permission path cannot be exercised")
 	}
 
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--json", "--key", fixture.keyHex, path)
 	if code == cliutil.ExitOK {
 		t.Fatalf("unreadable evidence file accepted: stdout=%q stderr=%q", stdout, stderr)
 	}

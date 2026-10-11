@@ -55,8 +55,8 @@ test("a session holding both receipt chains is valid only when both verify", () 
     ];
     for (const [name, dir, wantErr] of cases) {
       for (const [mode, args] of [
-        ["explicit-session", ["chain", dir, "--dir", "--session-id", SESSION]],
-        ["file", ["chain", runFile(dir)]],
+        ["explicit-session", ["chain", "--allow-prefix", dir, "--dir", "--session-id", SESSION]],
+        ["file", ["chain", "--allow-prefix", runFile(dir)]],
       ] as [string, string[]][]) {
         const r = runCLI([...args, "--key", KEY, "--json"]);
         // A named run reports its own chain inside the base report.
@@ -82,7 +82,7 @@ test("a session holding both receipt chains is valid only when both verify", () 
           );
         }
       }
-      const set = runCLI(["chain", dir, "--dir", "--key", KEY, "--json"]);
+      const set = runCLI(["chain", "--allow-prefix", dir, "--dir", "--key", KEY, "--json"]);
       const setReport = JSON.parse(set.stdout) as {
         valid: boolean;
         chains: { session: string; valid: boolean }[];
@@ -98,12 +98,17 @@ test("a session holding both receipt chains is valid only when both verify", () 
 });
 
 test("an unpinned mixed session reports the unpinned banner once", () => {
-  const r = runCLI(["chain", runFile(join(FIXTURES, "valid")), "--json"]);
+  const r = runCLI(["chain", "--allow-prefix", runFile(join(FIXTURES, "valid")), "--json"]);
   assert.equal(r.status, 1);
   const report = JSON.parse(r.stdout) as { unpinned?: boolean; error?: string };
   assert.equal(report.unpinned, true);
   assert.ok(!report.error?.includes("receipt chain:"), String(report.error));
-  const allowed = runCLI(["chain", runFile(join(FIXTURES, "valid")), "--allow-unpinned"]);
+  const allowed = runCLI([
+    "chain",
+    "--allow-prefix",
+    runFile(join(FIXTURES, "valid")),
+    "--allow-unpinned",
+  ]);
   assert.equal(allowed.status, 0, allowed.stdout);
 });
 
@@ -116,7 +121,16 @@ test("an explicit session does not read a prefix-sibling session's files", () =>
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "session-prefix-"));
   try {
     cpSync(runFile(join(FIXTURES, "valid")), runFile(dir));
-    const control = runCLI(["chain", dir, "--dir", "--session-id", SESSION, "--key", KEY]);
+    const control = runCLI([
+      "chain",
+      "--allow-prefix",
+      dir,
+      "--dir",
+      "--session-id",
+      SESSION,
+      "--key",
+      KEY,
+    ]);
     assert.equal(control.status, 0, control.stdout);
     const alone = extractReceiptsFromSessionDir(dir, SESSION).length;
     assert.ok(alone > 0);
@@ -125,7 +139,17 @@ test("an explicit session does not read a prefix-sibling session's files", () =>
       runFile(join(FIXTURES, "tampered-predecessor")),
       join(dir, `evidence-${SESSION}-evil-0.jsonl`),
     );
-    const r = runCLI(["chain", dir, "--dir", "--session-id", SESSION, "--key", KEY, "--json"]);
+    const r = runCLI([
+      "chain",
+      "--allow-prefix",
+      dir,
+      "--dir",
+      "--session-id",
+      SESSION,
+      "--key",
+      KEY,
+      "--json",
+    ]);
     assert.equal(r.status, 1, r.stdout);
     const report = JSON.parse(r.stdout) as {
       chains: { session: string; valid: boolean; action_receipts: number }[];

@@ -26,6 +26,7 @@ import (
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/evidence"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/display"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	"github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -55,6 +56,9 @@ func VerifyReceiptCmd() *cobra.Command {
 	var endorsementPaths []string
 	var wholeRecorder bool
 	var requireSeal bool
+	var allowPrefix, jsonOutput bool
+	var expectHead string
+	var expectSeq uint64
 
 	cmd := &cobra.Command{
 		Use:   "verify-receipt [file]",
@@ -105,6 +109,8 @@ passed explicitly. Alternatively, pass --rotation-endorsement for each
 old-key-signed rotation authorization and pin only the genesis root key. The
 endorsement path never uses trust-on-first-use: at least one --key is required.
 
+For chains, exit 0 = integrity verified and the end proven for the declared scope; exit 3 = VALID PREFIX, END UNPROVEN. --allow-prefix returns 0 for that prefix while keeping its label. JSON reports integrity, end_proof, scope, and signer trust separately. Session closes, whole-recorder transcript roots with trailing signed checkpoints, group closes, or independently supplied --expect-head/--expect-seq establish the corresponding endpoint. Restart links and recovery seals do not. Single-receipt and fleet-report exit contracts are unchanged.
+
 Exit 0 = the receipt is valid and the requested report was delivered; exit 1 = invalid, malformed, refused (a symlink inside an evidence directory, an entry filed under the wrong session), or report delivery failed; exit 2 = usage or configuration error, such as a malformed --key or a missing directory.
 
 Examples:
@@ -118,8 +124,25 @@ Examples:
 		Args: func(_ *cobra.Command, args []string) error {
 			return validateReceiptSourceArgs(args, chainDir)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, args []string) (retErr error) {
 			out := &firstOutputErrWriter{w: cmd.OutOrStdout()}
+			var reports []chainCLIReport
+			if jsonOutput {
+				out.w = io.Discard
+				defer func() {
+					report := aggregateChainReports(reports, retErr, chainDir != "", wholeRecorder)
+					if err := json.NewEncoder(cmd.OutOrStdout()).Encode(report); err != nil && (retErr == nil || isPrefixError(retErr)) {
+						retErr = fmt.Errorf("write JSON report: %w", err)
+					}
+				}()
+			}
+			var expectedSeq *uint64
+			if cmd.Flags().Changed("expect-seq") {
+				expectedSeq = &expectSeq
+			}
+			if (allowPrefix || expectHead != "" || expectedSeq != nil || jsonOutput) && (fleetReport || (jsonOutput && cleanReport != "") || (chainDir == "" && (len(args) == 0 || !strings.HasSuffix(args[0], ".jsonl")))) {
+				return configError(errors.New("end-proof and JSON flags require a receipt chain"))
+			}
 			if requireSeal && !wholeRecorder {
 				return configError(errors.New("--require-seal requires --whole-recorder"))
 			}
@@ -140,10 +163,11 @@ Examples:
 				chainDir = location.Dir
 			}
 			if groupID != "" {
-				if resolvedLocation == nil || len(args) != 0 || cmd.Flags().Changed("session") || cleanReport != "" || fleetReport || wholeRecorder || len(endorsementPaths) > 0 || allowUnpinned {
+				if resolvedLocation == nil || len(args) != 0 || cmd.Flags().Changed("session") || cleanReport != "" || fleetReport || wholeRecorder || len(endorsementPaths) > 0 || allowUnpinned || expectHead != "" || expectedSeq != nil {
 					return configError(errors.New("--group requires --chain DIR and pinned --key, without session, file, or other report modes"))
 				}
 				result := receipt.VerifyReceiptGroup(resolvedLocation.Dir, groupID, trustedKeys)
+				reports = append(reports, newChainCLIReport(chainCLIReport{Path: result.GroupID, Valid: result.Verdict == receipt.GroupValid, RootHash: result.CloseManifestSHA}, trustedKeys, "receipt_group", []string{"receipt_group_close"}))
 				if _, err := fmt.Fprintf(out, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA); err != nil {
 					return err
 				}
@@ -187,6 +211,12 @@ Examples:
 			}
 			verifyOpts := verifyReceiptOptions{
 				AllowUnpinned:       allowUnpinned,
+				RequireSeal:         requireSeal,
+				CheckEnd:            true,
+				AllowPrefix:         allowPrefix,
+				ExpectedHead:        expectHead,
+				ExpectedSeq:         expectedSeq,
+				Reports:             &reports,
 				AllowUnanchoredSeal: allowUnanchoredSeal,
 				SessionID:           sessionID,
 				Print: receiptPrintOptions{
@@ -228,6 +258,7 @@ Examples:
 				var matchingGroup bool
 				groupSummary, groupErr := receipt.VerifyReceiptGroups(resolvedLocation.Dir, trustedKeys, func(result receipt.ReceiptGroupResult) error {
 					if result.BaseSession == sessionBase {
+						reports = append(reports, newChainCLIReport(chainCLIReport{Path: result.GroupID, Valid: result.Verdict == receipt.GroupValid, RootHash: result.CloseManifestSHA}, trustedKeys, "receipt_group", []string{"receipt_group_close"}))
 						matchingGroup = true
 					}
 					_, writeErr := fmt.Fprintf(out, "%s %s: %d shards; open=%s close=%s\n", result.Verdict, result.GroupID, result.ShardCount, result.OpenManifestSHA, result.CloseManifestSHA)
@@ -267,25 +298,15 @@ Examples:
 				var receipts []receipt.Receipt
 				var evidenceReceipts []contractreceipt.EvidenceReceipt
 				readErr := recorder.WithSessionHistorySnapshot(*resolvedLocation, sessionID, func() error {
-					if err := recorder.VerifySessionHistoryChain(*resolvedLocation, sessionID); err != nil {
-						return err
-					}
-					var extractErr error
-					receipts, extractErr = receipt.ExtractReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-					if extractErr != nil {
-						return fmt.Errorf("extracting session receipts: %w", extractErr)
-					}
-					evidenceReceipts, extractErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(*resolvedLocation, sessionID)
-					if extractErr != nil {
-						return fmt.Errorf("extracting session evidence receipts: %w", extractErr)
-					}
-					return nil
+					var readErr error
+					receipts, evidenceReceipts, readErr = readReceiptSessionChains(*resolvedLocation, sessionID)
+					return readErr
 				})
 				if readErr != nil {
 					return evidenceReadError(readErr)
 				}
 				label := fmt.Sprintf("%s (session %s)", resolvedLocation.Dir, sessionID)
-				return outputResult(out, verifyCleanReport(out, label, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
+				return outputResult(out, verifyCleanReportDetailed(out, label, receipts, evidenceReceipts, trustedKeys, cleanReportOptions{verifyOpts, cleanReport}))
 			}
 			if locationID != "" {
 				return configError(fmt.Errorf("--location requires --chain"))
@@ -313,7 +334,7 @@ Examples:
 					if extractErr != nil {
 						return fmt.Errorf("extracting receipts: %w", extractErr)
 					}
-					return outputResult(out, verifyCleanReport(out, path, receipts, evidenceReceipts, trustedKeys, allowUnpinned, cleanReport))
+					return outputResult(out, verifyCleanReportDetailed(out, path, receipts, evidenceReceipts, trustedKeys, cleanReportOptions{verifyOpts, cleanReport}))
 				}
 				if wholeRecorder {
 					return outputResult(out, verifyWholeRecorderFromFile(out, name, path, trustedKeys, verifyOpts))
@@ -338,6 +359,10 @@ Examples:
 	cmd.Flags().StringVar(&groupID, "group", "", "verify a complete signed receipt group by its 32-hex ID (requires --chain and --key)")
 	cmd.Flags().StringVar(&sessionID, "session", "proxy", "receipt chain session ID inside the evidence directory")
 	cmd.Flags().StringVar(&locationID, "location", "", "location path relative to the evidence directory")
+	cmd.Flags().BoolVar(&allowPrefix, "allow-prefix", false, "return success for a valid prefix while reporting its unproven end")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "emit integrity, end proof, scope, and signer trust as JSON for chains")
+	cmd.Flags().StringVar(&expectHead, "expect-head", "", "require the selected chain tip to equal this independently known receipt hash")
+	cmd.Flags().Uint64Var(&expectSeq, "expect-seq", 0, "require this independently known final sequence for the selected chain")
 	cmd.Flags().BoolVar(&wholeRecorder, "whole-recorder", false, "verify every present recorder entry and transcript-root seal")
 	cmd.Flags().BoolVar(&requireSeal, "require-seal", false, "with --whole-recorder, fail if any run lacks a transcript-root seal")
 	cmd.Flags().BoolVar(&allowUnpinned, "allow-unpinned", false, "allow structural-only verification without a trusted signer key")
@@ -377,10 +402,13 @@ func (w *firstOutputErrWriter) Write(p []byte) (int, error) {
 }
 
 func outputResult(out *firstOutputErrWriter, semanticErr error) error {
-	if semanticErr != nil {
+	if semanticErr != nil && !isPrefixError(semanticErr) {
 		return semanticErr
 	}
-	return out.err
+	if out.err != nil {
+		return out.err
+	}
+	return semanticErr
 }
 
 // configError marks a usage or configuration error: exit 2, distinct from a
@@ -418,6 +446,13 @@ type receiptPostureOptions struct {
 }
 
 type verifyReceiptOptions struct {
+	CheckEnd             bool
+	AllowPrefix          bool
+	ExpectedHead         string
+	ExpectedSeq          *uint64
+	EndEvidence          []string
+	ReportScope          string
+	Reports              *[]chainCLIReport
 	AllowUnpinned        bool
 	RequireSeal          bool
 	AllowUnanchoredSeal  bool
@@ -483,13 +518,23 @@ func verifyWholeRecorderDirInner(out io.Writer, location recorder.EvidenceLocati
 	if explicit {
 		sessions = []string{sessionID}
 	}
+	if (opts.ExpectedHead != "" || opts.ExpectedSeq != nil) && len(sessions) > 1 {
+		return configError(errors.New("endpoint pins require one selected run; pass --session"))
+	}
 	var failed []string
 	var incomplete []string
-	var firstErr error
+	var firstErr, prefixErr error
 	for _, session := range sessions {
 		chainOpts, chainKeys := chainScopedTrust(report, session, trustedKeys, opts)
+		before := 0
+		if opts.Reports != nil {
+			before = len(*opts.Reports)
+		}
 		if verifyErr := verifyWholeRecorderFromResolvedSessionDir(out, location, session, chainKeys, chainOpts); verifyErr != nil {
-			if errors.Is(verifyErr, errUnsealedRecorder) {
+			if isPrefixError(verifyErr) {
+				incomplete = append(incomplete, session)
+				prefixErr = verifyErr
+			} else if errors.Is(verifyErr, errUnsealedRecorder) {
 				incomplete = append(incomplete, session)
 				if opts.RequireSeal || explicit {
 					failed = append(failed, session)
@@ -503,6 +548,9 @@ func verifyWholeRecorderDirInner(out io.Writer, location recorder.EvidenceLocati
 					firstErr = verifyErr
 				}
 			}
+		}
+		if opts.Reports != nil && len(*opts.Reports) > before && !(*opts.Reports)[len(*opts.Reports)-1].EndProof.Proven && (len(incomplete) == 0 || incomplete[len(incomplete)-1] != session) {
+			incomplete = append(incomplete, session)
 		}
 		_, _ = fmt.Fprintln(out)
 	}
@@ -522,7 +570,7 @@ func verifyWholeRecorderDirInner(out io.Writer, location recorder.EvidenceLocati
 	if !report.Healthy() {
 		return fmt.Errorf("restart continuity: %d link finding(s)", len(report.Findings))
 	}
-	return nil
+	return prefixErr
 }
 
 // Whole-recorder verification runs every check while the recorder is read,
@@ -763,7 +811,19 @@ func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 		return fmt.Errorf("seal verification failed: %w", s.rootErr)
 	}
 	if !s.rootFound {
+		if _, err := s.anchors.finish(); opts.CheckEnd && err != nil {
+			return fmt.Errorf("checkpoint anchor verification failed: %w", err)
+		}
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no transcript_root seal (recorder still running or tail truncated)")
+		if opts.CheckEnd && !opts.RequireSeal {
+			if _, err := endproof.Pin(chain.RootHash, chain.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq); err != nil {
+				return err
+			}
+			report := newChainCLIReport(chainCLIReport{Path: label, Valid: true, RootHash: chain.RootHash, FinalSeq: chain.FinalSeq, ReceiptCount: chain.ReceiptCount}, trustedKeys, "whole_recorder", nil)
+			collectChainReport(opts, report)
+			_, _ = fmt.Fprintln(out, endproof.Prefix)
+			return report.Require(opts.AllowPrefix)
+		}
 		return errUnsealedRecorder
 	}
 	if s.rootReceiptCount == 0 || s.rootReceiptCount > s.receipts {
@@ -809,6 +869,26 @@ func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 	if anchor.lastSignedIndex <= rootIndex && !opts.AllowUnanchoredSeal {
 		_, _ = fmt.Fprintln(out, "  UNANCHORED: no signed checkpoint covers the transcript_root seal; recorder entries after the last signed checkpoint that are not receipts are hash-linked but not authenticated")
 		return fmt.Errorf("whole-recorder verification unanchored: no signed checkpoint covers the transcript_root seal (checkpoints absent, unsigned, or none after the seal); pass --allow-unanchored-seal to accept hash linkage only for the non-receipt entries after the last anchor")
+	}
+	if opts.CheckEnd && anchor.lastSignedIndex > rootIndex {
+		opts.EndEvidence = []string{"transcript_root", "trailing_checkpoint"}
+	}
+	if opts.CheckEnd {
+		_, pinErr := endproof.Pin(chain.RootHash, chain.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq)
+		if pinErr != nil {
+			return pinErr
+		}
+		proof := opts.EndEvidence
+		opts.ExpectedHead = ""
+		opts.ExpectedSeq = nil
+		report := newChainCLIReport(chainCLIReport{Path: label, Valid: true, RootHash: chain.RootHash, FinalSeq: chain.FinalSeq, ReceiptCount: chain.ReceiptCount}, trustedKeys, "whole_recorder", proof)
+		collectChainReport(opts, report)
+		if err := report.Require(opts.AllowPrefix); err != nil {
+			_, _ = fmt.Fprintln(out, endproof.Prefix)
+			return err
+		}
+		opts.Reports = nil
+		opts.ReportScope = "whole_recorder"
 	}
 	if err := verifyChainSummaryDetailed(out, label, s.posture, chain, trustedKeys, opts); err != nil {
 		return err
@@ -1363,18 +1443,25 @@ func verifyChainDirWithContinuityInner(out io.Writer, location recorder.Evidence
 		_, _ = fmt.Fprintf(out, "RESTART CONTINUITY INCOMPLETE: %s: %v\n", location.Dir, err)
 		return fmt.Errorf("restart continuity check incomplete: %w", err)
 	}
+	if (opts.ExpectedHead != "" || opts.ExpectedSeq != nil) && !explicit && len(chains) > 1 {
+		return configError(errors.New("endpoint pins require one selected run; pass --session"))
+	}
 	targets := chains
 	if explicit {
 		targets = []string{sessionID}
 	}
 	var failed []string
-	var firstErr error
+	var firstErr, prefixErr error
 	for _, s := range targets {
 		chainOpts, chainKeys := chainScopedTrust(report, s, trustedKeys, opts)
 		if verifyErr := verifyChainFromResolvedSessionDirDetailed(out, location, s, chainKeys, chainOpts); verifyErr != nil {
-			failed = append(failed, s)
-			if firstErr == nil {
-				firstErr = verifyErr
+			if isPrefixError(verifyErr) {
+				prefixErr = verifyErr
+			} else {
+				failed = append(failed, s)
+				if firstErr == nil {
+					firstErr = verifyErr
+				}
 			}
 		}
 		_, _ = fmt.Fprintln(out)
@@ -1392,7 +1479,7 @@ func verifyChainDirWithContinuityInner(out io.Writer, location recorder.Evidence
 		f := report.Findings[0]
 		return fmt.Errorf("restart continuity: %d link finding(s), first %s on %s: %s", len(report.Findings), f.Kind, f.Session, f.Detail)
 	}
-	return nil
+	return prefixErr
 }
 
 // recorderChangedError is the verdict when the recorder directory changed
@@ -1462,15 +1549,8 @@ func verifyChainFromResolvedSessionDirDetailed(out io.Writer, location recorder.
 	var receipts []receipt.Receipt
 	var evidenceReceipts []contractreceipt.EvidenceReceipt
 	err := recorder.WithSessionHistorySnapshot(location, sessionID, func() error {
-		if err := recorder.VerifySessionHistoryChain(location, sessionID); err != nil {
-			return err
-		}
 		var readErr error
-		receipts, readErr = receipt.ExtractReceiptsFromResolvedSessionDir(location, sessionID)
-		if readErr != nil {
-			return fmt.Errorf("extracting session receipts: %w", readErr)
-		}
-		evidenceReceipts, readErr = contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, sessionID)
+		receipts, evidenceReceipts, readErr = readReceiptSessionChains(location, sessionID)
 		afterSessionEvidenceRead()
 		return readErr
 	})
@@ -1514,13 +1594,13 @@ func verifyTypedChainDetailed(out io.Writer, label string, receipts []receipt.Re
 	}
 	var actionErr error
 	if len(receipts) > 0 {
-		actionErr = verifyChainDetailed(out, label, receipts, trustedKeys, opts)
+		actionOpts := opts
+		actionOpts.ExpectedHead = ""
+		actionOpts.ExpectedSeq = nil
+		actionErr = verifyChainDetailed(out, label, receipts, trustedKeys, actionOpts)
 	}
 	evidenceErr := verifyEvidenceChainDetailed(out, label, evidenceReceipts, trustedKeys, opts)
-	if actionErr != nil {
-		return actionErr
-	}
-	return evidenceErr
+	return preferChainError(actionErr, evidenceErr)
 }
 
 // verifyEvidenceChainDetailed verifies and prints an EvidenceReceipt v2 chain.
@@ -1536,8 +1616,19 @@ func verifyEvidenceChainResultDetailed(out io.Writer, label string, res contract
 		_, _ = fmt.Fprintf(out, "  Broke at: seq %d\n", res.BrokenAtSeq)
 		return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", res.BrokenAtSeq, res.Error)
 	}
+	proof, pinErr := endproof.Pin(res.RootHash, res.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq)
+	report := newChainCLIReport(chainCLIReport{Path: label, Valid: res.Valid && pinErr == nil, RootHash: res.RootHash, FinalSeq: res.FinalSeq, ReceiptCount: res.ReceiptCount}, trustedKeys, "receipt_chain", proof)
+	if opts.CheckEnd {
+		collectChainReport(opts, report)
+	}
+	if pinErr != nil {
+		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN BROKEN: %s\n  Error: %v\n", label, pinErr)
+		return pinErr
+	}
 	unpinned := len(trustedKeys) == 0
-	if unpinned {
+	if opts.CheckEnd && !report.EndProof.Proven {
+		_, _ = fmt.Fprintf(out, "%s: %s (evidence receipts)\n", endproof.Prefix, label)
+	} else if unpinned {
 		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN UNPINNED: %s\n", label)
 	} else {
 		_, _ = fmt.Fprintf(out, "EVIDENCE CHAIN VALID: %s\n", label)
@@ -1546,12 +1637,17 @@ func verifyEvidenceChainResultDetailed(out io.Writer, label string, res contract
 	_, _ = fmt.Fprintf(out, "  Final seq: %d\n", res.FinalSeq)
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", res.RootHash)
 	_, _ = fmt.Fprintf(out, "  Signer:    %s\n", res.SignerKeyID)
-	_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+	if !opts.CheckEnd || !report.EndProof.Proven {
+		_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+	}
 	if unpinned {
 		_, _ = fmt.Fprintln(out, unpinnedReceiptBanner)
 		if !opts.AllowUnpinned {
 			return fmt.Errorf("evidence receipt chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
+	}
+	if opts.CheckEnd {
+		return report.Require(opts.AllowPrefix)
 	}
 	return nil
 }
@@ -1575,6 +1671,7 @@ func verifyChainDetailed(out io.Writer, label string, receipts []receipt.Receipt
 }
 
 func verifyChainResultDetailed(out io.Writer, label string, receipts []receipt.Receipt, result receipt.ChainResult, trustedKeys []string, opts verifyReceiptOptions) error {
+	opts.EndEvidence = endproof.ActionEvidence(receipts)
 	return verifyChainSummaryDetailed(out, label, summarizeReceiptsForPosture(receipts), result, trustedKeys, opts)
 }
 
@@ -1594,8 +1691,24 @@ func verifyChainSummaryDetailed(out io.Writer, label string, posture receiptPost
 		return fmt.Errorf("chain verification failed at seq %d: %s", result.BrokenAtSeq, result.Error)
 	}
 
+	proof, pinErr := endproof.Pin(result.RootHash, result.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq)
+	proof = append(proof, opts.EndEvidence...)
+	scope := opts.ReportScope
+	if scope == "" {
+		scope = "receipt_chain"
+	}
+	report := newChainCLIReport(chainCLIReport{Path: label, Valid: result.Valid && pinErr == nil, RootHash: result.RootHash, FinalSeq: result.FinalSeq, ReceiptCount: result.ReceiptCount}, trustedKeys, scope, proof)
+	if opts.CheckEnd {
+		collectChainReport(opts, report)
+	}
+	if pinErr != nil {
+		_, _ = fmt.Fprintf(out, "CHAIN BROKEN: %s\n  Error: %v\n", label, pinErr)
+		return pinErr
+	}
 	unpinned := len(trustedKeys) == 0
-	if unpinned {
+	if opts.CheckEnd && !report.EndProof.Proven {
+		_, _ = fmt.Fprintf(out, "%s: %s\n", endproof.Prefix, label)
+	} else if unpinned {
 		_, _ = fmt.Fprintf(out, "CHAIN UNPINNED: %s\n", label)
 	} else {
 		_, _ = fmt.Fprintf(out, "CHAIN VALID: %s\n", label)
@@ -1605,7 +1718,9 @@ func verifyChainSummaryDetailed(out io.Writer, label string, posture receiptPost
 	_, _ = fmt.Fprintf(out, "  Root hash: %s\n", result.RootHash)
 	_, _ = fmt.Fprintf(out, "  Start:     %s\n", result.StartTime.Format("2006-01-02T15:04:05Z"))
 	_, _ = fmt.Fprintf(out, "  End:       %s\n", result.EndTime.Format("2006-01-02T15:04:05Z"))
-	_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+	if !opts.CheckEnd || !report.EndProof.Proven {
+		_, _ = fmt.Fprintln(out, "  WARNING: chain end is unanchored; tail completeness is not proven by this check.")
+	}
 	printSignerKeys(out, result)
 	for i, basis := range result.TrustBasis {
 		if i < len(result.Segments) {
@@ -1622,10 +1737,14 @@ func verifyChainSummaryDetailed(out io.Writer, label string, posture receiptPost
 			return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 		}
 	}
+	if opts.CheckEnd {
+		return report.Require(opts.AllowPrefix)
+	}
 	return nil
 }
 
 type cleanActionReport struct {
+	endproof.Report
 	SchemaVersion    string             `json:"schema_version"`
 	VerificationMode string             `json:"verification_mode"`
 	Chain            cleanChainSummary  `json:"chain"`
@@ -1664,6 +1783,15 @@ type cleanActionEntry struct {
 }
 
 func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, allowUnpinned bool, reportPath string) error {
+	return verifyCleanReportDetailed(out, label, receipts, evidenceReceipts, trustedKeys, cleanReportOptions{verifyReceiptOptions{AllowUnpinned: allowUnpinned}, reportPath})
+}
+
+type cleanReportOptions struct {
+	verifyReceiptOptions
+	Path string
+}
+
+func verifyCleanReportDetailed(out io.Writer, label string, receipts []receipt.Receipt, evidenceReceipts []contractreceipt.EvidenceReceipt, trustedKeys []string, opts cleanReportOptions) error {
 	if len(receipts) == 0 {
 		return fmt.Errorf("no receipts found in %s", label)
 	}
@@ -1678,13 +1806,36 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 			return fmt.Errorf("evidence receipt chain verification failed at seq %d: %s", res.BrokenAtSeq, res.Error)
 		}
 	}
-	if len(trustedKeys) == 0 && !allowUnpinned {
+	if len(trustedKeys) == 0 && !opts.AllowUnpinned {
 		return fmt.Errorf("chain verification unpinned: pass --key for provenance or --allow-unpinned for structural-only verification")
 	}
 	report, err := buildCleanActionReport(label, receipts, result)
 	if err != nil {
 		return err
 	}
+
+	var proof []string
+	var pinErr error
+	if len(evidenceReceipts) == 0 {
+		proof, pinErr = endproof.Pin(result.RootHash, result.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq)
+		if pinErr != nil {
+			return pinErr
+		}
+		proof = append(proof, endproof.ActionEvidence(receipts)...)
+	}
+	// A clean action report from mixed input still verifies both chains.
+	if len(evidenceReceipts) > 0 {
+		res := receipt.VerifyEvidenceChainTrusted(evidenceReceipts, trustedKeys, contractreceipt.ChainVerifyOptions{})
+		proof, pinErr = endproof.Pin(res.RootHash, res.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq)
+		if pinErr != nil {
+			return pinErr
+		}
+		if len(endproof.ActionEvidence(receipts)) == 0 {
+			proof = nil
+		}
+	}
+	report.Report = endproof.New(true, "receipt_chain", proof...)
+	collectChainReport(opts.verifyReceiptOptions, newChainCLIReport(chainCLIReport{Path: label, Valid: true, RootHash: result.RootHash, FinalSeq: result.FinalSeq, ReceiptCount: result.ReceiptCount}, trustedKeys, "receipt_chain", proof))
 	report.SchemaVersion = "pipelock.clean_report.v1"
 	report.VerificationMode = "pinned_provenance"
 	if len(trustedKeys) == 0 {
@@ -1694,16 +1845,21 @@ func verifyCleanReport(out io.Writer, label string, receipts []receipt.Receipt, 
 	if err != nil {
 		return fmt.Errorf("marshal clean report: %w", err)
 	}
-	if err := atomicfile.Write(filepath.Clean(reportPath), append(data, '\n'), 0o600); err != nil {
+	if err := atomicfile.Write(filepath.Clean(opts.Path), append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("write clean report: %w", err)
 	}
-	if report.VerificationMode == "unpinned_structural" {
+	if opts.CheckEnd && !report.EndProof.Proven {
+		_, _ = fmt.Fprintf(out, "%s: %s (clean report)\n", endproof.Prefix, label)
+	} else if report.VerificationMode == "unpinned_structural" {
 		_, _ = fmt.Fprintf(out, "CLEAN REPORT UNPINNED (structural verification only): %s\n", label)
 	} else {
 		_, _ = fmt.Fprintf(out, "CLEAN REPORT VALID (pinned provenance): %s\n", label)
 	}
 	_, _ = fmt.Fprintf(out, "  Actions:   %d\n", len(report.Actions))
-	_, _ = fmt.Fprintf(out, "  Report:    %s\n", reportPath)
+	_, _ = fmt.Fprintf(out, "  Report:    %s\n", opts.Path)
+	if opts.CheckEnd {
+		return report.Require(opts.AllowPrefix)
+	}
 	return nil
 }
 
@@ -2186,4 +2342,26 @@ func validateReceiptSourceArgs(args []string, chainDir string) error {
 		return fmt.Errorf("accepts 1 arg(s), received %d", len(args))
 	}
 	return nil
+}
+
+// readReceiptSessionChains runs inside the caller's session snapshot.
+func readReceiptSessionChains(location recorder.EvidenceLocation, session string) ([]receipt.Receipt, []contractreceipt.EvidenceReceipt, error) {
+	bare, err := receipt.IsBareEvidenceSession(location, session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !bare {
+		if err := recorder.VerifySessionHistoryChain(location, session); err != nil {
+			return nil, nil, err
+		}
+	}
+	evidence, err := contractreceipt.ExtractEvidenceReceiptsFromResolvedSessionDir(location, session)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bare {
+		return nil, evidence, nil
+	}
+	actions, err := receipt.ExtractReceiptsFromResolvedSessionDir(location, session)
+	return actions, evidence, err
 }

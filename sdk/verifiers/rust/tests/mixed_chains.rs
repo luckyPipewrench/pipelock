@@ -57,6 +57,11 @@ fn run_file(dir: &Path) -> PathBuf {
 fn run_cli(args: &[&str]) -> (i32, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
         .args(args)
+        .args(if args.first() == Some(&"chain") {
+            vec!["--allow-prefix"]
+        } else {
+            vec![]
+        })
         .output()
         .expect("run verifier");
     (
@@ -112,9 +117,16 @@ fn a_session_holding_both_chains_is_valid_only_when_both_verify() {
         let modes: [(&str, Vec<&str>); 2] = [
             (
                 "explicit-session",
-                vec!["chain", dir_s, "--dir", "--session-id", SESSION],
+                vec![
+                    "chain",
+                    "--allow-prefix",
+                    dir_s,
+                    "--dir",
+                    "--session-id",
+                    SESSION,
+                ],
             ),
-            ("file", vec!["chain", file_s]),
+            ("file", vec!["chain", "--allow-prefix", file_s]),
         ];
         for (mode, mut args) in modes {
             args.extend(["--key", key.as_str(), "--json"]);
@@ -143,7 +155,15 @@ fn a_session_holding_both_chains_is_valid_only_when_both_verify() {
                 );
             }
         }
-        let (code, stdout) = run_cli(&["chain", dir_s, "--dir", "--key", &key, "--json"]);
+        let (code, stdout) = run_cli(&[
+            "chain",
+            "--allow-prefix",
+            dir_s,
+            "--dir",
+            "--key",
+            &key,
+            "--json",
+        ]);
         let report: Value = serde_json::from_str(&stdout).expect("json report");
         let line = report["chains"]
             .as_array()
@@ -164,13 +184,13 @@ fn a_session_holding_both_chains_is_valid_only_when_both_verify() {
 fn an_unpinned_mixed_session_reports_the_banner_once() {
     let file = run_file(&fixtures().join("valid"));
     let file_s = file.to_str().expect("path");
-    let (code, stdout) = run_cli(&["chain", file_s, "--json"]);
+    let (code, stdout) = run_cli(&["chain", "--allow-prefix", file_s, "--json"]);
     assert_eq!(code, 1);
     let report: Value = serde_json::from_str(&stdout).expect("json report");
     assert_eq!(report["unpinned"], true);
     let err = report["error"].as_str().unwrap_or("");
     assert!(!err.contains("receipt chain:"), "{err}");
-    let (code, stdout) = run_cli(&["chain", file_s, "--allow-unpinned"]);
+    let (code, stdout) = run_cli(&["chain", "--allow-prefix", file_s, "--allow-unpinned"]);
     assert_eq!(code, 0, "{stdout}");
 }
 

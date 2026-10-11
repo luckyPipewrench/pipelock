@@ -100,7 +100,7 @@ EVIDENCE_FILE="$(find evidence -maxdepth 1 -type f -name 'evidence-proxy.run.*-0
 ```
 
 ```bash
-pipelock verify-receipt "$EVIDENCE_FILE" --key <public-key-hex>
+pipelock verify-receipt "$EVIDENCE_FILE" --whole-recorder --key <public-key-hex>
 ```
 
 The Python reference verifier is on PyPI as [`pipelock-verify`](https://pypi.org/project/pipelock-verify/) and mirrors the Go output byte-for-byte:

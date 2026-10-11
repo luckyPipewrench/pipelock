@@ -274,7 +274,7 @@ else
   cat "$WORK/verify-good.err" >&2 || true
 fi
 
-if "$PIPELOCK" verify-receipt "$EVIDENCE" --key "$PUB" >/dev/null 2>"$WORK/verify-chain.err"; then
+if "$PIPELOCK" verify-receipt "$EVIDENCE" --whole-recorder --key "$PUB" >/dev/null 2>"$WORK/verify-chain.err"; then
   pass "verify-receipt accepts evidence JSONL chain"
 else
   fail "verify-receipt rejected evidence JSONL"

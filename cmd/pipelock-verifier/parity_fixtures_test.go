@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 )
 
 // The verifier parity fixtures state one verdict per cell that every Pipelock
@@ -101,11 +103,11 @@ func parityFixtureArgs(t *testing.T, dir string, c parityFixtureCell) []string {
 	var args []string
 	switch c.Mode {
 	case "dir":
-		args = []string{"chain", dir, "--dir"}
+		args = []string{"chain", "--allow-prefix", dir, "--dir"}
 	case "session":
-		args = []string{"chain", dir, "--dir", "--session", c.Target}
+		args = []string{"chain", "--allow-prefix", dir, "--dir", "--session", c.Target}
 	case "file":
-		args = []string{"chain", filepath.Join(dir, c.Target)}
+		args = []string{"chain", "--allow-prefix", filepath.Join(dir, c.Target)}
 	default:
 		t.Fatalf("unknown mode %q", c.Mode)
 	}
@@ -158,6 +160,9 @@ func TestChain_ParityFixtures(t *testing.T) {
 			if code != want {
 				t.Errorf("%s: exit %d, want %d\n%s", label, code, want, out)
 				continue
+			}
+			if c.Valid && strings.Contains(out, recordTypeEvidenceV2) && !strings.Contains(out, endproof.Prefix) {
+				t.Errorf("%s: missing prefix label\n%s", label, out)
 			}
 			if !c.Valid && !parityNamesAReason(out, c) {
 				t.Errorf("%s: failure names none of its expected findings or errors\n%s", label, out)

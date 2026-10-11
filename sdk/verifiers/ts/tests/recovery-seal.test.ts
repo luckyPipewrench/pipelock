@@ -391,7 +391,7 @@ test("Go recovery-seal fixture verifies as an unhealthy attested discontinuity a
   );
   const cli = spawnSync(
     "node",
-    [CLI, "chain", fixtureEvidenceDir, "--dir", "--key", trustedKey, "--json"],
+    [CLI, "chain", "--allow-prefix", fixtureEvidenceDir, "--dir", "--key", trustedKey, "--json"],
     { encoding: "utf8" },
   );
   assert.equal(cli.status, 1, cli.stderr);

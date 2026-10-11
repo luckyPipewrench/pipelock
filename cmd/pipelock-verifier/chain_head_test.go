@@ -25,7 +25,7 @@ func TestChainV2HasNoAggregateEvidenceBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	data = append(data, bytes.Repeat([]byte("\n"), int(maxVerifierInputBytes))...)
-	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", chainTrust{keys: []string{fixture.keyHex}}, chainOptions{})
+	handled, err := runEvidenceChainFromFile(io.Discard, io.Discard, data, "evidence.jsonl", chainTrust{keys: []string{fixture.keyHex}}, chainOptions{allowPrefix: true})
 	if !handled || err != nil {
 		t.Fatalf("large valid evidence: handled=%v err=%v", handled, err)
 	}
@@ -53,10 +53,7 @@ func writeTruncatedEvidence(t *testing.T, fix *evidenceFixture, path string) {
 }
 
 // TestChain_CompletenessNotProvenWithoutExpectedHead pins the reporting change.
-// A chain verified without an expected head is still VALID, because every check
-// but the head binding is satisfied by any prefix. Leaving that unsaid lets a
-// reader take "CHAIN VALID" as "nothing is missing", so the verdict has to say
-// which of the two it means.
+// A chain without end proof is an authenticated prefix and exits 3.
 func TestChain_CompletenessNotProvenWithoutExpectedHead(t *testing.T) {
 	t.Parallel()
 	fix := newEvidenceFixture(t, 3)
@@ -64,10 +61,10 @@ func TestChain_CompletenessNotProvenWithoutExpectedHead(t *testing.T) {
 	fix.writeEvidenceJSONL(t, evidence)
 
 	stdout, stderr, code := runRoot(t, "chain", "--key", fix.keyHex, evidence)
-	if code != cliutil.ExitOK {
-		t.Fatalf("chain should verify, stdout=%q stderr=%q", stdout, stderr)
+	if code != 3 {
+		t.Fatalf("chain should be a prefix, stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "completeness: not proven") {
+	if !strings.Contains(stdout, "completeness: VALID PREFIX, END UNPROVEN") {
 		t.Fatalf("stdout = %q, want completeness reported as not proven", stdout)
 	}
 	if !strings.Contains(stdout, "--expect-head") {
@@ -103,10 +100,10 @@ func TestChain_ExpectedHeadCatchesTruncation(t *testing.T) {
 	tip := evidenceTipHash(t, fix)
 
 	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, evidence)
-	if code != cliutil.ExitOK {
+	if code != 3 {
 		t.Fatalf("a truncated chain still passes structurally; got exit %d stdout=%q", code, stdout)
 	}
-	if !strings.Contains(stdout, "completeness: not proven") {
+	if !strings.Contains(stdout, "completeness: VALID PREFIX, END UNPROVEN") {
 		t.Fatalf("stdout = %q, want the truncated chain flagged as completeness-unproven", stdout)
 	}
 
@@ -128,8 +125,8 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 	fix.writeEvidenceJSONL(t, evidence)
 
 	unpinned, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--json", evidence)
-	if code != cliutil.ExitOK {
-		t.Fatalf("json chain should verify: %s", unpinned)
+	if code != 3 {
+		t.Fatalf("json chain should be a prefix: %s", unpinned)
 	}
 	var unpinnedReport struct {
 		HeadVerified *bool    `json:"head_verified"`

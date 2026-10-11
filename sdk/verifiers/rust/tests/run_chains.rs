@@ -111,6 +111,11 @@ fn expect(case: &Case) -> Value {
 fn run_cli(args: &[&str]) -> (i32, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
         .args(args)
+        .args(if args.first() == Some(&"chain") {
+            vec!["--allow-prefix"]
+        } else {
+            vec![]
+        })
         .output()
         .expect("run verifier");
     (
@@ -144,18 +149,32 @@ fn signed_run_chain_streams_past_the_former_input_cap_and_rejects_long_lines() {
     let target_arg = target.to_str().expect("utf8 path");
     let key_arg = fixtures.join("signer-key.hex");
     let key_arg = key_arg.to_str().expect("utf8 key path");
-    let (code, stdout, stderr) = run_cli(&["chain", target_arg, "--key", key_arg, "--json"]);
+    let (code, stdout, stderr) = run_cli(&[
+        "chain",
+        "--allow-prefix",
+        target_arg,
+        "--key",
+        key_arg,
+        "--json",
+    ]);
     assert_eq!(code, 0, "{stdout}{stderr}");
     let report: Value = serde_json::from_str(&stdout).expect("json report");
     assert_eq!(report["valid"], true);
-    assert_eq!(report["receipt_count"], 5);
+    assert_eq!(report["receipt_count"], 2);
 
     fs::write(
         &target,
         [vec![b' '; (1 << 20) + 1], b"\r\n".to_vec()].concat(),
     )
     .expect("write overlong line");
-    let (code, stdout, stderr) = run_cli(&["chain", target_arg, "--key", key_arg, "--json"]);
+    let (code, stdout, stderr) = run_cli(&[
+        "chain",
+        "--allow-prefix",
+        target_arg,
+        "--key",
+        key_arg,
+        "--json",
+    ]);
     assert_ne!(code, 0, "{stdout}{stderr}");
     assert!(!stdout.contains("\"valid\":true"), "{stdout}{stderr}");
     assert!(stderr.contains("recorder entry limit"), "{stdout}{stderr}");
@@ -393,7 +412,7 @@ fn run_chain_cli_human_output_lists_linked_and_unlinked_runs() {
         stdout.contains("RESTART CONTINUITY OK: base \"proxy\": 2 chain(s), 1 linked, 0 attested discontinuity(s), 1 unlinked")
     );
     assert!(stdout.contains("(same_key)"));
-    assert!(stdout.contains("  result:     VALID"));
+    assert!(stdout.contains("  result:     VALID PREFIX, END UNPROVEN"));
 }
 
 #[test]

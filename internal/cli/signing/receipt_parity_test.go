@@ -159,7 +159,7 @@ func runParityVerify(t *testing.T, args ...string) (string, error) {
 	cmd := VerifyReceiptCmd()
 	cmd.SetOut(&buf)
 	cmd.SetErr(&buf)
-	cmd.SetArgs(args)
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, args))
 	err := cmd.Execute()
 	return buf.String(), err
 }
@@ -188,7 +188,7 @@ func TestVerifyReceipt_ParityContract(t *testing.T) {
 		{
 			name:    "clean directory verifies both chains of every run",
 			setup:   func(_ *testing.T, dir string) []string { return []string{"--chain", dir, "--key", key} },
-			wantOut: []string{"EVIDENCE CHAIN VALID", "Evidence receipts: 2", "RESTART CONTINUITY OK"},
+			wantOut: []string{"VALID PREFIX, END UNPROVEN", "Evidence receipts: 2", "RESTART CONTINUITY OK"},
 		},
 		{
 			name: "directory: forged evidence receipt with rehashed recorder chain",
@@ -204,7 +204,7 @@ func TestVerifyReceipt_ParityContract(t *testing.T) {
 			setup: func(_ *testing.T, dir string) []string {
 				return []string{"--chain", dir, "--key", key, "--session", parityRun1}
 			},
-			wantOut: []string{"EVIDENCE CHAIN VALID", "RESTART CONTINUITY OK"},
+			wantOut: []string{"VALID PREFIX, END UNPROVEN", "RESTART CONTINUITY OK"},
 		},
 		{
 			name: "named run fails on a finding in another run of its base",
@@ -218,7 +218,7 @@ func TestVerifyReceipt_ParityContract(t *testing.T) {
 		{
 			name:    "file: clean",
 			setup:   func(_ *testing.T, dir string) []string { return []string{parityFile(dir, parityRun2), "--key", key} },
-			wantOut: []string{"CHAIN VALID", "EVIDENCE CHAIN VALID"},
+			wantOut: []string{"CHAIN VALID", "VALID PREFIX, END UNPROVEN"},
 		},
 		{
 			name: "file: forged evidence receipt",
@@ -256,7 +256,7 @@ func TestVerifyReceipt_ParityContract(t *testing.T) {
 				parityRewrite(t, parityFile(dir, parityRun2), true, func(l *parityLine) bool { return l.Type != "action_receipt" })
 				return []string{parityFile(dir, parityRun2), "--key", key}
 			},
-			wantOut: []string{"EVIDENCE CHAIN VALID", "Evidence receipts: 2"},
+			wantOut: []string{"VALID PREFIX, END UNPROVEN", "Evidence receipts: 2"},
 			notOut:  []string{"No receipts found"},
 		},
 		{

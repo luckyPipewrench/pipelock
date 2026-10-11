@@ -54,7 +54,7 @@ func TestChainDir_RunChainFixturesMatchGoReference(t *testing.T) {
 			if err := json.Unmarshal([]byte(readRunChainFixture(t, filepath.Join(v, "expect.json"))), &exp); err != nil {
 				t.Fatal(err)
 			}
-			stdout, stderr, code := runRoot(t, "chain", filepath.Join(runChainFixtures, v), "--dir", "--key", key, "--json")
+			stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", filepath.Join(runChainFixtures, v), "--dir", "--key", key, "--json")
 			wantCode := 1
 			if exp.Valid {
 				wantCode = 0
@@ -115,7 +115,7 @@ func TestChainDir_ExplicitSessionKeepsSingleSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	session := exp.Chains[0].Session
-	stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--key", key, "--session", session, "--json")
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--session", session, "--json")
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}
@@ -131,7 +131,7 @@ func TestChainDir_ExplicitSessionKeepsSingleSession(t *testing.T) {
 	}
 
 	// The legacy base named explicitly has no shards here, as before.
-	stdout, _, code = runRoot(t, "chain", dir, "--dir", "--key", key, "--session", "proxy", "--json")
+	stdout, _, code = runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--session", "proxy", "--json")
 	if code != 1 || !strings.Contains(stdout, "no receipts in chain") {
 		t.Fatalf("explicit legacy session: exit %d\n%s", code, stdout)
 	}
@@ -140,7 +140,7 @@ func TestChainDir_ExplicitSessionKeepsSingleSession(t *testing.T) {
 func TestChainDir_RunChainHumanOutput(t *testing.T) {
 	t.Parallel()
 	key := readRunChainFixture(t, "signer-key.hex")
-	stdout, stderr, code := runRoot(t, "chain", filepath.Join(runChainFixtures, "valid"), "--dir", "--key", key)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", filepath.Join(runChainFixtures, "valid"), "--dir", "--key", key)
 	if code != 0 {
 		t.Fatalf("exit %d\n%s\n%s", code, stdout, stderr)
 	}

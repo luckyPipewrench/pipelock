@@ -163,7 +163,19 @@ pub struct ReceiptReport {
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
+pub struct EndProof {
+    pub proven: bool,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ChainCommandReport {
+    pub integrity: String,
+    pub end_proof: EndProof,
+    pub scope: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub companion_end_proven: Option<bool>,
     pub path: String,
     pub valid: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +202,10 @@ pub struct ChainCommandReport {
 /// that no run's evidence is missing.
 #[derive(Debug, Clone, Serialize)]
 pub struct ChainSetReport {
+    pub integrity: String,
+    pub end_proof: EndProof,
+    pub scope: String,
+    pub status: String,
     pub path: String,
     pub base: String,
     pub valid: bool,

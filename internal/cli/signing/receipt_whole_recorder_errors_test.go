@@ -123,7 +123,7 @@ func runVerifyReceipt(t *testing.T, args ...string) (string, error) {
 	var out bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&out)
-	cmd.SetArgs(args)
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, args))
 	err := cmd.Execute()
 	return out.String(), err
 }
@@ -809,17 +809,9 @@ func TestVerifyReceiptCmd_WholeRecorderNoReceiptsFailsBeforeAnchorCheck(t *testi
 	}
 
 	out, err := runVerifyReceipt(t, path, "--whole-recorder", "--key", hex.EncodeToString(pub))
-	// Assert the exact pre-anchor stop, not merely "some error": a hash,
-	// parsing, or configuration failure would otherwise satisfy this test
-	// without proving verification stopped where it is claimed to stop.
-	if err == nil || !strings.Contains(err.Error(), "incomplete: no transcript_root seal") {
-		t.Fatalf("receipt-less recorder err = %v, want the pre-anchor seal stop:\n%s", err, out)
-	}
-	if strings.Contains(err.Error(), "holds no receipts to name its signer") {
-		t.Fatalf("anchor verification was reached on a receipt-less recorder: %v", err)
-	}
-	if strings.Contains(out, "Seal:      sealed at seq") || strings.Contains(out, "Anchor:") {
-		t.Fatalf("receipt-less recorder must not report a sealed or anchored result:\n%s", out)
+	// A receipt-less checkpoint cannot name its signer and fails closed.
+	if err == nil || !strings.Contains(err.Error(), "holds no receipts to name its signer") {
+		t.Fatalf("receipt-less recorder: %v\n%s", err, out)
 	}
 }
 

@@ -2,6 +2,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+import { prefixStatus } from "./output.js";
+
 import { statSync } from "node:fs";
 import * as path from "node:path";
 import { parseArgs } from "node:util";
@@ -52,6 +54,11 @@ import {
 } from "./util.js";
 
 export interface ChainCommandReport {
+  integrity?: string;
+  end_proof?: { proven: boolean; evidence: string[] };
+  scope?: string;
+  status?: string;
+  companion_end_proven?: boolean;
   path: string;
   valid: boolean;
   unpinned?: boolean;
@@ -71,7 +78,7 @@ function usage(command?: string): string {
     return "Usage: pipelock-verifier-ts audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]";
   }
   if (command === "chain") {
-    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--dir] [--session-id ID] [--group ID]";
+    return "Usage: pipelock-verifier-ts chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--dir] [--session-id ID] [--group ID]";
   }
   if (command === "receipt") {
     return "Usage: pipelock-verifier-ts receipt PATH [--json] [--key HEX_OR_FILE] [--allow-unpinned]";
@@ -137,6 +144,10 @@ export interface ChainSetReport {
   base: string;
   valid: boolean;
   chains: (ChainCommandReport & { session: string })[];
+  integrity?: string;
+  end_proof?: { proven: boolean; evidence: string[] };
+  scope?: string;
+  status?: string;
   continuity: {
     healthy: boolean;
     // Every chain of the base, which a named run's report lists alongside
@@ -187,6 +198,18 @@ async function chainReportFor(
   const lifecycleBroken = lifecycle.status === "BROKEN";
   return {
     path: label,
+    end_proof: {
+      proven:
+        result.valid &&
+        !lifecycleBroken &&
+        receipts.at(-1)?.action_record?.session_control?.["kind"] === "session_close",
+      evidence:
+        result.valid &&
+        !lifecycleBroken &&
+        receipts.at(-1)?.action_record?.session_control?.["kind"] === "session_close"
+          ? ["session_close"]
+          : [],
+    },
     valid: result.valid && !lifecycleBroken,
     unpinned:
       keyHex === "" &&
@@ -235,31 +258,32 @@ async function bothChainsReport(
   endorsements: RotationEndorsement[],
   sessionID: string,
 ): Promise<ChainCommandReport> {
-  const primaryReceipts = selectReceiptChain(typed);
+  const primaryReceipts = typed.evidence.length > 0 ? typed.evidence : selectReceiptChain(typed);
   const primary = await chainReportFor(
     label,
     primaryReceipts,
-    typed.action.length === 0 ? evidenceChainKey(keyHex, primaryReceipts) : keyHex,
+    typed.evidence.length > 0 ? evidenceChainKey(keyHex, primaryReceipts) : keyHex,
     allowUnpinned,
-    typed.action.length === 0 ? [] : endorsements,
+    typed.evidence.length > 0 ? [] : endorsements,
     sessionID,
   );
   if (typed.action.length === 0 || typed.evidence.length === 0) return primary;
   const evidence = await chainReportFor(
     label,
-    typed.evidence,
-    evidenceChainKey(keyHex, typed.evidence),
+    typed.action,
+    keyHex,
     allowUnpinned,
-    [],
+    endorsements,
     sessionID,
   );
-  if (primary.valid && evidence.valid) return primary;
+  if (primary.valid && evidence.valid)
+    return { ...primary, companion_end_proven: evidence.end_proof?.proven === true };
   // Without a key and without --allow-unpinned both chains fail only for being
   // unpinned; the action report already says so.
   if (primary.unpinned === true && evidence.unpinned === true) return primary;
   const reasons: string[] = [];
-  if (!primary.valid) reasons.push(`action receipt chain: ${primary.error ?? ""}`);
-  if (!evidence.valid) reasons.push(`evidence receipt chain: ${evidence.error ?? ""}`);
+  if (!primary.valid) reasons.push(`evidence receipt chain: ${primary.error ?? ""}`);
+  if (!evidence.valid) reasons.push(`action receipt chain: ${evidence.error ?? ""}`);
   return {
     ...primary,
     valid: false,
@@ -311,6 +335,7 @@ async function runChainSetCommand(
   endorsementPaths: string[],
   json: boolean,
   targets?: string[],
+  endOptions = defaultEndOptions,
 ): Promise<number> {
   const report = await withBaseHistorySnapshot(dir, base, async () => {
     const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
@@ -327,6 +352,8 @@ async function runChainSetCommand(
       throw new RuntimeError(`restart continuity check incomplete: ${errorMessage(err)}`);
     }
     const chains: ChainSetReport["chains"] = [];
+    if ((endOptions.head || endOptions.seq !== undefined) && (targets ?? sessions).length > 1)
+      throw new UsageError("endpoint pins require one selected run; pass --session-id");
     for (const session of targets ?? sessions) {
       const label = `${displayDir} (session ${session})`;
       const scoped = await chainScopedTrust(baseReport, session, trustedKeys, endorsements);
@@ -349,7 +376,7 @@ async function runChainSetCommand(
           error: `extract receipts: ${errorMessage(err)}`,
         };
       }
-      chains.push({ session, ...chainReport });
+      chains.push({ session, ...withEndProof(chainReport, endOptions) });
     }
     const healthy = baseHealthy(baseReport);
     const report: ChainSetReport = {
@@ -385,6 +412,11 @@ async function runChainSetCommand(
   });
   const chains = report.chains;
   const healthy = report.continuity.healthy;
+  report.integrity = report.valid ? "valid" : "invalid";
+  const proven = report.valid && report.chains.every((c) => c.end_proof?.proven === true);
+  report.end_proof = { proven, evidence: proven ? ["selected_chain_ends"] : [] };
+  report.scope = "chain_set";
+  report.status = !report.valid ? "CHAIN BROKEN" : proven ? "CHAIN VALID" : prefixStatus;
   emitChainSet(report, json);
   if (!report.valid) {
     const reasons: string[] = [];
@@ -403,7 +435,11 @@ async function runChainSetCommand(
     }
     reportFailure(`${displayDir}: ${reasons.join("; ")}`);
   }
-  return report.valid ? 0 : 1;
+  return !report.valid
+    ? 1
+    : report.chains.every((c) => c.end_proof?.proven === true) || endOptions.allowPrefix
+      ? 0
+      : 3;
 }
 
 // withRecorderChain folds the recorder entry hash chain into a chain report:
@@ -423,9 +459,49 @@ function withRecorderChain(
   };
 }
 
-function emitChainResult(report: ChainCommandReport, json: boolean): number {
+interface EndOptions {
+  allowPrefix: boolean;
+  head: string;
+  seq?: string;
+}
+const defaultEndOptions: EndOptions = { allowPrefix: false, head: "" };
+
+function withEndProof(report: ChainCommandReport, opts: EndOptions): ChainCommandReport {
+  let evidence = report.end_proof?.evidence ?? [];
+  if (
+    report.valid &&
+    ((opts.head !== "" && opts.head !== report.root_hash) ||
+      (opts.seq !== undefined &&
+        (!/^(0|[1-9][0-9]*)$/u.test(opts.seq) || BigInt(opts.seq) !== BigInt(report.final_seq))))
+  ) {
+    report = {
+      ...report,
+      valid: false,
+      error: "chain endpoint does not match expected head/seq (tail truncated or different scope)",
+    };
+  }
+  if (report.valid) {
+    if (opts.head !== "") evidence = [...evidence, "operator_head"];
+    if (opts.seq !== undefined) evidence = [...evidence, "operator_seq"];
+  } else evidence = [];
+  const proven = report.valid && evidence.length > 0 && report.companion_end_proven !== false;
+  return {
+    ...report,
+    integrity: report.valid ? "valid" : "invalid",
+    scope: "receipt_chain",
+    end_proof: { proven, evidence },
+    status: !report.valid ? "CHAIN BROKEN" : proven ? "CHAIN VALID" : prefixStatus,
+  };
+}
+
+function emitChainResult(
+  report: ChainCommandReport,
+  json: boolean,
+  opts = defaultEndOptions,
+): number {
+  report = withEndProof(report, opts);
   emitChain(report, json);
-  if (report.valid) return 0;
+  if (report.valid) return report.end_proof?.proven === true || opts.allowPrefix ? 0 : 3;
   reportFailure(
     `${report.path}: ${report.unpinned === true ? "chain unpinned" : "chain broken"}: ${report.error ?? "no receipts in chain"}`,
   );
@@ -440,6 +516,9 @@ async function runChainCommand(args: string[]): Promise<number> {
       json: { type: "boolean", default: false },
       key: { type: "string", multiple: true, default: [] },
       "allow-unpinned": { type: "boolean", default: false },
+      "allow-prefix": { type: "boolean", default: false },
+      "expect-head": { type: "string", default: "" },
+      "expect-seq": { type: "string" },
       dir: { type: "boolean", default: false },
       "session-id": { type: "string" },
       "rotation-endorsement": { type: "string", multiple: true, default: [] },
@@ -447,6 +526,16 @@ async function runChainCommand(args: string[]): Promise<number> {
     },
   });
   const target = requireOneArg(parsed.positionals, "chain");
+  const endOptions: EndOptions = {
+    allowPrefix: parsed.values["allow-prefix"] === true,
+    head: parsed.values["expect-head"] ?? "",
+    ...(parsed.values["expect-seq"] !== undefined ? { seq: parsed.values["expect-seq"] } : {}),
+  };
+  if (
+    endOptions.seq !== undefined &&
+    (!/^[0-9]+$/u.test(endOptions.seq) || BigInt(endOptions.seq) > 18446744073709551615n)
+  )
+    throw new UsageError("--expect-seq requires an unsigned 64-bit integer");
   const keyHex = resolveSignerKeys(parsed.values.key ?? []);
   const asDir = parsed.values.dir === true;
   const explicitSession = parsed.values["session-id"] !== undefined;
@@ -457,13 +546,22 @@ async function runChainCommand(args: string[]): Promise<number> {
   const groupID = parsed.values.group;
   if (groupID !== undefined) {
     if (!asDir) throw new UsageError("--group requires --dir");
-    if (allowUnpinned || endorsementPaths.length > 0 || explicitSession) {
+    if (
+      allowUnpinned ||
+      endorsementPaths.length > 0 ||
+      explicitSession ||
+      endOptions.head !== "" ||
+      endOptions.seq !== undefined
+    ) {
       throw new UsageError(
         "--group cannot be combined with --allow-unpinned, --session-id, or rotation endorsements",
       );
     }
     const group = await verifyReceiptGroup(target, groupID, keyHex.split(",").filter(Boolean));
-    if (json) process.stdout.write(`${JSON.stringify(group, null, 2)}\n`);
+    if (json)
+      process.stdout.write(
+        `${JSON.stringify({ ...group, integrity: group.verdict === "GROUP_VALID" ? "valid" : "invalid", end_proof: { proven: group.verdict === "GROUP_VALID", evidence: group.verdict === "GROUP_VALID" ? ["receipt_group_close"] : [] }, scope: "receipt_group", status: group.verdict === "GROUP_VALID" ? "CHAIN VALID" : "CHAIN BROKEN" }, null, 2)}\n`,
+      );
     else {
       process.stdout.write(
         `${group.verdict}: ${group.group_id}${group.base_session ? ` (${group.base_session})` : ""}\n`,
@@ -538,6 +636,7 @@ async function runChainCommand(args: string[]): Promise<number> {
           endorsementPaths,
           json,
           explicitSession ? [sessionID] : undefined,
+          endOptions,
         );
       }
     }
@@ -573,7 +672,7 @@ async function runChainCommand(args: string[]): Promise<number> {
     }
     if (typed.action.length === 0 && typed.evidence.length === 0) {
       const report = await chainReportFor(label, [], keyHex, allowUnpinned, [], sessionID);
-      return emitChainResult(withRecorderChain(report, outer), json);
+      return emitChainResult(withRecorderChain(report, outer), json, endOptions);
     }
     const endorsements = await loadEndorsements(endorsementPaths, allowUnpinned, keyHex);
     const report = await typedChainReport(
@@ -584,7 +683,7 @@ async function runChainCommand(args: string[]): Promise<number> {
       endorsements,
       sessionID,
     );
-    return emitChainResult(withRecorderChain(report, outer), json);
+    return emitChainResult(withRecorderChain(report, outer), json, endOptions);
   };
   if (!asDir) return runAt(readPath);
   try {

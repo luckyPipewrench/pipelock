@@ -161,10 +161,10 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 	}
 	modes := map[string]func(dir string) []string{
 		"explicit-session": func(dir string) []string {
-			return []string{"chain", dir, "--dir", "--session", mixedRunSession}
+			return []string{"chain", "--allow-prefix", dir, "--dir", "--session", mixedRunSession}
 		},
 		"file": func(dir string) []string {
-			return []string{"chain", mixedRunFile(dir)}
+			return []string{"chain", "--allow-prefix", mixedRunFile(dir)}
 		},
 	}
 	for name, dir := range dirs {
@@ -192,7 +192,7 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 		}
 		t.Run(name+"/directory", func(t *testing.T) {
 			t.Parallel()
-			stdout, _, code := runRoot(t, "chain", dir, "--dir", "--key", key, "--json")
+			stdout, _, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--json")
 			var got chainSetReport
 			if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 				t.Fatalf("decode: %v\n%s", err, stdout)
@@ -224,7 +224,7 @@ func TestChain_MixedSessionVerifiesBothChains(t *testing.T) {
 // banner twice.
 func TestChain_MixedSessionUnpinnedReportsOnce(t *testing.T) {
 	t.Parallel()
-	stdout, _, code := runRoot(t, "chain", mixedRunFile(filepath.Join(runChainFixtures, "valid")), "--json")
+	stdout, _, code := runRoot(t, "chain", "--allow-prefix", mixedRunFile(filepath.Join(runChainFixtures, "valid")), "--json")
 	var got chainReport
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode: %v\n%s", err, stdout)
@@ -232,7 +232,7 @@ func TestChain_MixedSessionUnpinnedReportsOnce(t *testing.T) {
 	if code != 1 || got.Valid || got.Error != unpinnedReceiptBanner {
 		t.Fatalf("exit %d valid=%v error=%q, want the unpinned banner alone", code, got.Valid, got.Error)
 	}
-	_, _, code = runRoot(t, "chain", mixedRunFile(filepath.Join(runChainFixtures, "valid")), "--allow-unpinned")
+	_, _, code = runRoot(t, "chain", "--allow-prefix", mixedRunFile(filepath.Join(runChainFixtures, "valid")), "--allow-unpinned")
 	if code != 0 {
 		t.Fatalf("--allow-unpinned exit %d, want 0", code)
 	}
@@ -256,7 +256,7 @@ func TestChain_ExplicitSessionIgnoresPrefixSibling(t *testing.T) {
 	if err := os.WriteFile(mixedRunFile(dir), clean, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--session", mixedRunSession, "--key", key)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--session", mixedRunSession, "--key", key)
 	if code != 0 {
 		t.Fatalf("positive control: exit %d\n%s%s", code, stdout, stderr)
 	}
@@ -267,7 +267,7 @@ func TestChain_ExplicitSessionIgnoresPrefixSibling(t *testing.T) {
 	// The sibling is a chain of the same base, so the named run's own chain
 	// still verifies clean, and the verdict fails on the base finding the
 	// sibling raises: its entries belong to another session.
-	stdout, stderr, code = runRoot(t, "chain", dir, "--dir", "--session", mixedRunSession, "--key", key, "--json")
+	stdout, stderr, code = runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--session", mixedRunSession, "--key", key, "--json")
 	var got chainReport
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode: %v\n%s%s", err, stdout, stderr)

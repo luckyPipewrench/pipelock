@@ -88,7 +88,7 @@ func TestVerifyReceiptDefaultGroupDirectoryAndMixedLegacy(t *testing.T) {
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)
-			cmd.SetArgs(args)
+			cmd.SetArgs(legacyReceiptPrefixArgs(cmd, args))
 			if err := cmd.Execute(); err != nil {
 				t.Fatalf("default directory verification: %v\n%s", err, out.String())
 			}
@@ -131,7 +131,7 @@ func TestVerifyReceiptDefaultGroupDirectoryRejectsIncompleteAndOrphanGate(t *tes
 			var out bytes.Buffer
 			cmd.SetOut(&out)
 			cmd.SetErr(&out)
-			cmd.SetArgs([]string{"--chain", dir, "--key", hex.EncodeToString(pub)})
+			cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{"--chain", dir, "--key", hex.EncodeToString(pub)}))
 			if err := cmd.Execute(); err == nil {
 				t.Fatalf("invalid group returned success: %s", out.String())
 			}

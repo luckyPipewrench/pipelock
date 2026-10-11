@@ -213,7 +213,13 @@ fn shared_native_ael_matrix() {
 fn torn_group_gate_without_opening_never_falls_back_to_legacy_directory() {
     let dir = fixture_from("cases/shard__torn-gate-missing-open", MATRIX_FIXTURE);
     let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
-        .args(["chain", dir.to_str().unwrap(), "--dir", "--json"])
+        .args([
+            "chain",
+            "--allow-prefix",
+            dir.to_str().unwrap(),
+            "--dir",
+            "--json",
+        ])
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));

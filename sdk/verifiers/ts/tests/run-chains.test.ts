@@ -107,7 +107,9 @@ function sortFindings(
 }
 
 function runCLI(args: string[]): { status: number | null; stdout: string; stderr: string } {
-  const r = spawnSync("node", [CLI, ...args], { encoding: "utf8" });
+  const r = spawnSync("node", [CLI, ...args, ...(args[0] === "chain" ? ["--allow-prefix"] : [])], {
+    encoding: "utf8",
+  });
   return { status: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -158,7 +160,15 @@ for (const c of CASES) {
 
   test(`run-chain fixture ${name}: CLI directory mode reaches the Go verdict`, () => {
     const exp = expectFor(variant, c.expectFile);
-    const args = ["chain", join(FIXTURES, variant), "--dir", "--key", KEY, "--json"];
+    const args = [
+      "chain",
+      "--allow-prefix",
+      join(FIXTURES, variant),
+      "--dir",
+      "--key",
+      KEY,
+      "--json",
+    ];
     // --key repeats, as the Go reference's does, to pin a trusted key set.
     if (c.bothKeys) {
       args.push("--key", readFileSync(join(FIXTURES, "rotated-signer-key.hex"), "utf8").trim());
@@ -196,7 +206,7 @@ for (const c of CASES) {
 }
 
 test("run-chain CLI human output lists linked and unlinked runs", () => {
-  const r = runCLI(["chain", join(FIXTURES, "valid"), "--dir", "--key", KEY]);
+  const r = runCLI(["chain", "--allow-prefix", join(FIXTURES, "valid"), "--dir", "--key", KEY]);
   assert.equal(r.status, 0, r.stderr);
   assert.match(
     r.stdout,
@@ -259,7 +269,15 @@ test("a missing rotation link does not corrupt the predecessor run report", () =
 
 test("run-chain CLI with a wrong key fails every run", () => {
   const wrong = "11".repeat(32);
-  const r = runCLI(["chain", join(FIXTURES, "valid"), "--dir", "--key", wrong, "--json"]);
+  const r = runCLI([
+    "chain",
+    "--allow-prefix",
+    join(FIXTURES, "valid"),
+    "--dir",
+    "--key",
+    wrong,
+    "--json",
+  ]);
   assert.equal(r.status, 1);
   const report = JSON.parse(r.stdout) as { valid: boolean; chains: { valid: boolean }[] };
   assert.equal(report.valid, false);
@@ -317,7 +335,7 @@ test("an explicit --session-id verifies that run and checks its base", () => {
 test("a directory with no run chains keeps single-session verification", () => {
   const dir = mkdtempSync(join(realpathSync(tmpdir()), "run-chains-legacy-"));
   try {
-    const r = runCLI(["chain", dir, "--dir", "--key", KEY, "--json"]);
+    const r = runCLI(["chain", "--allow-prefix", dir, "--dir", "--key", KEY, "--json"]);
     assert.equal(r.status, 1);
     const report = JSON.parse(r.stdout) as Record<string, unknown>;
     assert.equal(report["error"], "no receipts in chain");

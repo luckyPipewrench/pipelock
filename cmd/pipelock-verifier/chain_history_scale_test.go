@@ -26,7 +26,7 @@ func TestStandaloneChainFilePastArtifactBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := readRunChainFixture(t, "signer-key.hex")
-	stdout, stderr, code := runRoot(t, "chain", path, "--key", key, "--json")
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", path, "--key", key, "--json")
 	if code != cliutil.ExitOK || !strings.Contains(stdout, `"valid": true`) {
 		t.Fatalf("valid large producer evidence: exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
@@ -38,7 +38,7 @@ func TestStandaloneChainFilePastArtifactBudget(t *testing.T) {
 	if err := os.WriteFile(path, append(bad, bytes.Repeat([]byte("\n"), int(maxVerifierInputBytes))...), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code = runRoot(t, "chain", path, "--key", key, "--json")
+	stdout, stderr, code = runRoot(t, "chain", "--allow-prefix", path, "--key", key, "--json")
 	if code != cliutil.ExitGeneral || strings.Contains(stdout, `"valid": true`) {
 		t.Fatalf("invalid large producer evidence: exit=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}

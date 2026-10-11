@@ -668,11 +668,11 @@ func TestChainCLIShowsCompletenessReasonForATailDroppedChain(t *testing.T) {
 		openFixture.outcome(runNonce, actionID),
 	})
 
-	closedOut, stderr, code := runRoot(t, "chain", "--key", closedFixture.keyHex, closedPath)
+	closedOut, stderr, code := runRoot(t, "chain", "--allow-prefix", "--key", closedFixture.keyHex, closedPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("closed chain should verify: code=%d stdout=%q stderr=%q", code, closedOut, stderr)
 	}
-	droppedOut, stderr, code := runRoot(t, "chain", "--key", openFixture.keyHex, droppedPath)
+	droppedOut, stderr, code := runRoot(t, "chain", "--allow-prefix", "--key", openFixture.keyHex, droppedPath)
 	if code != cliutil.ExitOK {
 		t.Fatalf("a tail-dropped chain is a valid prefix and must still verify: code=%d stderr=%q", code, stderr)
 	}
@@ -699,7 +699,7 @@ func TestChainCLIRejectsLifecycleBrokenChain(t *testing.T) {
 		fixture.outcome("run-chain-broken", "outcome-without-intent"),
 	})
 
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--json", "--key", fixture.keyHex, path)
 	if code != cliutil.ExitGeneral {
 		t.Fatalf("lifecycle-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 	}
@@ -735,7 +735,7 @@ func TestChainCLIPreservesIntegrityFailureInsteadOfRelabelingItAsLifecycle(t *te
 	chain[1].ActionRecord.Target = "https://api.vendor.example/forged"
 	path := writeChainRecorderJSONL(t, chain)
 
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--json", "--key", fixture.keyHex, path)
 	if code != cliutil.ExitGeneral {
 		t.Fatalf("integrity-broken chain code=%d, want %d stdout=%q stderr=%q", code, cliutil.ExitGeneral, stdout, stderr)
 	}
@@ -796,7 +796,7 @@ func TestChainAcceptsBareV1JSONLWithBlankLines(t *testing.T) {
 		t.Fatalf("close fixture: %v", err)
 	}
 
-	stdout, stderr, code := runRoot(t, "chain", "--json", "--key", fixture.keyHex, path)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--json", "--key", fixture.keyHex, path)
 	if code != cliutil.ExitOK {
 		t.Fatalf("blank-line bare v1 chain should verify: code=%d stdout=%q stderr=%q", code, stdout, stderr)
 	}

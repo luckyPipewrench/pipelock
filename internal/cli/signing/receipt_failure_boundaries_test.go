@@ -67,7 +67,7 @@ func executeReceiptFailureCase(t *testing.T, args ...string) (string, error) {
 	cmd.SilenceErrors = true
 	cmd.SetOut(&out)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs(args)
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, args))
 	err := cmd.Execute()
 	return out.String(), err
 }

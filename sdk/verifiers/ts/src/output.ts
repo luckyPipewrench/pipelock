@@ -1,6 +1,8 @@
 // Copyright 2026 Pipelock contributors
 // SPDX-License-Identifier: Apache-2.0
 
+export const prefixStatus = "VALID PREFIX, END UNPROVEN";
+
 import type { AuditPacketReport } from "./types.js";
 import type { ReceiptReport } from "./receipt.js";
 import type { ChainCommandReport, ChainSetReport } from "./cli.js";
@@ -83,7 +85,9 @@ export function emitChain(report: ChainCommandReport, json: boolean): void {
     return;
   }
   if (report.valid) {
-    process.stdout.write(`CHAIN ${report.unpinned ? "UNPINNED" : "VALID"}: ${report.path}\n`);
+    process.stdout.write(
+      `${report.end_proof?.proven === false ? prefixStatus : report.unpinned ? "CHAIN UNPINNED" : "CHAIN VALID"}: ${report.path}\n`,
+    );
     if (report.unpinned && report.error) process.stdout.write(`  warning:    ${report.error}\n`);
     process.stdout.write(`  receipts:   ${report.receipt_count}\n`);
     if (report.action_receipts !== undefined && report.evidence_receipts !== undefined) {
@@ -133,5 +137,5 @@ export function emitChainSet(report: ChainSetReport, json: boolean): void {
   process.stdout.write(
     "  and it is also what a deleted link file looks like: this does not prove no run's evidence is missing.\n",
   );
-  process.stdout.write(`  result:     ${report.valid ? "VALID" : "INVALID"}\n`);
+  process.stdout.write(`  result:     ${report.status ?? (report.valid ? "VALID" : "INVALID")}\n`);
 }

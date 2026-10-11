@@ -37,12 +37,7 @@ Or from this directory: `./verify.sh` (with `PIPELOCK_BIN` set if needed).
 
 The script's fifth step changes `detail.action_record.verdict` in a captured
 `action_receipt` record, then runs `verify-receipt` with the generated public
-key. It must report a signature failure at that receipt's chain sequence and
-exit 1. Receipt-chain verification authenticates the signed `action_record`
-(including the action, policy hash, verdict, target, and chain linkage), not
-the outer flight-recorder hash chain. An entry's `seq` and `summary` are not
-checked in this mode. Its `type` is not signed, but it selects whether the
-entry is extracted as an action receipt; unknown types fail closed.
+key. It reports a recorder hash mismatch and exits 1. The next step changes the standalone receipt and requires a signature failure. Receipt-chain verification authenticates the signed `action_record`, including the action, policy hash, verdict, target, and chain linkage. It also checks the outer recorder hashes when present. Hash linkage alone doesn't authenticate unsigned outer fields. An entry's `type` selects the receipt chain; unknown types fail closed.
 
 ## Manual Try
 
@@ -54,8 +49,9 @@ WORK="$(mktemp -d)"
 "$PIPELOCK_BIN" run --config /path/to/rewritten-pipelock.yaml
 curl -sS -G --data-urlencode "url=http://169.254.169.254/latest/meta-data/" \
   "http://127.0.0.1:8888/fetch"
+# Stop the proxy with Ctrl-C in its terminal so it writes the transcript root and trailing checkpoint.
 EVIDENCE_FILE="$(find "$WORK/evidence" -maxdepth 1 -type f -name 'evidence-proxy.run.*-0.jsonl' -print -quit)"
-"$PIPELOCK_BIN" verify-receipt "$EVIDENCE_FILE" \
+"$PIPELOCK_BIN" verify-receipt "$EVIDENCE_FILE" --whole-recorder \
   --key "$WORK/signing.key.pub"
 ```
 

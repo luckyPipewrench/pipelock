@@ -39,6 +39,11 @@ fn phrase(kind: &str) -> &'static str {
 fn run_cli(args: &[String]) -> (i32, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_pipelock-verifier-rs"))
         .args(args)
+        .args(if args.first().is_some_and(|arg| arg == "chain") {
+            vec!["--allow-prefix"]
+        } else {
+            vec![]
+        })
         .output()
         .expect("run verifier");
     (
@@ -104,6 +109,7 @@ fn explicit_file_path_resolves_symlink_before_parent_traversal() {
         fs::write(&path_b, b_data).expect("write b");
         let (code, stdout, stderr) = run_cli(&[
             "chain".to_string(),
+            "--allow-prefix".to_string(),
             input.clone(),
             "--key".to_string(),
             key.clone(),
@@ -148,6 +154,7 @@ fn directory_mode_refuses_symlink_anywhere_on_walked_root_path() {
     let run = |target: String| {
         run_cli(&[
             "chain".to_string(),
+            "--allow-prefix".to_string(),
             target,
             "--dir".to_string(),
             "--key".to_string(),
@@ -205,6 +212,7 @@ fn directory_mode_walk_matches_the_operating_system() {
     let run = |target: String| {
         run_cli(&[
             "chain".to_string(),
+            "--allow-prefix".to_string(),
             target,
             "--dir".to_string(),
             "--key".to_string(),

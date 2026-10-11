@@ -115,7 +115,7 @@ func TestVerifyReceiptCmd_FleetReportPrintsLimits(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestVerifyReceiptCmd_FleetReportL2StillRejected(t *testing.T) {
 	cmd := VerifyReceiptCmd()
 	var buf bytes.Buffer
 	cmd.SetOut(&buf)
-	cmd.SetArgs([]string{path, "--fleet-report", "--key", hex.EncodeToString(pub)})
+	cmd.SetArgs(legacyReceiptPrefixArgs(cmd, []string{path, "--fleet-report", "--key", hex.EncodeToString(pub)}))
 	if err := cmd.Execute(); err == nil {
 		t.Fatalf("expected non-L1 fleet report to be rejected, got success:\n%s", buf.String())
 	}

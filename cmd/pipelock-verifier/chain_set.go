@@ -12,6 +12,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	actionreceipt "github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -21,6 +22,7 @@ import (
 // restart continuity. Unlinked runs are always listed, because a passing
 // result is not proof that no run's evidence is missing.
 type chainSetReport struct {
+	endproof.Report
 	Path       string             `json:"path"`
 	Base       string             `json:"base"`
 	Valid      bool               `json:"valid"`
@@ -179,6 +181,10 @@ func runChainSetIfRunsInner(stdout, stderr io.Writer, location recorder.Evidence
 		return true, runNamedChainInBase(stdout, stderr, location, report, baseReport, trust, opts)
 	}
 	valid := report.Continuity.Healthy
+	if (opts.expectHeadHash != "" || opts.expectFinalSeq != nil) && !opts.sessionExplicit && len(sessions) > 1 {
+		return true, cliutil.ExitCodeError(cliutil.ExitConfig, errors.New("endpoint pins require one selected run; pass --session"))
+	}
+
 	for _, s := range sessions {
 		keys, own := actionreceipt.ScopedChainTrust(baseReport, s, trust.keys, trust.endorsements)
 		chain, chainErr := sessionChainReport(location, s, chainTrust{keys: keys, endorsements: own, session: s}, opts)
@@ -196,11 +202,20 @@ func runChainSetIfRunsInner(stdout, stderr io.Writer, location recorder.Evidence
 		report.Chains = append(report.Chains, chainSetEntry{Session: s, chainReport: chain})
 	}
 	report.Valid = valid
+	allClosed := len(report.Chains) > 0
+	for _, c := range report.Chains {
+		allClosed = allClosed && c.EndProof.Proven
+	}
+	var proof []string
+	if allClosed {
+		proof = []string{"selected_chain_ends"}
+	}
+	report.Report = endproof.New(valid, "chain_set", proof...)
 	emitChainSetReport(stdout, stderr, report, opts.jsonOutput)
 	if !report.Valid {
 		return true, cliutil.ExitCodeError(cliutil.ExitGeneral, errors.New(chainSetFailureReason(report)))
 	}
-	return true, nil
+	return true, report.Require(opts.allowPrefix)
 }
 
 // runNamedChainInBase reports the one run --session names, in the
@@ -226,7 +241,7 @@ func runNamedChainInBase(stdout, stderr io.Writer, location recorder.EvidenceLoc
 	if !chain.Valid {
 		return cliutil.ExitCodeError(cliutil.ExitGeneral, fmt.Errorf("%s: %s", s, chain.Error))
 	}
-	return nil
+	return chain.Require(opts.allowPrefix)
 }
 
 // chainSetFailureReason names what failed, for the one-line error.
@@ -290,7 +305,10 @@ func emitChainSetReport(stdout, stderr io.Writer, r chainSetReport, jsonMode boo
 		emitChainReport(stdout, stderr, c.chainReport, false)
 	}
 	emitContinuity(stdout, r)
-	result := "VALID"
+	result := r.Status
+	if result == "" {
+		result = "VALID"
+	}
 	if !r.Valid {
 		result = "INVALID"
 	}

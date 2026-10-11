@@ -87,14 +87,14 @@ func TestChain_RotatedEvidenceTrust(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			stdout, stderr, code := runRoot(t, append([]string{"chain", dir, "--dir"}, tc.args...)...)
+			stdout, stderr, code := runRoot(t, append([]string{"chain", "--allow-prefix", dir, "--dir"}, tc.args...)...)
 			if code != tc.code {
 				t.Fatalf("exit %d, want %d\n%s%s", code, tc.code, stdout, stderr)
 			}
 		})
 	}
 	// The rotated run's own file verifies under its own key.
-	if stdout, stderr, code := runRoot(t, "chain", runFileIn(dir, rotatedRun), "--key", keyB); code != 0 {
+	if stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", runFileIn(dir, rotatedRun), "--key", keyB); code != 0 {
 		t.Fatalf("rotated run file: exit %d\n%s%s", code, stdout, stderr)
 	}
 }
@@ -103,12 +103,12 @@ func TestChain_NamedRunFailsOnAnotherRunsFinding(t *testing.T) {
 	t.Parallel()
 	key := readRunChainFixture(t, "signer-key.hex")
 	clean := copyFixtureDir(t, "valid")
-	if stdout, stderr, code := runRoot(t, "chain", clean, "--dir", "--key", key, "--session", parityRun1); code != 0 {
+	if stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", clean, "--dir", "--key", key, "--session", parityRun1); code != 0 {
 		t.Fatalf("positive control: exit %d\n%s%s", code, stdout, stderr)
 	}
 	dir := copyFixtureDir(t, "valid")
 	forgeFirstV2(t, runFileIn(dir, parityRun2))
-	stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--key", key, "--session", parityRun1, "--json")
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--session", parityRun1, "--json")
 	var got chainReport
 	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 		t.Fatalf("decode: %v\n%s", err, stdout)
@@ -128,7 +128,7 @@ func TestChain_DirectoryForgedV2AndDuplicateRun(t *testing.T) {
 		t.Parallel()
 		dir := copyFixtureDir(t, "valid")
 		forgeFirstV2(t, runFileIn(dir, parityRun2))
-		stdout, stderr, code := runRoot(t, "chain", dir, "--dir", "--key", key)
+		stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key)
 		if code != 1 || !strings.Contains(stdout+stderr, "evidence receipt chain") {
 			t.Fatalf("exit %d\n%s%s", code, stdout, stderr)
 		}
@@ -148,7 +148,7 @@ func TestChain_DirectoryForgedV2AndDuplicateRun(t *testing.T) {
 			return bytes.ReplaceAll(l, []byte(`"session_id":"`+parityRun1+`"`), []byte(`"session_id":"`+parityReplay+`"`))
 		})
 		rehashRecorderFile(t, replay)
-		stdout, _, code := runRoot(t, "chain", dir, "--dir", "--key", key, "--json")
+		stdout, _, code := runRoot(t, "chain", "--allow-prefix", dir, "--dir", "--key", key, "--json")
 		var got chainSetReport
 		if err := json.Unmarshal([]byte(stdout), &got); err != nil {
 			t.Fatalf("decode: %v\n%s", err, stdout)
@@ -240,7 +240,7 @@ func TestChain_FileModeRules(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			path := tc.setup(t, copyFixtureDir(t, "valid"))
-			stdout, stderr, code := runRoot(t, "chain", path, "--key", key, "--json")
+			stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", path, "--key", key, "--json")
 			if code != tc.code || !strings.Contains(stdout+stderr, tc.wantOut) {
 				t.Fatalf("exit %d, want %d with %q\n%s%s", code, tc.code, tc.wantOut, stdout, stderr)
 			}
@@ -267,7 +267,7 @@ func TestChain_DirectorySymlinkRefusedAsVerificationFailure(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	for _, extra := range [][]string{nil, {"--session", parityRun1}} {
-		_, stderr, code := runRoot(t, append([]string{"chain", dir, "--dir", "--key", key}, extra...)...)
+		_, stderr, code := runRoot(t, append([]string{"chain", "--allow-prefix", dir, "--dir", "--key", key}, extra...)...)
 		if code != 1 || !strings.Contains(stderr, "refuse symlink") || !strings.Contains(stderr, filepath.Base(runFileIn(dir, parityRun2))) {
 			t.Fatalf("%v: exit %d, want 1 naming the file\n%s", extra, code, stderr)
 		}
@@ -317,7 +317,7 @@ func TestChain_ExplicitPathResolvesSymlinkBeforeDotDot(t *testing.T) {
 			if err != nil || resolved != pathB {
 				t.Fatalf("path resolves to %q, want %q: %v", resolved, pathB, err)
 			}
-			stdout, stderr, code := runRoot(t, "chain", input, "--key", key, "--json")
+			stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", input, "--key", key, "--json")
 			if (code == 0) != tc.wantOK {
 				t.Fatalf("exit %d, want valid=%t\n%s%s", code, tc.wantOK, stdout, stderr)
 			}
@@ -509,13 +509,13 @@ func TestChain_DirectoryRootSymlinkRefusedAlongWalkedPath(t *testing.T) {
 		code    int
 		wantOut string
 	}{
-		{name: "real directory", target: realEv, code: 0, wantOut: "CHAIN VALID"},
+		{name: "real directory", target: realEv, code: 0, wantOut: "VALID PREFIX, END UNPROVEN"},
 		{name: "directory the hidden path opens", target: otherEv, code: 1, wantOut: "CHAIN BROKEN"},
 		{name: "symlinked root", target: filepath.Join(base, "evlink"), code: 1, wantOut: "refuse symlink in evidence root path"},
 		{name: "symlink hidden by dot-dot", target: hidden, code: 1, wantOut: "refuse symlink in evidence root path"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			stdout, stderr, code := runRoot(t, "chain", tc.target, "--dir", "--key", key)
+			stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", tc.target, "--dir", "--key", key)
 			if code != tc.code || !strings.Contains(stdout+stderr, tc.wantOut) {
 				t.Fatalf("exit %d, want %d with %q\n%s%s", code, tc.code, tc.wantOut, stdout, stderr)
 			}
@@ -575,7 +575,7 @@ func TestChain_KeyFileResolvesSymlinkBeforeDotDot(t *testing.T) {
 			if err := os.WriteFile(opened, []byte(tc.openKey+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			stdout, stderr, code := runRoot(t, "chain", evidence, "--dir", "--key", input, "--json")
+			stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", evidence, "--dir", "--key", input, "--json")
 			if (code == 0) != tc.wantOK {
 				t.Fatalf("exit %d, want valid=%t\n%s%s", code, tc.wantOK, stdout, stderr)
 			}

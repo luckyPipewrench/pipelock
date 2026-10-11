@@ -37,7 +37,7 @@ func TestEmitChainReportActionTailWarning(t *testing.T) {
 	t.Parallel()
 	var out, errOut bytes.Buffer
 	emitChainReport(&out, &errOut, chainReport{Valid: true, Path: "evidence.jsonl"}, false)
-	if !strings.Contains(out.String(), "CHAIN VALID") || !strings.Contains(out.String(), "WARNING: chain end is unanchored") {
+	if !strings.Contains(out.String(), "VALID PREFIX, END UNPROVEN") || !strings.Contains(out.String(), "WARNING: chain end is unanchored") {
 		t.Fatalf("output: %s", out.String())
 	}
 }

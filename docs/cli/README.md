@@ -5,6 +5,7 @@ the full command tree and `pipelock <command> --help` for any command's flags.
 
 | Command | Purpose |
 |---|---|
+| [`pipelock verify-receipt`](verify-receipt.md) | Verify signatures, chain integrity, and the declared evidence endpoint. |
 | [`pipelock exec`](exec.md) | Check a running proxy and launch a cooperative client with proxy and CA settings. |
 | [`pipelock guard`](guard.md) | Run one Linux command with filesystem and HTTP/HTTPS egress enforcement, or inspect its declarations. |
 | [`pipelock baseline`](baseline.md) | Inspect, ratify, and relearn behavioral-baseline profiles through the admin API. |

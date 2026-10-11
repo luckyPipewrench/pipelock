@@ -485,9 +485,20 @@ def verify_evidence_chain_file(
 
 def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
     """Load a chain and give file-change errors precedence over parse errors."""
+    return _load_chain_file(path, False)
+
+
+def load_receipt_chains(
+    path: str | Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Read both receipt chains from the same verified file snapshot."""
+    return _load_chain_file(path, True)
+
+
+def _load_chain_file(path: str | Path, both: bool) -> Any:
     lines = iter_verifier_jsonl_lines(path)
     try:
-        return _load_evidence_chain_lines(lines)
+        return _load_evidence_chain_lines(lines, both)
     except Exception as original:
         # A malformed row must not skip the final descriptor/path identity
         # check. Drain the bounded stream; any read or snapshot failure wins.
@@ -499,7 +510,7 @@ def load_evidence_chain(path: str | Path) -> list[dict[str, Any]]:
         raise
 
 
-def _load_evidence_chain_lines(lines: Any) -> list[dict[str, Any]]:
+def _load_evidence_chain_lines(lines: Any, both: bool = False) -> Any:
     """Load the receipt chain carried in a flight-recorder JSONL file.
 
     Mirrors the Go reference receipt-chain mode: the action_receipt
@@ -569,7 +580,7 @@ def _load_evidence_chain_lines(lines: Any) -> list[dict[str, Any]]:
             if ext_bytes is not None:
                 detail = SourcedReceipt(detail, ext_bytes)
         action.append(detail)
-    return action if action else evidence
+    return (action, evidence) if both else action if action else evidence
 
 
 def verify_evidence_chain(

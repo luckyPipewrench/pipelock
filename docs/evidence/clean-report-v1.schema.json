@@ -6,6 +6,13 @@
   "required": ["schema_version", "verification_mode", "chain", "actions"],
   "additionalProperties": false,
   "properties": {
+    "integrity": {"enum": ["valid", "invalid"]},
+    "scope": {"const": "receipt_chain"},
+    "status": {"enum": ["CHAIN VALID", "CHAIN BROKEN", "VALID PREFIX, END UNPROVEN"]},
+    "end_proof": {
+      "type": "object", "required": ["proven", "evidence"], "additionalProperties": false,
+      "properties": {"proven": {"type": "boolean"}, "evidence": {"type": "array", "items": {"type": "string"}}}
+    },
     "schema_version": {"const": "pipelock.clean_report.v1"},
     "verification_mode": {"enum": ["pinned_provenance", "unpinned_structural"]},
     "chain": {

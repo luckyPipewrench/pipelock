@@ -827,11 +827,11 @@ func TestChain_Valid(t *testing.T) {
 	_ = pkt
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, evidence)
+	stdout, _, code := runRoot(t, "chain", "--allow-prefix", "--key", fix.keyHex, evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain should pass, stdout=%q", stdout)
 	}
-	if !strings.Contains(stdout, "CHAIN VALID") {
+	if !strings.Contains(stdout, "VALID PREFIX, END UNPROVEN") {
 		t.Errorf("missing CHAIN VALID marker, got %q", stdout)
 	}
 }
@@ -1340,12 +1340,12 @@ func TestChain_ActionWithoutKeyFailsUnpinned(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, stderr, code := runRoot(t, "chain", evidence)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("unpinned action chain should fail, stdout=%q stderr=%q", stdout, stderr)
 	}
 	if !strings.Contains(stderr, "CHAIN UNPINNED") {
-		t.Fatalf("stderr = %q, want CHAIN UNPINNED", stderr)
+		t.Fatalf("stderr = %q, want prefix status", stderr)
 	}
 	if !strings.Contains(stderr, unpinnedReceiptBanner) {
 		t.Fatalf("stderr = %q, want unpinned warning", stderr)
@@ -1446,12 +1446,12 @@ func TestChain_ActionAllowUnpinned(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, stderr, code := runRoot(t, "chain", "--allow-unpinned", evidence)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--allow-unpinned", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("allow-unpinned action chain should pass, stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "CHAIN UNPINNED") {
-		t.Fatalf("stdout = %q, want CHAIN UNPINNED", stdout)
+	if !strings.Contains(stdout, "VALID PREFIX, END UNPROVEN") {
+		t.Fatalf("stdout = %q, want prefix status", stdout)
 	}
 	if !strings.Contains(stdout, "warning:") {
 		t.Fatalf("stdout = %q, want warning", stdout)
@@ -1478,7 +1478,7 @@ func TestChain_TamperedSignature(t *testing.T) {
 		t.Fatalf("write tampered: %v", err)
 	}
 
-	_, stderr, code := runRoot(t, "chain", evidence)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("tampered chain should fail")
 	}
@@ -1494,7 +1494,7 @@ func TestChain_JSONOutput(t *testing.T) {
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
 
-	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--json", evidence)
+	stdout, _, code := runRoot(t, "chain", "--allow-prefix", "--key", fix.keyHex, "--json", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("valid chain --json should pass")
 	}
@@ -1510,7 +1510,7 @@ func TestChain_JSONOutput(t *testing.T) {
 func TestChain_DirAsFileFails(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	_, stderr, code := runRoot(t, "chain", dir)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("passing a dir without --dir should fail, stderr=%q", stderr)
 	}
@@ -1518,7 +1518,7 @@ func TestChain_DirAsFileFails(t *testing.T) {
 
 func TestChain_NotFound(t *testing.T) {
 	t.Parallel()
-	_, _, code := runRoot(t, "chain", filepath.Join(t.TempDir(), "missing.jsonl"))
+	_, _, code := runRoot(t, "chain", "--allow-prefix", filepath.Join(t.TempDir(), "missing.jsonl"))
 	if code == cliutil.ExitOK {
 		t.Fatalf("missing file should fail")
 	}
@@ -2084,7 +2084,7 @@ func TestUsageErrorsExit64(t *testing.T) {
 		args []string
 	}{
 		{name: "missing subcommand", args: []string{"audit-packet"}},
-		{name: "unknown flag", args: []string{"chain", "--definitely-not-a-flag", "evidence.jsonl"}},
+		{name: "unknown flag", args: []string{"chain", "--allow-prefix", "--definitely-not-a-flag", "evidence.jsonl"}},
 		{name: "unknown command", args: []string{"definitely-not-a-command"}},
 	}
 
@@ -2261,7 +2261,7 @@ func TestChain_DirMode(t *testing.T) {
 	if err := os.Rename(src, dst); err != nil {
 		t.Fatalf("rename: %v", err)
 	}
-	stdout, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--dir", dir)
+	stdout, _, code := runRoot(t, "chain", "--allow-prefix", "--key", fix.keyHex, "--dir", dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("--dir mode should pass, stdout=%q", stdout)
 	}
@@ -2291,8 +2291,7 @@ func TestChain_DirModeSelectedParentWithNestedLocation(t *testing.T) {
 		t.Fatalf("write nested evidence: %v", err)
 	}
 
-	stdout, stderr, code := runRoot(t,
-		"chain", "--dir",
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir",
 		"--location", filepath.ToSlash(locationID),
 		"--key", fix.keyHex,
 		root,
@@ -2312,7 +2311,7 @@ func TestChain_WithExplicitKey(t *testing.T) {
 		t.Fatalf("write key: %v", err)
 	}
 	evidence := filepath.Join(dir, "evidence.jsonl")
-	_, _, code := runRoot(t, "chain", "--key", keyPath, evidence)
+	_, _, code := runRoot(t, "chain", "--allow-prefix", "--key", keyPath, evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("chain --key should pass")
 	}
@@ -2325,8 +2324,7 @@ func TestChain_EvidenceV2PinnedKey(t *testing.T) {
 	evidence := filepath.Join(dir, "evidence.jsonl")
 	fix.writeEvidenceJSONL(t, evidence)
 
-	stdout, stderr, code := runRoot(t,
-		"chain",
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix",
 		"--key", fix.keyHex,
 		"--expect-signer-id", fix.keyHex,
 		"--expect-payload-kind", string(contractreceipt.PayloadShadowDelta),
@@ -2348,12 +2346,12 @@ func TestChain_EvidenceV2WithoutKeyFailsUnpinned(t *testing.T) {
 	evidence := filepath.Join(dir, "evidence.jsonl")
 	fix.writeEvidenceJSONL(t, evidence)
 
-	stdout, stderr, code := runRoot(t, "chain", evidence)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("unpinned v2 chain should fail, stdout=%q stderr=%q", stdout, stderr)
 	}
 	if !strings.Contains(stderr, "CHAIN UNPINNED") {
-		t.Fatalf("stderr = %q, want CHAIN UNPINNED", stderr)
+		t.Fatalf("stderr = %q, want prefix status", stderr)
 	}
 }
 
@@ -2364,12 +2362,12 @@ func TestChain_EvidenceV2AllowUnpinned(t *testing.T) {
 	evidence := filepath.Join(dir, "evidence.jsonl")
 	fix.writeEvidenceJSONL(t, evidence)
 
-	stdout, stderr, code := runRoot(t, "chain", "--allow-unpinned", evidence)
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--allow-unpinned", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("allow-unpinned v2 chain should pass, stdout=%q stderr=%q", stdout, stderr)
 	}
-	if !strings.Contains(stdout, "CHAIN UNPINNED") {
-		t.Fatalf("stdout = %q, want CHAIN UNPINNED", stdout)
+	if !strings.Contains(stdout, "VALID PREFIX, END UNPROVEN") {
+		t.Fatalf("stdout = %q, want prefix status", stdout)
 	}
 	if !strings.Contains(stdout, "signatures: not checked") {
 		t.Fatalf("stdout = %q, want signatures not checked", stdout)
@@ -2382,7 +2380,7 @@ func TestChain_EvidenceAliasDirMode(t *testing.T) {
 	dir := t.TempDir()
 	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
 
-	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+	stdout, stderr, code := runRoot(t, "evidence", "--allow-prefix", "--dir", "--key", fix.keyHex, dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("v2 evidence alias dir mode should pass, stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -2399,7 +2397,7 @@ func TestChain_EvidenceV2WrongPinnedKey(t *testing.T) {
 	evidence := filepath.Join(dir, "evidence.jsonl")
 	forged.writeEvidenceJSONL(t, evidence)
 
-	_, stderr, code := runRoot(t, "chain", "--key", legit.keyHex, evidence)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", "--key", legit.keyHex, evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("v2 chain signed by wrong key should fail, stderr=%q", stderr)
 	}
@@ -2411,7 +2409,7 @@ func TestChain_BadKey(t *testing.T) {
 	dir := t.TempDir()
 	fix.writePacketDir(t, dir, nil)
 	evidence := filepath.Join(dir, "evidence.jsonl")
-	_, _, code := runRoot(t, "chain", "--key", "not-a-key", evidence)
+	_, _, code := runRoot(t, "chain", "--allow-prefix", "--key", "not-a-key", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("invalid key should fail")
 	}
@@ -2424,7 +2422,7 @@ func TestChain_EmptyChain(t *testing.T) {
 	if err := os.WriteFile(evidence, []byte(""), 0o600); err != nil {
 		t.Fatalf("write empty: %v", err)
 	}
-	_, _, code := runRoot(t, "chain", evidence)
+	_, _, code := runRoot(t, "chain", "--allow-prefix", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("empty chain should fail")
 	}
@@ -2716,7 +2714,7 @@ func TestChain_EvidenceV2MalformedLine(t *testing.T) {
 	_, _ = f.WriteString(`{"type":"evidence_receipt","detail":"not-an-object"}` + "\n")
 	_ = f.Close()
 
-	_, stderr, code := runRoot(t, "chain", evidence)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("malformed evidence line should cause chain failure, stderr=%q", stderr)
 	}
@@ -2728,8 +2726,7 @@ func TestChain_EvidenceV2DirHappyPath(t *testing.T) {
 	dir := t.TempDir()
 	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
 
-	stdout, stderr, code := runRoot(t,
-		"chain", "--dir",
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir",
 		"--key", fix.keyHex,
 		"--expect-signer-id", fix.keyHex,
 		dir,
@@ -2747,7 +2744,7 @@ func TestChain_DirRejectsDisconnectedNonReceiptShard(t *testing.T) {
 	fix := newEvidenceFixture(t, 2)
 	dir := t.TempDir()
 	fix.writeRecorderEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
-	_, stderr, code := runRoot(t, "chain", "--dir", "--key", fix.keyHex, dir)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir", "--key", fix.keyHex, dir)
 	if code != cliutil.ExitOK {
 		t.Fatalf("positive control: %s", stderr)
 	}
@@ -2764,8 +2761,8 @@ func TestChain_DirRejectsDisconnectedNonReceiptShard(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "evidence-proxy-9999.jsonl"), append(line, '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stdout, stderr, code := runRoot(t, "chain", "--dir", "--key", fix.keyHex, dir)
-	if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") || !strings.Contains(stderr, "chain break: PrevHash") {
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir", "--key", fix.keyHex, dir)
+	if code == cliutil.ExitOK || strings.Contains(stdout, "VALID PREFIX, END UNPROVEN") || !strings.Contains(stderr, "chain break: PrevHash") {
 		t.Fatalf("disconnected shard: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
 }
@@ -2775,7 +2772,7 @@ func TestChain_BareEvidenceDirectoryCompatibility(t *testing.T) {
 	fix := newEvidenceFixture(t, 2)
 	dir := t.TempDir()
 	fix.writeEvidenceJSONL(t, filepath.Join(dir, "evidence-proxy-0.jsonl"))
-	stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
+	stdout, stderr, code := runRoot(t, "evidence", "--allow-prefix", "--dir", "--key", fix.keyHex, dir)
 	if code != cliutil.ExitOK || !strings.Contains(stdout, "record_type: evidence_receipt_v2") {
 		t.Fatalf("bare evidence directory: code=%d stdout=%s stderr=%s", code, stdout, stderr)
 	}
@@ -2806,8 +2803,8 @@ func TestChain_BareEvidenceCannotHideRecorderEntries(t *testing.T) {
 			if err := os.WriteFile(path, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			stdout, stderr, code := runRoot(t, "evidence", "--dir", "--key", fix.keyHex, dir)
-			if code == cliutil.ExitOK || strings.Contains(stdout, "CHAIN VALID") {
+			stdout, stderr, code := runRoot(t, "evidence", "--allow-prefix", "--dir", "--key", fix.keyHex, dir)
+			if code == cliutil.ExitOK || strings.Contains(stdout, "VALID PREFIX, END UNPROVEN") {
 				t.Fatalf("invalid evidence accepted: stdout=%s stderr=%s", stdout, stderr)
 			}
 		})
@@ -2825,8 +2822,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	}
 	fix.writeRecorderEvidenceJSONL(t, filepath.Join(locationDir, "evidence-proxy-0.jsonl"))
 
-	stdout, stderr, code := runRoot(t,
-		"chain", "--dir",
+	stdout, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir",
 		"--location", filepath.ToSlash(locationID),
 		"--key", fix.keyHex,
 		"--expect-signer-id", fix.keyHex,
@@ -2838,7 +2834,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 	if !strings.Contains(stdout, "signatures: verified") {
 		t.Errorf("expected signatures verified, got stdout=%q", stdout)
 	}
-	stdout, stderr, code = runRoot(t, "chain", "--dir", "--key", fix.keyHex, root)
+	stdout, stderr, code = runRoot(t, "chain", "--allow-prefix", "--dir", "--key", fix.keyHex, root)
 	if code != cliutil.ExitOK {
 		t.Fatalf("implicit location should pass, stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -2847,7 +2843,7 @@ func TestChain_EvidenceV2DirLocationSelector(t *testing.T) {
 		t.Fatalf("create nested location: %v", err)
 	}
 	fix.writeRecorderEvidenceJSONL(t, filepath.Join(nestedDir, "evidence-proxy-0.jsonl"))
-	stdout, stderr, code = runRoot(t, "chain", "--dir", "--location", filepath.ToSlash(locationID), "--key", fix.keyHex, root)
+	stdout, stderr, code = runRoot(t, "chain", "--allow-prefix", "--dir", "--location", filepath.ToSlash(locationID), "--key", fix.keyHex, root)
 	if code != cliutil.ExitOK {
 		t.Fatalf("selected parent location should not be resolved twice, stdout=%q stderr=%q", stdout, stderr)
 	}
@@ -2874,7 +2870,7 @@ func TestChain_EvidenceV2DirMalformed(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("not valid jsonl\n"), 0o600); err != nil {
 		t.Fatalf("write bad: %v", err)
 	}
-	_, stderr, code := runRoot(t, "chain", "--dir", dir)
+	_, stderr, code := runRoot(t, "chain", "--allow-prefix", "--dir", dir)
 	if code == cliutil.ExitOK {
 		t.Fatalf("malformed dir evidence should fail, stderr=%q", stderr)
 	}
@@ -2910,7 +2906,7 @@ func TestChain_EvidenceV2ExpectMismatch(t *testing.T) {
 			dir := t.TempDir()
 			evidence := filepath.Join(dir, "evidence.jsonl")
 			fix.writeEvidenceJSONL(t, evidence)
-			args := append([]string{"chain", "--key", fix.keyHex}, tt.args...)
+			args := append([]string{"chain", "--allow-prefix", "--key", fix.keyHex}, tt.args...)
 			args = append(args, evidence)
 			_, stderr, code := runRoot(t, args...)
 			if code == cliutil.ExitOK {
@@ -3110,7 +3106,7 @@ func TestChain_EvidenceV2WithExpectFlagsOnV1Fails(t *testing.T) {
 
 	// Pass --expect-signer-id on a v1 chain. The chain subcommand should
 	// reject the mismatch and exit non-zero.
-	_, _, code := runRoot(t, "chain", "--expect-signer-id", "some-id", evidence)
+	_, _, code := runRoot(t, "chain", "--allow-prefix", "--expect-signer-id", "some-id", evidence)
 	if code == cliutil.ExitOK {
 		t.Fatalf("v2 expect flags on v1 chain should fail")
 	}

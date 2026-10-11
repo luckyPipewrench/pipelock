@@ -108,7 +108,7 @@ test("explicit file paths resolve symlinks before parent traversal", () => {
     ]) {
       writeFileSync(pathA, aData);
       writeFileSync(pathB, bData);
-      const r = spawnSync("node", [CLI, "chain", input, "--key", key, "--json"], {
+      const r = spawnSync("node", [CLI, "chain", "--allow-prefix", input, "--key", key, "--json"], {
         encoding: "utf8",
       });
       if (wantOK) {
@@ -138,7 +138,7 @@ test("directory mode refuses a symlink anywhere on the walked root path", () => 
     symlinkSync(join(dir, "b", "sub"), join(dir, "a", "link"));
     symlinkSync(realEv, join(dir, "evlink"));
     const run = (target: string) =>
-      spawnSync("node", [CLI, "chain", target, "--dir", "--key", key, "--json"], {
+      spawnSync("node", [CLI, "chain", "--allow-prefix", target, "--dir", "--key", key, "--json"], {
         encoding: "utf8",
       });
     const ok = run(realEv);
@@ -172,10 +172,14 @@ test(
         [`${drive}ev`, ["--dir"]],
         [`${drive}ev\\${name}`, []],
       ] as const) {
-        const result = spawnSync("node", [CLI, "chain", target, ...flags, "--key", key, "--json"], {
-          cwd: dir,
-          encoding: "utf8",
-        });
+        const result = spawnSync(
+          "node",
+          [CLI, "chain", "--allow-prefix", target, ...flags, "--key", key, "--json"],
+          {
+            cwd: dir,
+            encoding: "utf8",
+          },
+        );
         assert.equal(result.status, 0, `${target}: ${result.stdout}${result.stderr}`);
         assert.equal((JSON.parse(result.stdout) as ChainReport).valid, true);
       }
@@ -198,10 +202,14 @@ test(
       cpSync(join(fixtures, "tampered-predecessor"), join(dir, "ev"), { recursive: true });
       // One entry named `s\..`, a symlink the open follows to elsewhere/.
       symlinkSync("elsewhere", join(dir, "s\\.."));
-      const r = spawnSync("node", [CLI, "chain", "s\\../ev", "--dir", "--key", key, "--json"], {
-        cwd: dir,
-        encoding: "utf8",
-      });
+      const r = spawnSync(
+        "node",
+        [CLI, "chain", "--allow-prefix", "s\\../ev", "--dir", "--key", key, "--json"],
+        {
+          cwd: dir,
+          encoding: "utf8",
+        },
+      );
       assert.equal(r.status, 1, `${r.stdout}${r.stderr}`);
       const report = JSON.parse(r.stdout) as ChainReport;
       assert.equal(report.valid, false);
@@ -220,7 +228,7 @@ test("directory mode fails when a non-directory precedes a parent step", () => {
     cpSync(join(fixtures, "valid"), join(dir, "ev"), { recursive: true });
     writeFileSync(join(dir, "afile"), "");
     const run = (target: string) =>
-      spawnSync("node", [CLI, "chain", target, "--dir", "--key", key, "--json"], {
+      spawnSync("node", [CLI, "chain", "--allow-prefix", target, "--dir", "--key", key, "--json"], {
         cwd: dir,
         encoding: "utf8",
       });
@@ -270,17 +278,25 @@ test("an explicit symlink cannot claim a different recorder session", () => {
     symlinkSync(source, matchingAlias);
     symlinkSync(source, mismatchedAlias);
 
-    const matching = spawnSync("node", [CLI, "chain", matchingAlias, "--key", key, "--json"], {
-      encoding: "utf8",
-    });
+    const matching = spawnSync(
+      "node",
+      [CLI, "chain", "--allow-prefix", matchingAlias, "--key", key, "--json"],
+      {
+        encoding: "utf8",
+      },
+    );
     assert.equal(matching.status, 0, `${matching.stdout}${matching.stderr}`);
     const matchingReport = JSON.parse(matching.stdout) as ChainReport;
     assert.equal(matchingReport.valid, true);
     assert.equal(matchingReport.path, matchingAlias);
 
-    const mismatched = spawnSync("node", [CLI, "chain", mismatchedAlias, "--key", key, "--json"], {
-      encoding: "utf8",
-    });
+    const mismatched = spawnSync(
+      "node",
+      [CLI, "chain", "--allow-prefix", mismatchedAlias, "--key", key, "--json"],
+      {
+        encoding: "utf8",
+      },
+    );
     assert.equal(mismatched.status, 1, `${mismatched.stdout}${mismatched.stderr}`);
     const report = JSON.parse(mismatched.stdout) as ChainReport;
     assert.equal(report.valid, false);
@@ -300,7 +316,9 @@ for (const name of classes) {
       for (const cell of exp.cells) {
         const label = `${name} ${cell.mode} ${cell.target} keys=${cell.keys.join("+")} endorsements=${cell.endorsements.length}`;
         const args =
-          cell.mode === "file" ? ["chain", join(dir, cell.target)] : ["chain", dir, "--dir"];
+          cell.mode === "file"
+            ? ["chain", "--allow-prefix", join(dir, cell.target)]
+            : ["chain", "--allow-prefix", dir, "--dir"];
         if (cell.mode === "session") args.push("--session-id", cell.target);
         for (const k of cell.keys) args.push("--key", join(dir, k));
         for (const e of cell.endorsements) args.push("--rotation-endorsement", join(dir, e));

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	sigutil "github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
@@ -82,7 +83,10 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 
 // emitChainReport mirrors emitReport for the chain subcommand.
 func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
-	if r.Valid && (r.RecordType != recordTypeEvidenceV2 || !r.HeadVerified) {
+	if !r.Valid || r.Integrity == "" {
+		r.Report = endproof.New(r.Valid, "receipt_chain")
+	}
+	if r.Valid && !r.EndProof.Proven {
 		r.Warnings = append(r.Warnings, unanchoredChainWarning)
 	}
 	if jsonMode {
@@ -90,11 +94,16 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 		return
 	}
 	if r.Valid {
-		if r.Unpinned {
+		if !r.EndProof.Proven {
+			_, _ = fmt.Fprintf(stdout, "%s: %s\n", endproof.Prefix, r.Path)
+		} else if r.Unpinned {
 			_, _ = fmt.Fprintf(stdout, "CHAIN UNPINNED: %s\n", r.Path)
 			_, _ = fmt.Fprintf(stdout, "  warning:    %s\n", unpinnedReceiptBanner)
 		} else {
 			_, _ = fmt.Fprintf(stdout, "CHAIN VALID: %s\n", r.Path)
+		}
+		if r.Unpinned && !r.EndProof.Proven {
+			_, _ = fmt.Fprintf(stdout, "  warning:    %s\n", unpinnedReceiptBanner)
 		}
 		if r.RecordType != "" {
 			_, _ = fmt.Fprintf(stdout, "  record_type: %s\n", r.RecordType)
@@ -109,21 +118,15 @@ func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
 			} else {
 				_, _ = fmt.Fprintln(stdout, "  signatures: not checked (self-consistency only; pass --key for provenance)")
 			}
-			// Completeness is reported, never enforced by default. Every other
-			// check passes on any valid PREFIX of a chain, so a VALID verdict
-			// alone cannot tell an operator that nothing was dropped from the
-			// end. Saying so is the point: an unstated limit reads as a
-			// guarantee. Unlike the unpinned-signature case this does not gate
-			// validity, because no head is available to pin until an external
-			// anchor ships, and failing every existing chain by default would
-			// be an outage rather than a safeguard.
-			if r.HeadVerified {
+			if !r.EndProof.Proven {
+				_, _ = fmt.Fprintf(stdout, "  completeness: %s (pass --expect-head with an independently known head hash)\n", endproof.Prefix)
+			} else if r.HeadVerified {
 				_, _ = fmt.Fprintln(stdout, "  completeness: head verified (no trailing entries dropped)")
 			} else {
-				_, _ = fmt.Fprintln(stdout, "  completeness: not proven (a truncated chain also verifies; pass --expect-head with a trusted head hash)")
+				_, _ = fmt.Fprintln(stdout, "  completeness: endpoint verified")
 			}
 		}
-		if r.RecordType != recordTypeEvidenceV2 {
+		if !r.EndProof.Proven {
 			_, _ = fmt.Fprintln(stdout, "  WARNING: "+unanchoredChainWarning)
 		}
 

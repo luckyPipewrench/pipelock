@@ -6,6 +6,7 @@ package contain
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // runtimeSocketProperties is independent of the optional filesystem profile.
@@ -14,6 +15,17 @@ import (
 // over loopback through its separately confined forwarder.
 func runtimeSocketProperties() []string {
 	return append(runtimeSocketMountProperties(), "BindReadOnlyPaths="+containedNamespaceIdentityPath)
+}
+
+// runtimeSocketTemporaryFileSystems preserves the mount options used by every
+// managed unit, including the optional separate /var/run mount.
+func runtimeSocketTemporaryFileSystems() []string {
+	properties := runtimeSocketMountProperties()
+	mounts := make([]string, 0, len(properties))
+	for _, property := range properties {
+		mounts = append(mounts, strings.TrimPrefix(property, "TemporaryFileSystem="))
+	}
+	return mounts
 }
 
 func runtimeSocketMountProperties() []string {

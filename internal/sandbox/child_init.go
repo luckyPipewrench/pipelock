@@ -158,7 +158,7 @@ func RunInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] launch outcome: REFUSED: %v\n", outcomeErr)
 		exitSandboxProcess(1)
 	}
-	reportAppliedLaunchOutcome(os.Stderr, outcome)
+	reportAppliedLaunchOutcome(os.Stderr, outcome, llStatus.Version)
 
 	// Mapped launches remain here until the parent has made itself
 	// non-dumpable. This gate covers both the direct exec below and bridge-mode

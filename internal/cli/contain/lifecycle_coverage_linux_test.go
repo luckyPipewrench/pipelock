@@ -181,7 +181,7 @@ func TestLifecycleSupervisionPreservesMultilineArgv(t *testing.T) {
 		return actions != 0, nil
 	}
 	b.action = func(_ context.Context, unit string, args ...string) error {
-		if unit != l.record.Unit || !slices.Equal(args, []string{"--no-block", "stop"}) || observations != 4 || typedReads != 2 || !l.record.AdmissionObserved || !l.record.ArgvObserved {
+		if unit != l.record.Unit || !slices.Equal(args, []string{"--no-block", "stop"}) || observations != 6 || typedReads != 2 || !l.record.AdmissionObserved || !l.record.ArgvObserved {
 			t.Fatalf("action lacked confirmed ownership: %s %v observations=%d typed=%d record=%+v", unit, args, observations, typedReads, l.record)
 		}
 		actions++
@@ -192,7 +192,7 @@ func TestLifecycleSupervisionPreservesMultilineArgv(t *testing.T) {
 	done := make(chan error, 1)
 	l.save = func(record containLifecycleRecord) error {
 		if record.Phase == "admitted" {
-			if observations != 2 || typedReads != 1 || !record.ArgvObserved || record.InvocationID != fields["InvocationID"] {
+			if observations != 4 || typedReads != 1 || !record.ArgvObserved || record.InvocationID != fields["InvocationID"] {
 				t.Fatalf("admission lacked typed command confirmation: %+v", record)
 			}
 			done <- nil
@@ -202,7 +202,7 @@ func TestLifecycleSupervisionPreservesMultilineArgv(t *testing.T) {
 	if err := superviseLifecycleService(context.Background(), done, func() { done <- nil }, l, 966, b); err != nil {
 		t.Fatal(err)
 	}
-	if observations != 5 || typedReads != 2 || actions != 1 || !l.record.Final || !l.record.CleanupComplete || !l.record.CgroupEmpty || l.record.Phase != "complete" {
+	if observations != 7 || typedReads != 2 || actions != 1 || !l.record.Final || !l.record.CleanupComplete || !l.record.CgroupEmpty || l.record.Phase != "complete" {
 		t.Fatalf("incomplete multiline supervision: observations=%d typed=%d actions=%d record=%+v", observations, typedReads, actions, l.record)
 	}
 }
@@ -461,7 +461,7 @@ func TestLifecyclePendingAdmissionBindsOnlyAfterTypedConfirmation(t *testing.T) 
 			return map[string]string{"Id": unit, "LoadState": "not-found"}, nil
 		case 2:
 			observed["ActiveState"], observed["InvocationID"], observed["ControlGroup"] = "activating", "", ""
-		case 5:
+		case 7:
 			observed["ActiveState"], observed["MainPID"] = "inactive", "0"
 		}
 		return observed, nil
@@ -487,7 +487,7 @@ func TestLifecyclePendingAdmissionBindsOnlyAfterTypedConfirmation(t *testing.T) 
 	done := make(chan error, 1)
 	l.save = func(record containLifecycleRecord) error {
 		if record.Phase == "admitted" {
-			if observations != 4 || !record.ArgvObserved || record.InvocationID != fields["InvocationID"] || record.ControlGroup != fields["ControlGroup"] {
+			if observations != 6 || !record.ArgvObserved || record.InvocationID != fields["InvocationID"] || record.ControlGroup != fields["ControlGroup"] {
 				t.Fatalf("unconfirmed admission: observations=%d record=%+v", observations, record)
 			}
 			done <- nil
@@ -497,7 +497,7 @@ func TestLifecyclePendingAdmissionBindsOnlyAfterTypedConfirmation(t *testing.T) 
 	if err := superviseLifecycleService(context.Background(), done, func() {}, l, 966, b); err != nil {
 		t.Fatal(err)
 	}
-	if observations != 5 || polls != 2 || typedReads != 1 || !l.record.Final || !l.record.CleanupComplete || !l.record.CgroupEmpty || l.record.Phase != "complete" {
+	if observations != 7 || polls != 2 || typedReads != 1 || !l.record.Final || !l.record.CleanupComplete || !l.record.CgroupEmpty || l.record.Phase != "complete" {
 		t.Fatalf("observations=%d polls=%d typed=%d record=%+v", observations, polls, typedReads, l.record)
 	}
 }

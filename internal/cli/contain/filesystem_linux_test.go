@@ -493,14 +493,14 @@ func enforceLifecycleRecord(fields map[string]string) containLifecycleRecord {
 	fields["NoNewPrivileges"] = "yes"
 	fields["BindReadOnlyPaths"] = ""
 	fields["InaccessiblePaths"] = "/etc/pipelock/tls"
-	fields["TemporaryFileSystem"] = "/dev/shm"
+	fields["TemporaryFileSystem"] = strings.Join(runtimeSocketTemporaryFileSystems(), " ")
 	fields["ProtectKernelTunables"] = "yes"
 	fields["ProtectKernelModules"] = "yes"
 	fields["ProtectControlGroups"] = "yes"
 	record := containLifecycleRecord{
 		FilesystemMode:                  config.ContainmentFilesystemModeEnforce,
 		FilesystemInaccessiblePaths:     []string{"/etc/pipelock/tls"},
-		FilesystemTemporaryFileSystem:   "/dev/shm",
+		FilesystemTemporaryFileSystem:   fields["TemporaryFileSystem"],
 		FilesystemProtectKernelTunables: "yes",
 		FilesystemProtectKernelModules:  "yes",
 		FilesystemProtectControlGroups:  "yes",

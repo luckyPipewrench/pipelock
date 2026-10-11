@@ -39,8 +39,9 @@ func startSandboxTarget(cmd *exec.Cmd, filesystem LayerStatus) error {
 // restrictTargetUnixSockets installs a thread-local, inherited filter. Its
 // caller must remain pinned until exec/fork or retire the thread. Socketpairs
 // are also denied: a datagram pair can be redirected to a pathname address.
-// Receiving ancillary descriptors is denied so inherited IPC cannot import
-// new host socket capabilities.
+// All recvmsg/recvmmsg calls are denied: classic BPF cannot inspect msghdr to
+// distinguish ordinary messages from ancillary descriptor imports. Inherited
+// Unix descriptors can still send; this filter does not revoke existing fds.
 func restrictTargetUnixSockets() error {
 	filter := targetUnixSocketFilter()
 	// #nosec G115 -- the fixed filter below is far shorter than 65536 entries.

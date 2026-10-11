@@ -21,12 +21,14 @@ func lifecycleFixture() (*containRunLifecycle, map[string]string) {
 	runID := strings.Repeat("a", 32)
 	unit := "pipelock-contain-" + runID + ".service"
 	l := &containRunLifecycle{record: containLifecycleRecord{Schema: 1, RunID: runID, Unit: unit}, save: func(containLifecycleRecord) error { return nil }, close: func() error { return nil }, argv: []string{defaultLaunchScript, "node", "driver.mjs"}}
+	l.record.FilesystemTemporaryFileSystem = strings.Join(runtimeSocketTemporaryFileSystems(), " ")
 	fields := map[string]string{
 		"Id": unit, "LoadState": "loaded", "ActiveState": "active", "SubState": "running", "MainPID": "123",
 		"Transient": "yes", "Description": lifecycleDescriptionPrefix + runID, "InvocationID": strings.Repeat("b", 32),
 		"ControlGroup": "/system.slice/" + unit, "User": "966",
 		"PrivateNetwork": "yes", "PrivateTmp": "yes", "JoinsNamespaceOf": containedNetworkNamespaceUnit,
 		"KillMode": "control-group", "SendSIGKILL": "yes", "Restart": "no",
+		"TemporaryFileSystem": l.record.FilesystemTemporaryFileSystem,
 	}
 	return l, fields
 }

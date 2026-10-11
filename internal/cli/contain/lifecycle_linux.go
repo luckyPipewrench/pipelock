@@ -481,7 +481,7 @@ func lifecycleOwned(fields map[string]string, record containLifecycleRecord, uid
 // not decide whether the unit is the reserved invocation.
 func confirmLifecycleFilesystem(ctx context.Context, b lifecycleBackend, fields map[string]string, record containLifecycleRecord) error {
 	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
-		return nil
+		return lifecycleFilesystemOwned(fields, record, nil)
 	}
 	observed, err := observeLifecycleBinds(ctx, b, record.Unit, fields)
 	if err != nil {
@@ -577,6 +577,13 @@ func lifecycleFilesystemBindsMatch(observed *lifecycleBindObservation, record co
 }
 
 func lifecycleFilesystemOwned(fields map[string]string, record containLifecycleRecord, binds *lifecycleBindObservation) error {
+	mounts, err := parseSystemdPathList(record.FilesystemTemporaryFileSystem)
+	if err != nil || !samePathSet(mounts, runtimeSocketTemporaryFileSystems()) {
+		return errors.New("lifecycle temporary filesystem record differs from managed launch")
+	}
+	if err := sameLifecyclePathList(fields["TemporaryFileSystem"], mounts); err != nil {
+		return fmt.Errorf("lifecycle temporary filesystem: %w", err)
+	}
 	if record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
 		return nil
 	}
@@ -604,22 +611,12 @@ func lifecycleFilesystemOwned(fields map[string]string, record containLifecycleR
 	if err := sameLifecyclePathList(fields["InaccessiblePaths"], record.FilesystemInaccessiblePaths); err != nil {
 		return fmt.Errorf("lifecycle inaccessible paths: %w", err)
 	}
-	if err := sameLifecyclePathList(fields["TemporaryFileSystem"], lifecyclePathSingleton(record.FilesystemTemporaryFileSystem)); err != nil {
-		return fmt.Errorf("lifecycle temporary filesystem: %w", err)
-	}
 	if !systemdShowYes(fields["ProtectKernelTunables"], record.FilesystemProtectKernelTunables) ||
 		!systemdShowYes(fields["ProtectKernelModules"], record.FilesystemProtectKernelModules) ||
 		!systemdShowYes(fields["ProtectControlGroups"], record.FilesystemProtectControlGroups) {
 		return errors.New("lifecycle kernel protection differs from managed launch")
 	}
 	return nil
-}
-
-func lifecyclePathSingleton(path string) []string {
-	if strings.TrimSpace(path) == "" {
-		return nil
-	}
-	return []string{path}
 }
 
 func sameLifecyclePathList(got string, want []string) error {
@@ -729,9 +726,6 @@ func retryLifecycleTypedObservation(ctx context.Context, b lifecycleBackend, res
 // failure leaves that witness in place and does not admit the unit. An
 // invocation that changed during the read is not admitted either.
 func lifecycleFilesystemAdmission(ctx context.Context, b lifecycleBackend, l *containRunLifecycle, uid uint32) error {
-	if l.record.FilesystemMode != config.ContainmentFilesystemModeEnforce {
-		return nil
-	}
 	witnessedID := l.record.InvocationID
 	return retryLifecycleTypedObservation(ctx, b, 0, func() error {
 		current, err := b.show(ctx, l.record.Unit)
@@ -863,11 +857,11 @@ func launchContainedAgentLifecycleWithBackend(opts containedAgentCommandOptions,
 		return err
 	}
 	l.record.FilesystemMode = opts.filesystem.Mode
+	l.record.FilesystemTemporaryFileSystem = strings.Join(runtimeSocketTemporaryFileSystems(), " ")
 	if opts.filesystem.Mode == config.ContainmentFilesystemModeEnforce {
 		l.record.FilesystemBindPaths = append([]string(nil), opts.filesystem.BindPaths...)
 		l.record.FilesystemBindReadOnlyPaths = append([]string(nil), opts.filesystem.BindReadOnlyPaths...)
 		l.record.FilesystemInaccessiblePaths = filesystemInaccessiblePaths(opts.filesystem.Properties)
-		l.record.FilesystemTemporaryFileSystem = "/dev/shm"
 		l.record.FilesystemProtectKernelTunables = "yes"
 		l.record.FilesystemProtectKernelModules = "yes"
 		l.record.FilesystemProtectControlGroups = "yes"

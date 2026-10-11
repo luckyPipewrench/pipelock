@@ -100,7 +100,11 @@ func TestLifecycleFilesystemMatchRejectsAMissingObservation(t *testing.T) {
 	if err := lifecycleFilesystemBindsMatch(observed, l.record); err == nil || !strings.Contains(err.Error(), "read-only") {
 		t.Fatalf("mismatch = %v", err)
 	}
-	if err := confirmLifecycleFilesystem(context.Background(), lifecycleBackend{}, map[string]string{}, containLifecycleRecord{}); err != nil {
+	if err := confirmLifecycleFilesystem(context.Background(), lifecycleBackend{}, map[string]string{}, containLifecycleRecord{}); err == nil {
+		t.Fatal("missing runtime mount record was admitted")
+	}
+	off, fields := lifecycleFixture()
+	if err := confirmLifecycleFilesystem(context.Background(), lifecycleBackend{}, fields, off.record); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -113,7 +117,7 @@ func TestLifecycleFilesystemOwnedUsesDisplayTextWhenBindsAreAbsent(t *testing.T)
 	l.record.FilesystemMode = config.ContainmentFilesystemModeEnforce
 	l.record.FilesystemBindPaths = []string{"/srv/agent:/srv/agent:norbind"}
 	l.record.FilesystemBindReadOnlyPaths = []string{"/tmp/.X11-unix/X0:/tmp/.X11-unix/X0:rbind"}
-	l.record.FilesystemTemporaryFileSystem = "/dev/shm"
+	l.record.FilesystemTemporaryFileSystem = strings.Join(runtimeSocketTemporaryFileSystems(), " ")
 	l.record.FilesystemProtectKernelTunables = "yes"
 	l.record.FilesystemProtectKernelModules = "yes"
 	l.record.FilesystemProtectControlGroups = "yes"
@@ -131,7 +135,7 @@ func TestLifecycleFilesystemOwnedUsesDisplayTextWhenBindsAreAbsent(t *testing.T)
 	}
 	fields["BindReadOnlyPaths"] = "/tmp/.X11-unix/X1:/tmp/.X11-unix/X1:rbind"
 	fields["InaccessiblePaths"] = "/etc/pipelock/tls"
-	fields["TemporaryFileSystem"] = "/dev/shm"
+	fields["TemporaryFileSystem"] = l.record.FilesystemTemporaryFileSystem
 	fields["ProtectKernelTunables"] = "yes"
 	fields["ProtectKernelModules"] = "yes"
 	fields["ProtectControlGroups"] = "yes"
@@ -141,9 +145,6 @@ func TestLifecycleFilesystemOwnedUsesDisplayTextWhenBindsAreAbsent(t *testing.T)
 }
 
 func TestLifecyclePathListsAndShowYes(t *testing.T) {
-	if lifecyclePathSingleton(" ") != nil {
-		t.Fatal("blank path became a list")
-	}
 	if err := sameLifecyclePathList(`"unterminated`, []string{"/etc/pipelock/tls"}); err == nil {
 		t.Fatal("accepted an unbalanced path list")
 	}
@@ -292,7 +293,7 @@ func TestLaunchRecordsFilesystemProfileBeforeTheClientStarts(t *testing.T) {
 	}
 	if l.record.FilesystemMode != config.ContainmentFilesystemModeEnforce ||
 		len(l.record.FilesystemBindPaths) != 1 ||
-		l.record.FilesystemTemporaryFileSystem != "/dev/shm" ||
+		l.record.FilesystemTemporaryFileSystem != strings.Join(runtimeSocketTemporaryFileSystems(), " ") ||
 		l.record.FilesystemProtectKernelTunables != "yes" ||
 		!strings.Contains(strings.Join(l.record.FilesystemInaccessiblePaths, ","), "/etc/pipelock/tls") {
 		t.Fatalf("record = %+v", l.record)

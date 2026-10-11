@@ -98,7 +98,8 @@ func SetNoNewPrivs() error {
 
 // buildSeccompFilter constructs a BPF filter program that:
 // - Validates architecture is x86_64 (KILL on mismatch - prevents 32-bit ABI bypass)
-// - Kills the process on critical violations (kexec, kernel modules, io_uring)
+// - Kills the process on critical violations (kexec, kernel modules)
+// - Returns EPERM for io_uring and other blocked syscalls
 // - Applies argument-level filtering for clone, personality, and socket
 // - Allows a curated syscall set (Go + Python + Node.js compatible)
 // - Returns EPERM for other blocked syscalls.

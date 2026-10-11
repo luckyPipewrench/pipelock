@@ -243,7 +243,7 @@ func RunStandaloneInit() {
 		_, _ = fmt.Fprintf(os.Stderr, "[sandbox] launch outcome: REFUSED: %v\n", outcomeErr)
 		exitSandboxProcess(1)
 	}
-	reportAppliedLaunchOutcome(os.Stderr, outcome)
+	reportAppliedLaunchOutcome(os.Stderr, outcome, llStatus.Version)
 	_, _ = fmt.Fprintf(os.Stderr, "[sandbox] bridge proxy: %s → %s\n", bridge.Addr(), socketPath)
 
 	if useDeveloperEnvironment {

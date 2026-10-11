@@ -58,6 +58,9 @@ func newDoctorEnv(t *testing.T, run scriptedRun) *doctorEnv {
 	env.filesystemProbe = func(context.Context, *probeEnv) (string, string) {
 		return statusFilesystemOff, "filesystem profile: off"
 	}
+	env.runtimeSocketProbe = func(context.Context, *doctorEnv) doctorResult {
+		return pass("managed runtime socket mounts are present")
+	}
 	return env
 }
 
@@ -806,7 +809,7 @@ func TestRunDoctor_TextAllPass(t *testing.T) {
 		t.Fatalf("runDoctor: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "9 PASS") || !strings.Contains(out, "exit 0") {
+	if !strings.Contains(out, "10 PASS") || !strings.Contains(out, "exit 0") {
 		t.Fatalf("unexpected output:\n%s", out)
 	}
 }
@@ -826,7 +829,7 @@ func TestRunDoctor_JSONAllPass(t *testing.T) {
 	}
 	if !strings.Contains(out, `"check":7,"name":"managed_chain_structure"`) ||
 		!strings.Contains(out, `"check":8,"name":"managed_doorway_sockets"`) ||
-		!strings.Contains(out, `"total":9`) {
+		!strings.Contains(out, `"total":10`) {
 		t.Fatalf("JSON missing managed-chain check or correct total:\n%s", out)
 	}
 	doorwaySockets := 0
@@ -947,15 +950,15 @@ func TestRunDoctor_MixedOutcomesPreserveWorstResultInTextAndJSON(t *testing.T) {
 				if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 					t.Fatalf("decode aggregate: %v\n%s", err, out)
 				}
-				if agg.Aggregate.Pass != 5 || agg.Aggregate.Fail != 1 ||
+				if agg.Aggregate.Pass != 6 || agg.Aggregate.Fail != 1 ||
 					agg.Aggregate.Skip != 1 || agg.Aggregate.Unknown != 1 ||
 					agg.Aggregate.Off != 1 ||
 					agg.Aggregate.ExitCode != cliutil.ExitGeneral {
-					t.Fatalf("mixed aggregate = %+v, want 5 pass / 1 fail / 1 skip / 1 unknown / 1 off / exit 1", agg.Aggregate)
+					t.Fatalf("mixed aggregate = %+v, want 6 pass / 1 fail / 1 skip / 1 unknown / 1 off / exit 1", agg.Aggregate)
 				}
 				return
 			}
-			if !strings.Contains(out, "5 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN / 1 OFF — exit 1") {
+			if !strings.Contains(out, "6 PASS / 1 FAIL / 1 SKIP / 1 UNKNOWN / 1 OFF — exit 1") {
 				t.Fatalf("text lost a mixed outcome or fail precedence:\n%s", out)
 			}
 		})
@@ -1001,8 +1004,8 @@ func TestRunDoctor_RecordAndAggregateWriteFailuresFailClosed(t *testing.T) {
 		want             string
 	}{
 		{name: "text check", successfulWrites: 1, want: "writing check 1 text"},
-		{name: "text aggregate", successfulWrites: 11, want: "writing doctor aggregate"},
-		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 9, want: "encoding aggregate JSON"},
+		{name: "text aggregate", successfulWrites: 12, want: "writing doctor aggregate"},
+		{name: "JSON aggregate", jsonOutput: true, successfulWrites: 10, want: "encoding aggregate JSON"},
 	}
 
 	for _, tc := range tests {
@@ -1344,7 +1347,7 @@ func TestRunDoctorAggregateCountsConfiguredDisplayChecks(t *testing.T) {
 	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &agg); err != nil {
 		t.Fatal(err)
 	}
-	if agg.Aggregate.Total != 13 || len(lines) != 14 {
-		t.Fatalf("aggregate total = %d, records = %d; want 13 checks", agg.Aggregate.Total, len(lines)-1)
+	if agg.Aggregate.Total != 14 || len(lines) != 15 {
+		t.Fatalf("aggregate total = %d, records = %d; want 14 checks", agg.Aggregate.Total, len(lines)-1)
 	}
 }

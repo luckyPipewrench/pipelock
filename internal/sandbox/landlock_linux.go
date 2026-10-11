@@ -31,7 +31,7 @@ func ApplyLandlock(policy Policy, proxySocket ...string) (LayerStatus, error) {
 		status.Reason = "landlock ABI version 0 (not supported)"
 		return status, fmt.Errorf("%w: ABI version 0", ErrUnavailable)
 	}
-	status.Version = abi
+	status.Version = min(abi, 9) // V9.BestEffort applies no rights newer than V9.
 
 	// Build path rules from policy. BestEffort automatically downgrades
 	// access rights the kernel doesn't support. IgnoreIfMissing skips

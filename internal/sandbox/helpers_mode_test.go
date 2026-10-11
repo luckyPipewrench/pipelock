@@ -273,7 +273,7 @@ func TestReportAppliedLaunchOutcome(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			reportAppliedLaunchOutcome(&buf, tt.outcome)
+			reportAppliedLaunchOutcome(&buf, tt.outcome, 9)
 			for _, want := range tt.want {
 				if got := buf.String(); !strings.Contains(got, want) {
 					t.Fatalf("outcome output = %q, want substring %q", got, want)

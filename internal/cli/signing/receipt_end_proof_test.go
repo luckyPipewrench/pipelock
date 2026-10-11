@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/contract/proxydecision"
 	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
@@ -370,4 +371,88 @@ func buildRunSealedRecorderJSONL(t *testing.T) (string, ed25519.PublicKey) {
 		t.Fatalf("run-session recorder files = %v, %v", matches, err)
 	}
 	return matches[0], priv.Public().(ed25519.PublicKey)
+}
+
+// An evidence-only recorder has no transcript_root to seal, so whole-recorder
+// verification can never prove its end. --allow-prefix must accept that valid
+// prefix instead of reporting it as invalid evidence, and a pin stays a check
+// that cannot stand in for the missing seal.
+func TestWholeRecorderEvidenceOnlyPrefix(t *testing.T) {
+	dir := t.TempDir()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, err := recorder.New(recorder.Config{Enabled: true, Dir: dir, SignCheckpoints: true}, nil, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := recorder.AcquireRunSession(rec, recorder.DefaultSessionBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v2 := proxydecision.NewEmitter(proxydecision.EmitterConfig{Recorder: rec, Signer: proxydecision.NewKeyedSigner(priv), Sanitize: proxydecision.SanitizeFromRedactor(rec.ReceiptRedactor()), Principal: "local", Actor: "pipelock", Session: session})
+	for range 2 {
+		if err := v2.Emit(proxydecision.Decision{ActionType: "http_request", Transport: "forward", Target: "https://api.vendor.example/a", Verdict: "allow", WinningSource: proxydecision.SourceScanner, PolicySources: []string{proxydecision.SourceScanner}, PolicyHash: strings.Repeat("b", 64)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := rec.Close(); err != nil {
+		t.Fatal(err)
+	}
+	files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(files) != 1 {
+		t.Fatalf("recorder files = %v, %v", files, err)
+	}
+	key := hex.EncodeToString(pub)
+	var head string
+	{
+		cmd := VerifyReceiptCmd()
+		var out bytes.Buffer
+		cmd.SetOut(&out)
+		cmd.SetArgs([]string{files[0], "--key", key, "--allow-prefix", "--json"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		var report struct {
+			Chains []chainCLIReport `json:"chains"`
+		}
+		if err := json.Unmarshal(out.Bytes(), &report); err != nil || len(report.Chains) != 1 {
+			t.Fatalf("report %q: %v", out.String(), err)
+		}
+		head = report.Chains[0].RootHash
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		code int
+	}{
+		{"file", []string{files[0]}, 3},
+		{"file-allow-prefix", []string{files[0], "--allow-prefix"}, 0},
+		{"session-allow-prefix", []string{"--chain", dir, "--session", session, "--allow-prefix"}, 0},
+		{"pin-is-not-proof", []string{files[0], "--expect-head", head}, 3},
+		{"pin-mismatch", []string{files[0], "--expect-head", strings.Repeat("0", 64), "--allow-prefix"}, 1},
+		{"require-seal", []string{files[0], "--require-seal", "--allow-prefix"}, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := VerifyReceiptCmd()
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			cmd.SetErr(&out)
+			cmd.SilenceUsage, cmd.SilenceErrors = true, true
+			cmd.SetArgs(append(tc.args, "--whole-recorder", "--key", key))
+			err := cmd.Execute()
+			code := 0
+			if err != nil {
+				code = 1
+				var ee *cliutil.ExitError
+				if errors.As(err, &ee) {
+					code = ee.Code
+				}
+			}
+			if code != tc.code {
+				t.Fatalf("exit=%d want=%d: %v\n%s", code, tc.code, err, out.String())
+			}
+		})
+	}
 }

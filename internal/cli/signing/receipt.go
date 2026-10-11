@@ -785,10 +785,25 @@ func (s *wholeRecorderScan) report(out io.Writer, label string) error {
 	if s.receipts == 0 && evidenceCount > 0 {
 		// Evidence receipts alone: verify them, but the transcript_root seal
 		// covers an action receipt chain, so there is nothing it can seal.
-		if err := verifyEvidenceChainResultDetailed(out, label, s.evidence.Result(), trustedKeys, opts); err != nil {
+		res := s.evidence.Result()
+		prefixMode := opts.CheckEnd && !opts.RequireSeal
+		if prefixMode {
+			// A pin is checked but never ends a whole recorder: it cannot
+			// authenticate the recorder entries (see the action-chain path).
+			if _, err := endproof.Pin(res.RootHash, res.FinalSeq, opts.ExpectedHead, opts.ExpectedSeq); err != nil && res.Valid {
+				return err
+			}
+			opts.ExpectedHead, opts.ExpectedSeq = "", nil
+		}
+		if err := verifyEvidenceChainResultDetailed(out, label, res, trustedKeys, opts); err != nil {
 			return err
 		}
 		_, _ = fmt.Fprintln(out, "  INCOMPLETE: no action receipt chain, so no transcript_root seal covers this recorder")
+		if prefixMode {
+			// Reached only when --allow-prefix accepted the unproven end,
+			// which must not then be reported as invalid evidence.
+			return nil
+		}
 		return errUnsealedRecorder
 	}
 	chain := s.chain.Result()

@@ -796,7 +796,9 @@ func TestHTTPListener_GETStreamFailsClosedOnUnexpectedStatus(t *testing.T) {
 }
 
 func TestHTTPListener_POSTFailsClosedOnUnexpected2xxStatus(t *testing.T) {
-	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusNoContent, http.StatusPartialContent} {
+	// 204 is absent: it cannot carry content, so it acknowledges like 202
+	// (TestHTTPListener_EmptyUpstream2xxAcknowledgesNotification).
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusPartialContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			const upstreamBody = `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"unexpected 2xx body must not leak"}]}}`
 			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -840,13 +842,15 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 	for _, tc := range []struct {
 		status     int
 		wantStatus int
+		// relayed marks a 4xx refusal, whose scanned body is the answer.
+		relayed bool
 	}{
 		{status: http.StatusOK, wantStatus: http.StatusOK},
 		{status: http.StatusAccepted, wantStatus: http.StatusAccepted},
 		{status: http.StatusNoContent, wantStatus: http.StatusNoContent},
 		{status: http.StatusPartialContent, wantStatus: http.StatusBadGateway},
 		{status: http.StatusFound, wantStatus: http.StatusBadGateway},
-		{status: http.StatusForbidden, wantStatus: http.StatusBadGateway},
+		{status: http.StatusForbidden, wantStatus: http.StatusForbidden, relayed: true},
 		{status: http.StatusInternalServerError, wantStatus: http.StatusBadGateway},
 		{status: http.StatusSwitchingProtocols, wantStatus: http.StatusBadGateway},
 	} {
@@ -908,10 +912,14 @@ func TestHTTPListener_DELETESuppressesUpstreamBodyAndHeadersAcrossStatuses(t *te
 			if resp.StatusCode != tc.wantStatus {
 				t.Fatalf("status = %d, want %d; body=%s", resp.StatusCode, tc.wantStatus, body)
 			}
-			if tc.wantStatus == tc.status && len(body) != 0 {
+			switch {
+			case tc.relayed:
+				if string(body) != upstreamBody {
+					t.Fatalf("DELETE refusal body = %q, want the scanned upstream body", body)
+				}
+			case tc.wantStatus == tc.status && len(body) != 0:
 				t.Fatalf("DELETE body = %q, want empty", body)
-			}
-			if bytes.Contains(body, []byte(upstreamBody)) {
+			case bytes.Contains(body, []byte(upstreamBody)):
 				t.Fatalf("DELETE upstream body leaked: %s", body)
 			}
 			if got := resp.Header.Get("Location"); got != "" {
@@ -1463,7 +1471,7 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 		{name: "ok", statusCode: http.StatusOK, wantStatus: http.StatusOK},
 		{name: "accepted", statusCode: http.StatusAccepted, wantStatus: http.StatusAccepted},
 		{name: "no_content", statusCode: http.StatusNoContent, wantStatus: http.StatusNoContent},
-		{name: "unsupported", statusCode: http.StatusMethodNotAllowed, wantStatus: http.StatusBadGateway},
+		{name: "unsupported", statusCode: http.StatusMethodNotAllowed, wantStatus: http.StatusMethodNotAllowed},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const sessionID = "session-delete"
@@ -1503,6 +1511,13 @@ func TestHTTPListener_DELETEForwardsSessionTerminationStatus(t *testing.T) {
 			}
 			if obs.session != sessionID {
 				t.Fatalf("upstream session = %q, want %q", obs.session, sessionID)
+			}
+			if tc.statusCode >= http.StatusBadRequest {
+				// A refusal keeps its scanned body; the session was not ended.
+				if string(body) != "upstream body must not leak" {
+					t.Fatalf("DELETE refusal body = %q, want the scanned upstream body", body)
+				}
+				return
 			}
 			if tc.wantStatus == tc.statusCode && len(bytes.TrimSpace(body)) != 0 {
 				t.Fatalf("DELETE response body = %q, want empty", body)

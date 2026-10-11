@@ -156,8 +156,11 @@ func (c *HTTPClient) SessionID() string {
 // for reading the response. The caller must drain the reader to release resources.
 //
 // Response handling:
-//   - 202 Accepted: returns an emptyReader (EOF immediately). Used for notifications.
+//   - 202 Accepted, 204 No Content, or another declared-empty 2xx: returns an
+//     emptyReader (EOF immediately). Used for notifications.
 //   - 200 OK: response body is scanned by the returned reader.
+//   - 4xx carrying the JSON-RPC error for this request: returned as the response
+//     so the caller scans and forwards the upstream's own answer.
 //   - Content-Type: text/event-stream: wraps body in SSEReader via closingSSEReader.
 //   - Other Content-Types (typically application/json): reads body as a single message.
 //   - Other status codes: returns an error (body is closed).
@@ -234,8 +237,9 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil
 	}
 
-	// 202 Accepted: notification acknowledged, no body to read.
-	if resp.StatusCode == http.StatusAccepted {
+	// An empty 2xx acknowledges a notification or client response; there is
+	// no message to read.
+	if AcceptedWithoutBody(resp) {
 		if err := trackSessionID(); err != nil {
 			_ = resp.Body.Close()
 			return nil, err
@@ -252,15 +256,26 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Error status codes: do not echo attacker-controlled upstream body bytes
-	// into returned errors; callers commonly log these strings.
+	// into returned errors; callers commonly log these strings. A 4xx that
+	// carries the JSON-RPC error answering this request is the upstream's
+	// reply, not a transport failure, so it goes back to the caller as the
+	// response and through the same scanning as any other.
 	if resp.StatusCode >= 400 {
+		var reply []byte
+		if IsClientError(resp.StatusCode) {
+			reply = clientErrorReply(resp, msg)
+		}
 		_ = resp.Body.Close()
+		if reply != nil {
+			return &SingleMessageReader{Body: io.NopCloser(bytes.NewReader(reply))}, nil
+		}
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// Only 200 OK and 202 Accepted are valid successful POST responses for
-	// this transport. Treat other 2xx statuses (201/203/204/206/etc.) as
-	// unexpected upstream responses instead of normalizing them to success.
+	// Only 200 OK and the empty acknowledgements above are valid successful
+	// POST responses for this transport. Treat a 2xx that carries content on
+	// any other status (201/203/206/etc.) as an unexpected upstream response
+	// instead of normalizing it to success.
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -330,6 +345,45 @@ func httpRPCID(raw json.RawMessage) any {
 	default:
 		return nil
 	}
+}
+
+// clientErrorReply returns the body of a 4xx reply when it is a JSON-RPC error
+// answering the request in msg, and nil otherwise. The ID must match exactly:
+// a refusal for some other request, or one with a null ID, would leave the
+// client waiting on an answer that never comes, so it falls back to the
+// transport error that names this request.
+func clientErrorReply(resp *http.Response, msg []byte) []byte {
+	var request map[string]json.RawMessage
+	if json.Unmarshal(msg, &request) != nil || request["method"] == nil {
+		return nil
+	}
+	requestID := httpRPCID(request["id"])
+	if requestID == nil {
+		return nil
+	}
+	contentTypes := resp.Header.Values("Content-Type")
+	if len(contentTypes) != 1 {
+		return nil
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentTypes[0]); err != nil || mediaType != "application/json" {
+		return nil
+	}
+	body, err := ReadClientErrorBody(resp)
+	if err != nil {
+		return nil
+	}
+	var reply map[string]json.RawMessage
+	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil {
+		return nil
+	}
+	var version string
+	if json.Unmarshal(reply["jsonrpc"], &version) != nil || version != "2.0" ||
+		reply["method"] != nil || reply["result"] != nil ||
+		len(reply["error"]) == 0 || string(reply["error"]) == "null" ||
+		httpRPCID(reply["id"]) != requestID {
+		return nil
+	}
+	return body
 }
 
 func httpInitializeRequestID(msg []byte) any {

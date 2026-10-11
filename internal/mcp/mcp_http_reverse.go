@@ -909,6 +909,43 @@ func RunHTTPListenerProxy(
 				PolicyHash:    requestBaseOpts.receiptPolicyHash(),
 			})
 		}
+		// relayUpstreamClientError answers the client with the upstream's own
+		// 4xx: its status, the headers a client acts on (the OAuth challenge in
+		// WWW-Authenticate above all) and its body, once the response scanner
+		// has passed them. Collapsing a refusal into 502 told clients the
+		// gateway had failed, so they could not reauthenticate, see the 405
+		// that means "no GET stream", or read a JSON-RPC error. Anything the
+		// scanner flags or cannot read gets the sanitized 502 instead. It
+		// returns false for any other status so the caller carries on.
+		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string) bool {
+			if !transport.IsClientError(upResp.StatusCode) {
+				return false
+			}
+			withhold := func(reason string) {
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed")))
+			}
+			// A session escalated to block every response gets no upstream
+			// content, refusals included, matching ForwardScanned.
+			if reqRec != nil && decide.UpgradeAction("", reqRec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+				withhold("session escalation blocks responses")
+				return true
+			}
+			reply, err := readUpstreamClientError(upResp)
+			if err != nil {
+				withhold("reply cannot be read for scanning")
+				return true
+			}
+			if ok, finding := reply.scan(requestBaseOpts); !ok {
+				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
+				withhold(finding)
+				return true
+			}
+			reply.write(w)
+			return true
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
 			if headerResult == nil {
@@ -1100,6 +1137,9 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey()) {
+				return
+			}
 			if upResp.StatusCode >= 400 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
@@ -1254,6 +1294,12 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			}
+			// A refused DELETE (405 when the server does not let clients end
+			// sessions, 404 for an unknown one) is relayed, and the session
+			// state below is kept because nothing was terminated.
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey()) {
+				return
 			}
 			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
@@ -1721,8 +1767,10 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// 202 Accepted: notification acknowledged, no body.
-		if upResp.StatusCode == http.StatusAccepted {
+		// An empty 2xx acknowledges a notification or client response. The
+		// client always gets 202 Accepted, the status the MCP specification
+		// requires, even when the upstream answered 204 or another empty 2xx.
+		if transport.AcceptedWithoutBody(upResp) {
 			if !clientState.commitIfActive(func() {
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				w.WriteHeader(http.StatusAccepted)
@@ -1744,8 +1792,13 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// Upstream error: sanitize before forwarding (don't leak body content
-		// that could contain injection payloads).
+		// A 4xx is relayed once scanned; see relayUpstreamClientError.
+		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey) {
+			return
+		}
+
+		// Upstream failure (5xx): sanitize before forwarding (don't leak body
+		// content that could contain injection payloads).
 		if upResp.StatusCode >= 400 {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")

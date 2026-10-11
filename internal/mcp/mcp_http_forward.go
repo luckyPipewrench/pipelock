@@ -556,6 +556,12 @@ func RunHTTPProxy(
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
+			// A notification has no ID to answer, so a failure on one is logged
+			// only; an error response with a null ID is a reply the client never
+			// asked for.
+			if isRPCNotification(frame.ID) {
+				continue
+			}
 			// Send sanitized error to client - don't include upstream body content
 			// which could contain prompt injection payloads.
 			rpcID := frame.ID

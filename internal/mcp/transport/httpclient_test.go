@@ -1307,7 +1307,7 @@ func writeSwitchingProtocolsResponse(t *testing.T, w http.ResponseWriter, conten
 }
 
 func TestHTTPClient_SendMessage_Unexpected2xxStatusFailsClosed(t *testing.T) {
-	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusNoContent, http.StatusPartialContent} {
+	for _, status := range []int{http.StatusSwitchingProtocols, http.StatusCreated, http.StatusNonAuthoritativeInfo, http.StatusPartialContent} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				if status == http.StatusSwitchingProtocols {

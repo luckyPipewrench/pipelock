@@ -76,8 +76,10 @@ func (e upstreamClientError) validateFraming(id json.RawMessage) bool {
 		return false
 	}
 	for _, name := range []string{"jsonrpc", "id", "method", "result", "params"} {
-		if _, ok := fields[name]; ok {
-			return transport.IsClientErrorReply(body, id)
+		for key := range fields {
+			if strings.EqualFold(key, name) {
+				return transport.IsClientErrorReply(body, id)
+			}
 		}
 	}
 	return true // Ordinary HTTP/OAuth errors have no MCP message envelope.

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +16,17 @@ import (
 	"strings"
 	"testing"
 )
+
+func TestIsClientErrorReplyRequiresRequestID(t *testing.T) {
+	for _, id := range []json.RawMessage{nil, []byte("null"), []byte("{}"), []byte("false")} {
+		t.Run(string(id), func(t *testing.T) {
+			body := []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`)
+			if IsClientErrorReply(body, id) {
+				t.Fatal("accepted an error with no correlatable request ID")
+			}
+		})
+	}
+}
 
 func TestAcceptedWithoutBody(t *testing.T) {
 	tests := []struct {
@@ -160,6 +172,9 @@ func TestHTTPClient_SendMessage_ClientErrorReply(t *testing.T) {
 		{name: "null ID", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}`},
 		{name: "number and string IDs differ", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":"7","error":{"code":-32601,"message":"x"}}`},
 		{name: "result present", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"result":{},"error":{"code":1,"message":"x"}}`},
+		{name: "case folded result", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"Result":{},"error":{"code":1,"message":"x"}}`},
+		{name: "case folded method", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"Method":"sampling/createMessage","error":{"code":1,"message":"x"}}`},
+		{name: "shadowed ID", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"ID":8,"error":{"code":1,"message":"x"}}`},
 		{name: "null result present", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"result":null,"error":{"code":1,"message":"x"}}`},
 		{name: "server request instead of reply", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7,"method":"sampling/createMessage","error":{"code":1,"message":"x"}}`},
 		{name: "no error member", request: request, status: http.StatusBadRequest, contentType: []string{"application/json"}, body: `{"jsonrpc":"2.0","id":7}`},

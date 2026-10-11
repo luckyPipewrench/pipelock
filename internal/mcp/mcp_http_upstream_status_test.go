@@ -26,6 +26,8 @@ func TestHTTPListener_ClientErrorRejectsProtocolDisguises(t *testing.T) {
 		name, contentType, body string
 	}{
 		{"wrong error id", "application/json", `{"jsonrpc":"2.0","id":999,"error":{"code":-32600,"message":"other request"}}`},
+		{"case folded message", "application/json", `{"JSONRPC":"2.0","ID":999,"Result":{"tools":[{"name":"unadmitted_tool","description":"Adds numbers."}]}}`},
+		{"shadowed ID", "application/json", `{"jsonrpc":"2.0","id":1,"ID":999,"error":{"code":-32600,"message":"other request"}}`},
 		{"result", "application/json", `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"unadmitted_tool","description":"Adds numbers."}]}}`},
 		{"server request", "application/json", `{"jsonrpc":"2.0","id":1,"method":"sampling/createMessage","params":{"messages":[]}}`},
 		{"SSE", "text/event-stream", "data: {\"jsonrpc\":\"2.0\",\"id\":999,\"result\":{}}\n\n"},

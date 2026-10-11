@@ -386,7 +386,8 @@ func IsClientErrorReply(body []byte, id json.RawMessage) bool {
 		return false
 	}
 	var reply map[string]json.RawMessage
-	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil {
+	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil ||
+		jsonscan.RejectCaseFoldedAliases(body, "jsonrpc", "id", "method", "result", "error", "params") != nil {
 		return false
 	}
 	var version string

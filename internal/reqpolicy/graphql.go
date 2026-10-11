@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 )
 
 // RequestOperation is a provider-neutral classification of one outbound API
@@ -71,6 +72,10 @@ func ExtractGraphQL(body []byte) (ops []RequestOperation, parseOK, opaque bool) 
 	if len(trimmed) == 0 {
 		return nil, false, false
 	}
+	if err := jsonscan.RejectDuplicateKeys(trimmed); err != nil {
+		return nil, false, false
+	}
+
 	switch trimmed[0] {
 	case '[':
 		var batch []gqlRequest

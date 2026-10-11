@@ -799,6 +799,16 @@ func scanAgentCard(ctx context.Context, body []byte, sc *scanner.Scanner, baseli
 		return AgentCardScanResult{Clean: true}
 	}
 
+	// Card structure feeds drift and signature checks even when content scanning
+	// is disabled. Refuse ambiguous input before any typed decode or baseline use.
+	if err := redact.NoDuplicateJSONKeys(body); err != nil {
+		return AgentCardScanResult{
+			Clean: false, Action: config.ActionBlock,
+			Reason:   fmt.Sprintf("a2a: invalid Agent Card JSON: %v", err),
+			Findings: A2AScanResult{Clean: false, Action: config.ActionBlock, InspectionIncomplete: true},
+		}
+	}
+
 	// Verify before scanning. A signature that verified against a trusted,
 	// origin-scoped key is a stamp, not content: only that one string, found by
 	// its position in the card, is left out of the text the credential rules

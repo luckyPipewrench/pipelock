@@ -14,6 +14,7 @@ import {
   statSync,
 } from "node:fs";
 import * as path from "node:path";
+import { KEY_FOLD_GROUPS } from "./key-fold-data.js";
 
 export class UsageError extends Error {
   readonly code = 64;
@@ -267,6 +268,16 @@ export function parseJSON<T>(text: string, label: string): T {
 const maxDuplicateKeyScanDepth = 128;
 const maxExactJSONInteger = Number.MAX_SAFE_INTEGER;
 
+// Pin key identity to Go's simple-fold cycles, rather than ICU lowercase.
+const keyFold = new Map<string, string>();
+for (const group of KEY_FOLD_GROUPS.split(/\s+/u)) {
+  const chars = [...group];
+  for (const char of chars) keyFold.set(char, chars[0]);
+}
+function foldKey(value: string): string {
+  return [...value].map((char) => keyFold.get(char) ?? char).join("");
+}
+
 export function rejectDuplicateKeys(text: string): void {
   interface Frame {
     isObject: boolean;
@@ -326,8 +337,9 @@ export function rejectDuplicateKeys(text: string): void {
       }
       const top = stack[stack.length - 1];
       if (top !== undefined && top.isObject && top.expectKey) {
-        if (top.keys.has(str)) throw new InvalidError(`duplicate object key: ${str}`);
-        top.keys.add(str);
+        const folded = foldKey(str);
+        if (top.keys.has(folded)) throw new InvalidError(`duplicate object key: ${str}`);
+        top.keys.add(folded);
       }
       continue;
     }

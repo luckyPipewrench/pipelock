@@ -7,6 +7,7 @@ pub mod canonical;
 pub mod chain;
 pub mod chain_set;
 pub mod cli;
+mod key_fold_data;
 pub mod lifecycle;
 pub mod line_space;
 pub mod output;

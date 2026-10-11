@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 
+	"github.com/luckyPipewrench/pipelock/internal/contract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/receiptcontent"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 )
@@ -74,6 +77,12 @@ func evidenceReceiptFields() map[string]receiptcontent.Class {
 // evidenceReceiptOuter derives the recorder mirror fields of a v2 receipt
 // from its exact detail, reading only content values.
 func evidenceReceiptOuter(detail []byte) (receiptcontent.Outer, error) {
+	// This is a partial content projection: producer representations and unknown
+	// members remain content. Validate the whole document before typed selection.
+	var fields map[string]json.RawMessage
+	if err := contract.DecodeStrictJSON(detail, &fields); err != nil {
+		return receiptcontent.Outer{}, fmt.Errorf("decode evidence receipt mirror fields: %w", err)
+	}
 	var d struct {
 		PayloadKind PayloadKind `json:"payload_kind"`
 		Payload     struct {
@@ -82,6 +91,9 @@ func evidenceReceiptOuter(detail []byte) (receiptcontent.Outer, error) {
 			Verdict       string `json:"verdict"`
 			WinningSource string `json:"winning_source"`
 		} `json:"payload"`
+	}
+	if err := jsonscan.RejectStructAliases(detail, reflect.TypeOf(d)); err != nil {
+		return receiptcontent.Outer{}, fmt.Errorf("decode evidence receipt mirror fields: %w", err)
 	}
 	if err := json.Unmarshal(detail, &d); err != nil {
 		return receiptcontent.Outer{}, fmt.Errorf("decode evidence receipt mirror fields: %w", err)

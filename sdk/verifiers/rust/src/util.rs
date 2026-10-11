@@ -248,6 +248,24 @@ pub fn reject_duplicate_keys(text: &str) -> Result<()> {
     }
 }
 
+// Pin key identity to Go's simple-fold cycles; native lowercase differs.
+fn fold_key(key: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static FOLD: OnceLock<HashMap<char, char>> = OnceLock::new();
+    let fold = FOLD.get_or_init(|| {
+        let mut table = HashMap::new();
+        for group in crate::key_fold_data::KEY_FOLD_GROUPS.split_whitespace() {
+            let canonical = group.chars().next().expect("nonempty fold cycle");
+            for c in group.chars() {
+                table.insert(c, canonical);
+            }
+        }
+        table
+    });
+    key.chars().map(|c| *fold.get(&c).unwrap_or(&c)).collect()
+}
+
 const MAX_NESTING_DEPTH: usize = 128;
 const MAX_EXACT_JSON_INTEGER: u64 = (1_u64 << 53) - 1;
 
@@ -290,7 +308,7 @@ impl<'de> serde::de::DeserializeSeed<'de> for NoDupSeed {
                 }
                 let mut seen: HashSet<String> = HashSet::new();
                 while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
+                    if !seen.insert(fold_key(&key)) {
                         return Err(de::Error::custom(format!("duplicate object key: {key}")));
                     }
                     map.next_value_seed(NoDupSeed {

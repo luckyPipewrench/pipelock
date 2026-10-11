@@ -315,3 +315,23 @@ func TestKeyAliasesRequestPolicyBinding(t *testing.T) {
 		}
 	}
 }
+
+func TestRequestPolicyGraphQLKeyAliases(t *testing.T) {
+	cfg := reqPolicyConfig(gqlOperationRule())
+	cfg.RequestPolicy.OnParseError = config.ActionBlock
+	p := newTestProxyWithConfig(t, cfg)
+	for _, raw := range []string{
+		`{"query":"query{record{id}}","Query":"mutation{deleteRecord{id}}"}`,
+		`{"query":"mutation{deleteRecord{id}}","query":"query{record{id}}"}`,
+		`[{"query":"query{record{id}}"},{"query":"query{record{id}}","operationName":"Read","OperationName":"Write"}]`,
+	} {
+		res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: "application/json", Body: []byte(raw), BodyRead: true, Transport: TransportForward})
+		if !res.Block {
+			t.Errorf("ambiguous GraphQL did not apply on_parse_error: %s", raw)
+		}
+	}
+	res := p.applyRequestPolicy(requestPolicyInput{Host: rpTestHost, Method: http.MethodPost, Path: "/graphql", ContentType: "application/json", Body: []byte(gqlJSONBody("query{record{id}}")), BodyRead: true, Transport: TransportForward})
+	if res.Block {
+		t.Fatal("canonical query control blocked")
+	}
+}

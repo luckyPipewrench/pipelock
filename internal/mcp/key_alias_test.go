@@ -6,6 +6,7 @@ package mcp
 import (
 	"bytes"
 	"crypto/ed25519"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -61,24 +62,30 @@ func TestKeyAliasesResponse(t *testing.T) {
 }
 
 func TestKeyAliasesAgentCard(t *testing.T) {
-	sc := testA2AScanner(t)
-	cfg := enabledA2ACfg()
-	baseline := NewCardBaseline(10)
-	key := CardCacheKeyFromRequest("https://agent.vendor.example/card", "")
-	clean := []byte(`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search"}]}`)
-	if v := ScanAgentCard(t.Context(), clean, sc, baseline, key, cfg); !v.Clean {
-		t.Fatalf("valid baseline: %+v", v)
-	}
-	for _, raw := range []string{
-		`{"name":"Agent","url":"https://other.vendor.example/a2a","URL":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search"}]}`,
-		`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"write","description":"Search"}],"Skills":[{"id":"read","description":"Search"}]}`,
-	} {
-		if v := ScanAgentCard(t.Context(), []byte(raw), sc, baseline, key, cfg); v.Clean {
-			t.Errorf("ambiguous card accepted: %s", raw)
-		}
-	}
-	if v := ScanAgentCard(t.Context(), clean, sc, baseline, key, cfg); !v.Clean {
-		t.Fatalf("baseline changed after rejection: %+v", v)
+	for _, scan := range []bool{true, false} {
+		t.Run(fmt.Sprint(scan), func(t *testing.T) {
+			sc := testA2AScanner(t)
+			cfg := enabledA2ACfg()
+			cfg.ScanAgentCards = scan
+			cfg.DetectCardDrift = true
+			baseline := NewCardBaseline(10)
+			key := CardCacheKeyFromRequest("https://agent.vendor.example/card", "")
+			clean := []byte(`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search"}]}`)
+			if v := ScanAgentCard(t.Context(), clean, sc, baseline, key, cfg); !v.Clean {
+				t.Fatalf("valid baseline: %+v", v)
+			}
+			for _, raw := range []string{
+				`{"name":"Agent","url":"https://other.vendor.example/a2a","URL":"https://agent.vendor.example/a2a","skills":[{"id":"read","description":"Search"}]}`,
+				`{"name":"Agent","url":"https://agent.vendor.example/a2a","skills":[{"id":"write","description":"Search"}],"Skills":[{"id":"read","description":"Search"}]}`,
+			} {
+				if v := ScanAgentCard(t.Context(), []byte(raw), sc, baseline, key, cfg); v.Clean {
+					t.Errorf("ambiguous card accepted: %s", raw)
+				}
+			}
+			if v := ScanAgentCard(t.Context(), clean, sc, baseline, key, cfg); !v.Clean {
+				t.Fatalf("baseline changed after rejection: %+v", v)
+			}
+		})
 	}
 }
 

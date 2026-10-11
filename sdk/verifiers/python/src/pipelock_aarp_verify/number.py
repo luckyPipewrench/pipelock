@@ -19,6 +19,8 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from .key_fold import fold_key
+
 # The I-JSON safe-integer range. Outside it, a JavaScript or other-language
 # verifier silently rounds to float64, changing the canonical bytes and breaking
 # the signature. AARP allows raw JSON numbers ONLY inside this range.
@@ -66,9 +68,12 @@ class IJSONNumber:
 def _reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     """object_pairs_hook that raises on a repeated key at any depth."""
     obj: dict[str, Any] = {}
+    seen: set[str] = set()
     for key, value in pairs:
-        if key in obj:
+        folded = fold_key(key)
+        if folded in seen:
             raise StrictParseError(f"duplicate key in JSON object: {key!r}")
+        seen.add(folded)
         obj[key] = value
     return obj
 

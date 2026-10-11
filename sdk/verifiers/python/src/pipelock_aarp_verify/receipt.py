@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from .canonical import canonicalize
 from .input_file import iter_verifier_jsonl_lines, read_verifier_file
+from .key_fold import fold_key
 from .line_space import trim_go_space
 from .number import (
     StrictParseError,
@@ -354,9 +355,12 @@ class ReceiptError(Exception):
 
 def _reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     out: dict[str, Any] = {}
+    seen: set[str] = set()
     for key, value in pairs:
-        if key in out:
+        folded = fold_key(key)
+        if folded in seen:
             raise ReceiptError(f"duplicate object key: {key}")
+        seen.add(folded)
         out[key] = value
     return out
 

@@ -425,20 +425,21 @@ func jsonRPCErrorReplyID(body []byte) (json.RawMessage, bool) {
 // integer and whose message is a string, the two members the JSON-RPC 2.0
 // specification requires of every error.
 func validJSONRPCErrorObject(raw json.RawMessage) bool {
-	var errObj struct {
-		Code    json.RawMessage `json:"code"`
-		Message *string         `json:"message"`
-	}
+	// A map keeps member names exact: struct decoding would match "Code" and
+	// "Message" case-insensitively and accept an error a client reads as empty.
+	var errObj map[string]json.RawMessage
+	var message *string
 	if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &errObj) != nil ||
-		errObj.Message == nil || len(errObj.Code) == 0 {
+		json.Unmarshal(errObj["message"], &message) != nil || message == nil {
 		return false
 	}
-	// Decode the raw token so a quoted code such as "-32001", which
-	// json.Number would accept, is refused.
-	if c := errObj.Code[0]; c != '-' && (c < '0' || c > '9') {
+	code := errObj["code"]
+	// Read the raw token so a quoted code such as "-32001", which json.Number
+	// would accept, is refused.
+	if len(code) == 0 || (code[0] != '-' && (code[0] < '0' || code[0] > '9')) {
 		return false
 	}
-	_, err := json.Number(errObj.Code).Int64()
+	_, err := json.Number(code).Int64()
 	return err == nil
 }
 

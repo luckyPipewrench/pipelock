@@ -75,6 +75,7 @@ func TestUpstreamClientErrorFraming(t *testing.T) {
 		{name: "result", body: `{"jsonrpc":"2.0","id":1,"result":{}}`, want: refusalFramingDisguised},
 		{name: "null ID result", body: `{"jsonrpc":"2.0","id":null,"result":{}}`, want: refusalFramingDisguised},
 		{name: "error object missing code and message", body: `{"jsonrpc":"2.0","id":1,"error":{}}`, want: refusalFramingDisguised},
+		{name: "case-folded error members", body: `{"jsonrpc":"2.0","id":1,"error":{"Code":-32600,"Message":"invalid request"}}`, want: refusalFramingDisguised},
 		{name: "error carrying params", body: `{"jsonrpc":"2.0","id":null,"error":{"code":1,"message":"x"},"params":{}}`, want: refusalFramingDisguised},
 	}
 	for _, tt := range tests {

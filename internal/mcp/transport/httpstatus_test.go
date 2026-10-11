@@ -262,6 +262,8 @@ func TestIsUncorrelatedErrorReply(t *testing.T) {
 		{name: "missing message", body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32001}}`},
 		{name: "non-string message", body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":7}}`},
 		{name: "error is a string", body: `{"jsonrpc":"2.0","id":null,"error":"Session not found"}`},
+		{name: "case-folded error members", body: `{"jsonrpc":"2.0","id":null,"error":{"Code":-32001,"Message":"x"}}`},
+		{name: "null message", body: `{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":null}}`},
 		{name: "case folded ID", body: `{"jsonrpc":"2.0","ID":7,"error":{"code":1,"message":"x"}}`},
 		{name: "duplicate keys", body: `{"jsonrpc":"2.0","id":null,"id":7,"error":{"code":1,"message":"x"}}`},
 		{name: "not JSON", body: `Session not found`},

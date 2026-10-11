@@ -344,15 +344,22 @@ type sessionResponseReader struct {
 	}
 	validate func([]byte) error
 	commit   func() error
+	mu       sync.Mutex // guards admission against concurrent timeout cleanup
 	done     bool
+	closed   bool
 }
 
 func (r *sessionResponseReader) ReadMessage() ([]byte, error) {
 	msg, err := r.reader.ReadMessage()
-	if err != nil || r.done {
+	if err != nil {
 		return msg, err
 	}
 	if r.validate != nil && r.validate(msg) != nil {
+		return msg, nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.done || r.closed {
 		return msg, nil
 	}
 	if err := r.commit(); err != nil {
@@ -361,7 +368,15 @@ func (r *sessionResponseReader) ReadMessage() ([]byte, error) {
 	r.done = true
 	return msg, nil
 }
-func (r *sessionResponseReader) Close() error { return r.reader.Close() }
+
+func (r *sessionResponseReader) Close() error {
+	// A worker may already have the bytes when cleanup closes the body. Revoke
+	// admission before closing it, with the same lock held during commitment.
+	r.mu.Lock()
+	r.closed = true
+	r.mu.Unlock()
+	return r.reader.Close()
+}
 
 // Protocol negotiation observes framed responses without consuming or changing
 // the bytes that the MCP scanners receive. Only a matching initialize result can

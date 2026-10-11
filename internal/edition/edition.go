@@ -54,6 +54,12 @@ type Edition interface {
 	Close()
 }
 
+// LicenseRevocationReceiver is implemented by editions with paid profiles.
+// Updates must be safe alongside request-time profile resolution.
+type LicenseRevocationReceiver interface {
+	SetLicenseRevoked(bool)
+}
+
 // ResolvedAgent carries the resolved per-agent config, scanner, and
 // budget tracker for a single request. Budget must be NoopBudget (not nil)
 // when unlimited to avoid nil-interface panics.

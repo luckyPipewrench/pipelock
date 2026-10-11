@@ -973,3 +973,37 @@ func copyFileForTest(src, dst string) error {
 // would otherwise prune the envelope.NewEmitter reference that only
 // shows up inside reload lane wiring).
 var _ = envelope.HeaderName
+
+func TestProxyReloadRetainsInboundReplayState(t *testing.T) {
+	t.Parallel()
+	p := envelopeReloadProxy(t)
+	pub, priv, err := signing.GenerateKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := p.CurrentConfig().Clone()
+	cfg.MediationEnvelope.VerifyInbound.Enabled = true
+	cfg.MediationEnvelope.VerifyInbound.TrustList = []config.MediationEnvelopeTrustedKey{{KeyID: testInboundKeyID, PublicKey: hex.EncodeToString(pub)}}
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.Window = "5m"
+	cfg.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 32
+	if !p.Reload(cfg, scanner.MustNew(cfg)) {
+		t.Fatal("enable failed")
+	}
+	req := signedInboundRequest(t, priv, "spiffe://partner.example/agent/proxy")
+	if _, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody)); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []bool{false, true} {
+		next := p.CurrentConfig().Clone()
+		if change {
+			next.Mode = config.ModeStrict
+			next.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 16
+		}
+		if !p.Reload(next, scanner.MustNew(next)) {
+			t.Fatal("reload failed")
+		}
+		if _, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody)); err == nil {
+			t.Fatal("reload forgot nonce")
+		}
+	}
+}

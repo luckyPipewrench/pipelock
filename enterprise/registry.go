@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -28,6 +29,7 @@ type cidrMapping struct {
 // AgentRegistry maps agent profile names to resolved agents. Built at
 // startup and on hot-reload, then swapped atomically via Edition.
 type AgentRegistry struct {
+	licenseRevoked   *atomic.Bool
 	agents           map[string]*edition.ResolvedAgent
 	ports            map[string]string // listen addr -> profile name
 	cidrs            []cidrMapping     // source CIDR -> profile name
@@ -43,6 +45,7 @@ type AgentRegistry struct {
 // instance and lifecycle.
 func NewAgentRegistry(base *config.Config, fallbackScanners ...*scanner.Scanner) (_ *AgentRegistry, err error) {
 	reg := &AgentRegistry{
+		licenseRevoked:   new(atomic.Bool),
 		agents:           make(map[string]*edition.ResolvedAgent, len(base.Agents)),
 		ports:            make(map[string]string),
 		licenseExpiresAt: base.LicenseExpiresAt,
@@ -137,7 +140,7 @@ func (r *AgentRegistry) Lookup(profile string) *edition.ResolvedAgent {
 	if agent, ok := r.agents[profile]; ok {
 		// Runtime license expiry: if the license has a non-zero expiry
 		// and it's past, fall back for non-default profiles.
-		if profile != edition.ProfileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
+		if profile != edition.ProfileDefault && (r.licenseRevoked.Load() || (r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt)) {
 			return r.fallback
 		}
 		return agent
@@ -152,7 +155,7 @@ func (r *AgentRegistry) Lookup(profile string) *edition.ResolvedAgent {
 func (r *AgentRegistry) LookupByName(name string) (*edition.ResolvedAgent, bool) {
 	if agent, ok := r.agents[name]; ok {
 		// Runtime license expiry: same check as Lookup().
-		if name != edition.ProfileDefault && r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt {
+		if name != edition.ProfileDefault && (r.licenseRevoked.Load() || (r.licenseExpiresAt > 0 && time.Now().Unix() > r.licenseExpiresAt)) {
 			return r.fallback, false
 		}
 		return agent, true
@@ -199,7 +202,12 @@ func (r *AgentRegistry) ResolveFromRequest(ctx context.Context, req *http.Reques
 		id.Profile = resolved.Name
 		return resolved, id
 	}
-	return r.Lookup(id.Profile), id
+	resolved := r.Lookup(id.Profile)
+	if resolved.Name != id.Profile {
+		id.Profile = resolved.Name
+		id.Auth = envelope.ActorAuthUnknown
+	}
+	return resolved, id
 }
 
 // resolveInfrastructureIdentity grades an identity that infrastructure

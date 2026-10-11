@@ -2241,10 +2241,8 @@ func buildInboundEnvelopeVerifier(cfg *config.Config) (*envelope.Verifier, error
 		return nil, fmt.Errorf("parse inbound envelope replay window: %w", err)
 	}
 	skew := time.Duration(cfg.MediationEnvelope.CreatedSkewSeconds) * time.Second
-	// MaxSignatureLifetime caps signature lifetime to the replay
-	// window plus skew so a captured signature cannot outlive its
-	// nonce in the cache. The config validator already enforces the
-	// matching constraint on the signer side.
+	// Limit declared lifetime to bound replay-cache occupancy. Nonces remain
+	// retained through the actual signed expiry plus clock skew.
 	return envelope.NewVerifier(envelope.VerifierConfig{
 		TrustedKeys:          keys,
 		ReplayCache:          envelope.NewReplayCache(window, verify.ReplayCache.MaxEntries),
@@ -2417,6 +2415,10 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		return false
 	}
 	envelopeVerifier, envVerifyErr := buildInboundEnvelopeVerifier(cfg)
+	if envVerifyErr == nil {
+		envelopeVerifier.PreserveReplayState(p.envelopeVerifierPtr.Load())
+	}
+
 	if envVerifyErr != nil {
 		p.logger.LogError(audit.NewMethodLogContext("RELOAD"),
 			fmt.Errorf("inbound envelope verifier reload failed, keeping old config: %w", envVerifyErr))
@@ -2953,6 +2955,21 @@ func (p *Proxy) LoadCertCache(cfg *config.Config) error {
 // listeners, so Start()'s shutdown goroutine can gracefully stop them.
 func (p *Proxy) RegisterAgentServer(srv *http.Server) {
 	p.agentServers = append(p.agentServers, srv)
+}
+
+// SetLicenseRevoked publishes a runtime license check only if its config is
+// still current. Serializing with reload prevents a stale check from revoking
+// a replacement token or missing the newly published edition.
+func (p *Proxy) SetLicenseRevoked(cfg *config.Config, revoked bool) bool {
+	p.reloadSerialMu.Lock()
+	defer p.reloadSerialMu.Unlock()
+	if p.cfgPtr.Load() != cfg {
+		return false
+	}
+	if receiver, ok := p.Edition().(edition.LicenseRevocationReceiver); ok {
+		receiver.SetLicenseRevoked(revoked)
+	}
+	return true
 }
 
 // ShutdownAgentServers gracefully shuts down all registered agent servers.

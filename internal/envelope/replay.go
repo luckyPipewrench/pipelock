@@ -17,11 +17,15 @@ var ErrReplayCacheCapacity = errors.New("signature replay cache capacity exhaust
 // ReplayCache is a bounded, nonce-keyed in-process cache for inbound envelope
 // verification. It is safe for concurrent use.
 type ReplayCache struct {
+	*replayState
+	window time.Duration
+	max    int
+	nowFn  func() time.Time
+}
+
+type replayState struct {
 	mu      sync.Mutex
 	entries map[string]time.Time
-	window  time.Duration
-	max     int
-	nowFn   func() time.Time
 }
 
 func NewReplayCache(window time.Duration, maxEntries int) *ReplayCache {
@@ -39,10 +43,10 @@ func newReplayCache(window time.Duration, maxEntries int, nowFn func() time.Time
 		nowFn = time.Now
 	}
 	return &ReplayCache{
-		entries: make(map[string]time.Time),
-		window:  window,
-		max:     maxEntries,
-		nowFn:   nowFn,
+		replayState: &replayState{entries: make(map[string]time.Time)},
+		window:      window,
+		max:         maxEntries,
+		nowFn:       nowFn,
 	}
 }
 
@@ -68,11 +72,10 @@ func (c *ReplayCache) CheckAndStoreWithSkew(nonce string, expires time.Time, ske
 	if !expires.After(now.Add(-skew)) {
 		return fmt.Errorf("signature expired")
 	}
+	// Retain through the full accepted validity interval, including signer
+	// clock lead. Capacity exhaustion rejects new nonces instead of shortening
+	// protection for signatures that can still verify.
 	storedUntil := expires.Add(skew)
-	maxStoredUntil := now.Add(c.window).Add(skew)
-	if storedUntil.After(maxStoredUntil) {
-		storedUntil = maxStoredUntil
-	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()

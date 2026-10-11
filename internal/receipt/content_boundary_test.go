@@ -199,6 +199,12 @@ func TestActionContentCanaries(t *testing.T) {
 		{"split across task id and label (round-2 B)", func(o *EmitOpts) {
 			o.SessionTaskID, o.SessionTaskLabel = boundaryCanary[:10], boundaryCanary[10:]
 		}, "action_record.session_task"},
+		// Taint and authority labels are enums: a known label is not scanned,
+		// any other value is content and is redacted before signing.
+		{"unlisted taint reason is content", func(o *EmitOpts) { o.TaintDecisionReason = boundaryCanary }, ""},
+		{"unlisted taint level is content", func(o *EmitOpts) { o.SessionTaintLevel = boundaryCanary }, ""},
+		{"unlisted authority kind is content", func(o *EmitOpts) { o.AuthorityKind = boundaryCanary }, ""},
+		{"nonstandard method is content", func(o *EmitOpts) { o.Method = boundaryCanary }, ""},
 		{"extension member name", func(o *EmitOpts) { o.Extension = json.RawMessage(`{"` + boundaryCanary + `":1}`) }, "ext."},
 		{"escaped extension value split from a core field", func(o *EmitOpts) {
 			o.Method = boundaryCanary[:10]

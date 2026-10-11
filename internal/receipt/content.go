@@ -50,6 +50,24 @@ var actionReceiptProducer = receiptcontent.Register(receiptcontent.Schema{
 		"action_record.session_control.kind": {
 			string(SessionControlOpen), string(SessionControlHeartbeat), string(SessionControlClose),
 		},
+		// Taint and authority labels are decision codes Pipelock derives, never
+		// caller text; a value outside these lists is still scanned as content.
+		// Each fragment-search candidate costs a full detector call, so these
+		// constants must not multiply the search.
+		"action_record.session_taint_level": {"trusted", "internal_generated", "allowlisted_reference", "external_low_risk", "external_untrusted", "external_hostile"},
+		"action_record.authority_kind":      {"unknown", "external", "policy", "user_broad", "user_exact", "operator_override"},
+		"action_record.taint_decision":      {"allow", "warn", "ask", "block"},
+		"action_record.taint_decision_reason": {
+			"taint_safe_read_only_action", "trusted_or_allowlisted_context", "taint_permissive_observe_only",
+			"sensitive_action_after_hostile_external_exposure", "fail_safe_low_confidence_read_after_untrusted_exposure",
+			"protected_write_after_untrusted_external_exposure", "elevated_write_after_untrusted_external_exposure",
+			"mutating_exec_after_untrusted_external_exposure", "secret_use_after_untrusted_external_exposure",
+			"external_publish_after_untrusted_external_exposure", "mutating_network_after_untrusted_external_exposure",
+			"no_taint_escalation_required",
+		},
+		// The request method comes from the client; only the standard methods
+		// are a known vocabulary.
+		"action_record.method": {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE"},
 	},
 	Outer: actionReceiptOuter,
 })
@@ -134,7 +152,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"resolution_source":                   cContent,
 		"session_id":                          cIdentity,
 		"session_id_original":                 cIdentity,
-		"session_taint_level":                 cContent,
+		"session_taint_level":                 cEnum,
 		"session_contaminated":                cContent,
 		"recent_taint_sources":                cContent,
 		"recent_taint_sources[]":              cContent,
@@ -146,9 +164,9 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"recent_taint_sources[].match_reason": cContent,
 		"session_task_id":                     cIdentity,
 		"session_task_label":                  cContent,
-		"authority_kind":                      cContent,
-		"taint_decision":                      cContent,
-		"taint_decision_reason":               cContent,
+		"authority_kind":                      cEnum,
+		"taint_decision":                      cEnum,
+		"taint_decision_reason":               cEnum,
 		"task_override_applied":               cContent,
 		"contract_winning_source":             cContent,
 		"contract_live_verdict":               cContent,
@@ -158,7 +176,7 @@ func actionReceiptFields() map[string]receiptcontent.Class {
 		"contract_selector_id":                cContent,
 		"contract_generation":                 cContent,
 		"transport":                           cContent,
-		"method":                              cContent,
+		"method":                              cEnum,
 		"layer":                               cContent,
 		"pattern":                             cContent,
 		"severity":                            cContent,

@@ -71,6 +71,12 @@ RACE_MAX_PARALLEL = {
 # The no-race lane every pull request waits on. Heavy trees run whole; the rest
 # shards are the planner's rest buckets.
 UNIT_PRODUCER = "test-unit-go126"
+# The no-race lane's Go cache is pruned and saved only on a successful push to
+# main that did not already restore today's exact entry.
+UNIT_CACHE_SAVE_CONDITION = (
+    "${{ success() && github.event_name == 'push' && github.ref == 'refs/heads/main' "
+    "&& steps.go-cache.outputs.cache-hit != 'true' }}"
+)
 # A documentation-only pull request skips these Go producers; test (1.26)
 # accepts the skip only with a successful classifier that said docs_only.
 DOCS_CARVEOUT_AGGREGATE = "test-go126"
@@ -379,7 +385,8 @@ def unit_lane_errors(jobs: dict) -> list[str]:
         errors.append(f"{UNIT_PRODUCER} runs no go test command")
     if any(re.search(r"(?:^|\s)-race(?:\s|$)", line) for line in go_tests):
         errors.append(f"{UNIT_PRODUCER} runs the race detector; that belongs to the race lane")
-    if any(re.search(r"(?:^|\s)-count=", line) for line in go_tests):
+    # Both spellings: -count=1 and -count 1 each disable result caching.
+    if any(re.search(r"(?:^|\s)--?count(?:=|\s|$)", line) for line in go_tests):
         errors.append(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache")
     errors.extend(unit_cache_errors(unit))
     return errors
@@ -403,12 +410,21 @@ def unit_cache_errors(unit: dict) -> list[str]:
         return errors
     if restores[0].get("with", {}).get("key") != saves[0].get("with", {}).get("key"):
         errors.append(f"{UNIT_PRODUCER} saves its Go cache under a different key than it restores")
-    for step in saves + [s for s in steps if s.get("name") == "Prune unused Go cache entries"]:
-        condition = str(step.get("if", ""))
-        if "github.event_name == 'push'" not in condition or "github.ref == 'refs/heads/main'" not in condition:
+    # The whole condition, normalized, not its words: an added "|| ..." keeps
+    # every approved fragment while letting pull requests save.
+    approved = " ".join(UNIT_CACHE_SAVE_CONDITION.split())
+    prunes = [s for s in steps if s.get("name") == "Prune unused Go cache entries"]
+    if len(prunes) != 1:
+        errors.append(f"{UNIT_PRODUCER} must prune unused Go cache entries before saving")
+    for step in saves + prunes:
+        condition = step.get("if")
+        if not isinstance(condition, str) or " ".join(condition.split()) != approved:
             errors.append(f"{UNIT_PRODUCER} step {step.get('name') or step.get('uses')} must run only on a push to main")
-    if steps.index(saves[0]) < max(i for i, s in enumerate(steps) if s.get("name") == "Run tests (no race)"):
-        errors.append(f"{UNIT_PRODUCER} saves its Go cache before the tests ran")
+    test_steps = [i for i, s in enumerate(steps) if s.get("name") == "Run tests (no race)"]
+    if len(test_steps) != 1:
+        errors.append(f"{UNIT_PRODUCER} must have exactly one 'Run tests (no race)' step")
+    elif steps.index(saves[0]) < test_steps[0] or (len(prunes) == 1 and steps.index(prunes[0]) > steps.index(saves[0])):
+        errors.append(f"{UNIT_PRODUCER} must run its tests, then prune, then save its Go cache")
     return errors
 
 
@@ -736,10 +752,28 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         errors = unit_cache_errors(broken[UNIT_PRODUCER])
         self.assertIn(f"{UNIT_PRODUCER} uses the combined cache action, which saves from pull requests", errors)
 
+        # A broadened condition keeps every approved fragment and still fails.
+        broken = copy.deepcopy(self.jobs)
+        original = broken[UNIT_PRODUCER]["steps"][save]["if"]
+        broken[UNIT_PRODUCER]["steps"][save]["if"] = original.replace("}}", "|| github.event_name == 'pull_request' }}")
+        self.assertIn("github.ref == 'refs/heads/main'", broken[UNIT_PRODUCER]["steps"][save]["if"])
+        self.assertTrue(any("must run only on a push to main" in e for e in unit_cache_errors(broken[UNIT_PRODUCER])))
+
+        for spelling in ("-count=1 ", "-count 1 ", "--count=1 "):
+            with self.subTest(spelling=spelling):
+                broken = copy.deepcopy(self.jobs)
+                run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
+                run["run"] = run["run"].replace("go test ", "go test " + spelling, 1)
+                self.assertIn(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache", unit_lane_errors(broken))
+
+        # A renamed test step is reported, not raised.
         broken = copy.deepcopy(self.jobs)
         run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
-        run["run"] = run["run"].replace("go test ", "go test -count=1 ", 1)
-        self.assertIn(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache", unit_lane_errors(broken))
+        run["name"] = "Run tests"
+        self.assertIn(
+            f"{UNIT_PRODUCER} must have exactly one 'Run tests (no race)' step",
+            unit_cache_errors(broken[UNIT_PRODUCER]),
+        )
 
     def test_docs_only_skip_requires_classifier_proof(self):
         gate = next(

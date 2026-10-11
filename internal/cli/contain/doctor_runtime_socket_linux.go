@@ -65,8 +65,8 @@ func probeDoctorRuntimeSockets(ctx context.Context, env *doctorEnv) doctorResult
 		}
 	}
 	for _, unit := range units {
-		out, _, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=TemporaryFileSystem", "--value")
-		if showErr != nil {
+		out, code, showErr := env.runCmd(ctx, "systemctl", "show", unit, "--property=TemporaryFileSystem", "--value")
+		if showErr != nil || code != 0 {
 			return unknown("runtime mounts for "+unit+" could not be read", "restore access to systemctl and rerun `pipelock contain doctor`")
 		}
 		if err := sameLifecyclePathList(strings.TrimSpace(out), runtimeSocketTemporaryFileSystems()); err != nil {

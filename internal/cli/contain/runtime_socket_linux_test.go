@@ -6,16 +6,13 @@
 package contain
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 )
 
 // This creates an unprivileged, throwaway user unit. It never uses the managed
@@ -29,20 +26,12 @@ func TestRuntimeSocketMountIsolation(t *testing.T) {
 	if err != nil {
 		t.Skip("python3 unavailable for runtime socket probe")
 	}
-	runtimeDir := filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
-	if _, err := os.Stat(filepath.Join(runtimeDir, "bus")); err != nil {
-		t.Skipf("no user systemd bus: %v", err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
+	ctx, runtimeDir, env := runtimeMountSystemdFixture(t)
 	base := []string{"--user", "--wait", "--pipe", "--collect", "--property=PrivateUsers=true", "--property=PrivateNetwork=true"}
 	run := func(args []string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, runner, args...) // #nosec G204 -- fixed systemd-run executable resolved by LookPath; fixture properties and command only
-		cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus")
+		cmd.Env = env
 		return cmd.CombinedOutput()
-	}
-	if out, err := run(append(append([]string{}, base...), "/usr/bin/true")); err != nil {
-		t.Skipf("user systemd cannot create private user/network namespaces: %v: %s", err, out)
 	}
 	var sockets []string
 	for _, parent := range []string{runtimeDir, "/dev/shm"} {

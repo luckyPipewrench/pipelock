@@ -6,16 +6,20 @@
 package sandbox
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"io"
 	"net"
+	"net/http"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestSandboxRejectsHostUnixSocket(t *testing.T) {
@@ -51,6 +55,9 @@ func TestSandboxRejectsHostUnixSocket(t *testing.T) {
 		t.Run(map[bool]string{false: "normal", true: "strict"}[strict], func(t *testing.T) {
 			if strict && !seccompFilterSupportedByBuild() {
 				t.Skip("strict sandbox requires the linux/amd64 seccomp implementation")
+			}
+			if strict {
+				requireStrictSandboxPrimitives(t)
 			}
 			var output bytes.Buffer
 			cmd, err := LaunchSandboxed(LaunchConfig{
@@ -108,21 +115,13 @@ func TestSandboxProxyDoorwayIsolation(t *testing.T) {
 			if strict && !seccompFilterSupportedByBuild() {
 				t.Skip("strict sandbox requires linux/amd64 seccomp")
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(15*time.Second))
 			defer cancel()
 			var calls atomic.Int32
 			err := LaunchStandalone(StandaloneLaunchConfig{
 				Ctx: ctx, Workspace: t.TempDir(), Strict: strict,
-				Command: []string{python, "-c", `import urllib.request; assert urllib.request.urlopen("http://api.vendor.example/check",timeout=5).read() == b"doorway"`},
-				ProxyHandler: func(conn net.Conn) {
-					defer func() { _ = conn.Close() }()
-					_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-					var request [4096]byte
-					if n, err := conn.Read(request[:]); err == nil && strings.Contains(string(request[:n]), "api.vendor.example/check") {
-						calls.Add(1)
-						_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ndoorway")
-					}
-				},
+				Command:      []string{python, "-c", `import urllib.request; assert urllib.request.urlopen("http://api.vendor.example/check",timeout=5).read() == b"doorway"`},
+				ProxyHandler: func(conn net.Conn) { serveIPCProxyProbe(conn, &calls) },
 			})
 			if err != nil {
 				t.Fatalf("proxy doorway launch: %v", err)
@@ -131,5 +130,43 @@ func TestSandboxProxyDoorwayIsolation(t *testing.T) {
 				t.Fatalf("proxy handled %d requests, want 1", calls.Load())
 			}
 		})
+	}
+}
+
+func serveIPCProxyProbe(conn net.Conn, calls *atomic.Int32) {
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(testwait.Deadline(5 * time.Second)))
+	request, err := http.ReadRequest(bufio.NewReader(conn))
+	if err != nil {
+		return
+	}
+	defer func() { _ = request.Body.Close() }()
+	if request.Host == "api.vendor.example" && request.URL.Path == "/check" {
+		calls.Add(1)
+		_, _ = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 7\r\nConnection: close\r\n\r\ndoorway")
+	}
+}
+
+func TestIPCProxyProbeAcceptsFragmentedHeaders(t *testing.T) {
+	client, server := net.Pipe()
+	t.Cleanup(func() { _ = client.Close(); _ = server.Close() })
+	if err := client.SetDeadline(time.Now().Add(testwait.Deadline(5 * time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int32
+	go serveIPCProxyProbe(server, &calls)
+	for _, fragment := range []string{"GET http://api.vendor.", "example/check HTTP/1.1\r\nHost: api.vendor.example\r\n", "\r\n"} {
+		if _, err := io.WriteString(client, fragment); err != nil {
+			t.Fatalf("writing fragmented request: %v", err)
+		}
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	data, err := io.ReadAll(response.Body)
+	if err != nil || string(data) != "doorway" || calls.Load() != 1 {
+		t.Fatalf("response body %q, calls %d, error %v", data, calls.Load(), err)
 	}
 }

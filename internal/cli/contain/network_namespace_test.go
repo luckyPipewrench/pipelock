@@ -369,7 +369,7 @@ func TestContainedLaunchWrapperNoDisplayNoBind(t *testing.T) {
 	if !strings.Contains(body, "--property=PrivateTmp=true") {
 		t.Fatalf("contained launch wrapper missing PrivateTmp isolation:\n%s", body)
 	}
-	if strings.Contains(body, "BindReadOnlyPaths=/tmp/.X11-unix/") {
+	if strings.Contains(body, "BindReadOnlyPaths=/tmp/.X11-unix") {
 		t.Fatalf("contained launch wrapper baked a display socket with no display configured:\n%s", body)
 	}
 	if !strings.Contains(body, env.pipelockTarget) {

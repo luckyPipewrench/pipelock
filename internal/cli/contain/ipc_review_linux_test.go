@@ -133,6 +133,7 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 	for _, tc := range []struct {
 		name, body, mounts, want string
 		readErr, showErr         error
+		showCode                 int
 	}{
 		{name: "current", body: wrapper, mounts: strings.Join(mounts, " "), want: statusPass},
 		{name: "stale wrapper", body: strings.ReplaceAll(wrapper, "  --property=TemporaryFileSystem=/run:ro", ""), mounts: strings.Join(mounts, " "), want: statusFail},
@@ -141,6 +142,8 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 		{name: "missing wrapper", readErr: os.ErrNotExist, want: statusFail},
 		{name: "unreadable wrapper", readErr: os.ErrPermission, want: statusUnknown},
 		{name: "unreadable unit", body: wrapper, showErr: errors.New("manager unavailable"), want: statusUnknown},
+		{name: "denied unit without Go error", body: wrapper, mounts: "Access denied", showCode: 1, want: statusUnknown},
+		{name: "failed unit with mount output", body: wrapper, mounts: strings.Join(mounts, " "), showCode: 1, want: statusUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := &doctorEnv{wrapperDir: "/fixture", readFile: func(path string) ([]byte, error) {
@@ -148,13 +151,18 @@ func TestDoctorRuntimeSocketIsolation(t *testing.T) {
 					return nil, os.ErrNotExist
 				}
 				return []byte(tc.body), tc.readErr
-			}, runCmd: func(context.Context, string, ...string) (string, int, error) { return tc.mounts, 0, tc.showErr }}
+			}, runCmd: func(context.Context, string, ...string) (string, int, error) {
+				return tc.mounts, tc.showCode, tc.showErr
+			}}
 			got := check(t.Context(), env)
 			if got.status != tc.want {
 				t.Fatalf("result = %+v, want %s", got, tc.want)
 			}
 			if got.status == statusFail && !strings.Contains(got.remediation, "contain install") {
 				t.Fatalf("unusable remedy: %+v", got)
+			}
+			if tc.showCode != 0 && (!strings.Contains(got.remediation, "restore access to systemctl") || strings.Contains(got.remediation, "contain install")) {
+				t.Fatalf("command failure got reinstall remedy: %+v", got)
 			}
 		})
 	}

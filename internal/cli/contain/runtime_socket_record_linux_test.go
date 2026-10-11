@@ -7,13 +7,13 @@ package contain
 
 import (
 	"context"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func TestRuntimeSocketMountRecordMatchesSystemd(t *testing.T) {
@@ -25,24 +25,15 @@ func TestRuntimeSocketMountRecordMatchesSystemd(t *testing.T) {
 	if err != nil {
 		t.Skip("systemctl unavailable for mount record proof")
 	}
-	runtimeDir := filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
-	if _, err := os.Stat(filepath.Join(runtimeDir, "bus")); err != nil {
-		t.Skipf("no user systemd bus: %v", err)
-	}
+	ctx, _, env := runtimeMountSystemdFixture(t)
 	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, name, args...) // #nosec G204 -- fixed systemd executables and test-owned arguments
-		cmd.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus")
+		cmd.Env = env
 		return cmd.CombinedOutput()
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	base := []string{"--user", "--wait", "--pipe", "--collect", "--property=PrivateUsers=true", "--property=PrivateNetwork=true"}
-	if out, err := run(ctx, runner, append(base, "/usr/bin/true")...); err != nil {
-		t.Skipf("user systemd cannot apply private namespaces: %v: %s", err, out)
 	}
 	unit := "pipelock-runtime-record-" + strconv.FormatInt(time.Now().UnixNano(), 10) + ".service"
 	t.Cleanup(func() {
-		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		cleanup, stop := context.WithTimeout(context.WithoutCancel(ctx), testwait.Deadline(10*time.Second))
 		defer stop()
 		_, _ = run(cleanup, manager, "--user", "stop", unit)
 	})

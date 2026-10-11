@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
 func runtimeMountSystemdFixture(t *testing.T) (context.Context, string, []string) {
@@ -31,13 +32,17 @@ func runtimeMountSystemdFixture(t *testing.T) (context.Context, string, []string
 	if _, err := os.Stat(filepath.Join(runtimeDir, "bus")); err != nil {
 		t.Skipf("user systemd bus unavailable: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), testwait.Deadline(45*time.Second))
 	t.Cleanup(cancel)
 	env := append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir, "DBUS_SESSION_BUS_ADDRESS=unix:path="+runtimeDir+"/bus")
-	cmd := exec.CommandContext(ctx, "systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet", "--property=PrivateUsers=true", "--property=PrivateNetwork=true", "/usr/bin/true")
+	// This independent prerequisite must create a mount namespace too. Some
+	// runners permit user/network namespaces but their LSM denies tmpfs mounts.
+	// Do not use the product's runtime properties here: broken properties must
+	// still fail the actual isolation tests after this minimal mount succeeds.
+	cmd := exec.CommandContext(ctx, "systemd-run", "--user", "--wait", "--pipe", "--collect", "--quiet", "--property=PrivateUsers=true", "--property=PrivateNetwork=true", "--property=TemporaryFileSystem=/dev/shm", "/usr/bin/true")
 	cmd.Env = env
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("user systemd cannot create private namespaces: %v: %s", err, out)
+		t.Skipf("user systemd cannot create private user/network/mount namespaces: %v: %s", err, out)
 	}
 	return ctx, runtimeDir, env
 }
@@ -119,7 +124,7 @@ func TestDoorwayDirectoryObservesSocketReplacement(t *testing.T) {
 			t.Cleanup(func() { _ = first.Close() })
 			unit := fmt.Sprintf("pipelock-doorway-proof-%d-%d.service", os.Getpid(), time.Now().UnixNano())
 			t.Cleanup(func() {
-				stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+				stop, cancel := context.WithTimeout(context.WithoutCancel(ctx), testwait.Deadline(5*time.Second))
 				defer cancel()
 				cmd := exec.CommandContext(stop, "systemctl", "--user", "stop", unit) // #nosec G204 -- exclusively test-owned transient unit.
 				cmd.Env = env

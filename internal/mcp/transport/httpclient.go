@@ -156,8 +156,11 @@ func (c *HTTPClient) SessionID() string {
 // for reading the response. The caller must drain the reader to release resources.
 //
 // Response handling:
-//   - 202 Accepted: returns an emptyReader (EOF immediately). Used for notifications.
+//   - 202 Accepted, 204 No Content, or another declared-empty 2xx: returns an
+//     emptyReader (EOF immediately). Used for notifications.
 //   - 200 OK: response body is scanned by the returned reader.
+//   - 4xx carrying the JSON-RPC error for this request: returned as the response
+//     so the caller scans and forwards the upstream's own answer.
 //   - Content-Type: text/event-stream: wraps body in SSEReader via closingSSEReader.
 //   - Other Content-Types (typically application/json): reads body as a single message.
 //   - Other status codes: returns an error (body is closed).
@@ -234,8 +237,10 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 		return nil
 	}
 
-	// 202 Accepted: notification acknowledged, no body to read.
-	if resp.StatusCode == http.StatusAccepted {
+	// An empty 2xx acknowledges a notification or client response; there is
+	// no message to read. A request is owed an answer, so only the legacy 202
+	// acknowledges one.
+	if AcceptedWithoutBody(resp) && (resp.StatusCode == http.StatusAccepted || !ExpectsReply(msg)) {
 		if err := trackSessionID(); err != nil {
 			_ = resp.Body.Close()
 			return nil, err
@@ -252,15 +257,27 @@ func (c *HTTPClient) SendMessage(ctx context.Context, msg []byte) (MessageReader
 	}
 
 	// Error status codes: do not echo attacker-controlled upstream body bytes
-	// into returned errors; callers commonly log these strings.
+	// into returned errors; callers commonly log these strings. A 4xx that
+	// carries the JSON-RPC error answering this request is the upstream's
+	// reply, not a transport failure, so it goes back to the caller as the
+	// response and through the same scanning as any other.
 	if resp.StatusCode >= 400 {
+		if IsClientError(resp.StatusCode) {
+			if requestID, ok := clientErrorCandidate(resp, msg); ok {
+				// The body is read on the first ReadMessage, not here, so the
+				// caller's per-response timeout bounds a refusal that sends
+				// headers and then stalls, exactly as it bounds a 200 body.
+				return &clientErrorReader{resp: resp, requestID: requestID}, nil
+			}
+		}
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// Only 200 OK and 202 Accepted are valid successful POST responses for
-	// this transport. Treat other 2xx statuses (201/203/204/206/etc.) as
-	// unexpected upstream responses instead of normalizing them to success.
+	// Only 200 OK and the empty acknowledgements above are valid successful
+	// POST responses for this transport. Treat a 2xx that carries content on
+	// any other status (201/203/206/etc.) as an unexpected upstream response
+	// instead of normalizing it to success.
 	if resp.StatusCode != http.StatusOK {
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -330,6 +347,135 @@ func httpRPCID(raw json.RawMessage) any {
 	default:
 		return nil
 	}
+}
+
+// clientErrorCandidate reports whether a 4xx reply may carry the JSON-RPC
+// error answering the request in msg: the request has a method and an ID, and
+// the reply declares exactly one application/json type. It returns the
+// request's raw ID. The body is not read here.
+func clientErrorCandidate(resp *http.Response, msg []byte) (json.RawMessage, bool) {
+	var request map[string]json.RawMessage
+	if json.Unmarshal(msg, &request) != nil || request["method"] == nil || httpRPCID(request["id"]) == nil {
+		return nil, false
+	}
+	contentTypes := resp.Header.Values("Content-Type")
+	if len(contentTypes) != 1 {
+		return nil, false
+	}
+	if mediaType, _, err := mime.ParseMediaType(contentTypes[0]); err != nil || mediaType != "application/json" {
+		return nil, false
+	}
+	return request["id"], true
+}
+
+// UpstreamRequestFailedMessage is the error message a caller sees when an
+// upstream refusal cannot be relayed. It matches the message the MCP bridges
+// write for any other failed upstream request, so the two read the same.
+const UpstreamRequestFailedMessage = "pipelock: upstream error: upstream HTTP request failed"
+
+// clientErrorReader yields a 4xx reply as one message. A body that is the
+// JSON-RPC error for this request is returned as-is, for the caller to scan.
+// Anything else becomes a sanitized error carrying the request's ID, so the
+// caller is answered without any upstream bytes. A notification never gets
+// here: it has no ID to answer.
+type clientErrorReader struct {
+	resp      *http.Response
+	requestID json.RawMessage
+	done      bool
+}
+
+func (r *clientErrorReader) ReadMessage() ([]byte, error) {
+	if r.done {
+		return nil, io.EOF
+	}
+	r.done = true
+	body, err := ReadClientErrorBody(r.resp)
+	_ = r.resp.Body.Close()
+	if errors.Is(err, ErrIncompleteResponse) {
+		// Cancellation, a deadline or a dropped connection: report it the way
+		// SingleMessageReader reports a broken 200 body, not as an answer.
+		return nil, err
+	}
+	if err == nil && IsClientErrorReply(body, r.requestID) {
+		return body, nil
+	}
+	return sanitizedClientErrorReply(r.requestID), nil
+}
+
+// Close releases the body so a caller can abort a read that stalls.
+func (r *clientErrorReader) Close() error {
+	return r.resp.Body.Close()
+}
+
+// sanitizedClientErrorReply is composed directly rather than encoded: id is a
+// JSON string or number already accepted by httpRPCID, and the rest is
+// constant, so the bytes are exactly what an encoder would produce.
+func sanitizedClientErrorReply(id json.RawMessage) []byte {
+	return []byte(`{"jsonrpc":"2.0","id":` + string(id) + `,"error":{"code":-32003,"message":"` + UpstreamRequestFailedMessage + `"}}`)
+}
+
+// IsClientErrorReply reports whether body is a JSON-RPC error answering id.
+// Both HTTP transports use this guard before relaying a refusal as a message.
+func IsClientErrorReply(body []byte, id json.RawMessage) bool {
+	requestID := httpRPCID(id)
+	if requestID == nil {
+		return false
+	}
+	replyID, ok := jsonRPCErrorReplyID(body)
+	return ok && httpRPCID(replyID) == requestID
+}
+
+// IsUncorrelatedErrorReply reports whether body is a JSON-RPC error whose ID
+// is null. JSON-RPC 2.0 requires the id member in every response and sets it to
+// null when the request could not be identified: the MCP reference server sends
+// "Session not found" with a 404 and id null, and the specification tells a
+// client to start a new session on that 404. Such an error answers no
+// in-flight request, so a client cannot mistake it for another call's outcome.
+// An absent id is a malformed response, not an uncorrelated one.
+func IsUncorrelatedErrorReply(body []byte) bool {
+	replyID, ok := jsonRPCErrorReplyID(body)
+	return ok && string(replyID) == "null"
+}
+
+// jsonRPCErrorReplyID returns the raw ID of body when body is exactly a
+// JSON-RPC 2.0 error: no result, method or params, an error object with an
+// integer code and a string message, and no duplicate or case-folded envelope
+// keys a client might read instead.
+func jsonRPCErrorReplyID(body []byte) (json.RawMessage, bool) {
+	var reply map[string]json.RawMessage
+	if json.Unmarshal(body, &reply) != nil || jsonscan.RejectDuplicateKeys(body) != nil ||
+		jsonscan.RejectCaseFoldedAliases(body, "jsonrpc", "id", "method", "result", "error", "params") != nil {
+		return nil, false
+	}
+	var version string
+	if json.Unmarshal(reply["jsonrpc"], &version) != nil || version != "2.0" ||
+		reply["method"] != nil || reply["result"] != nil || reply["params"] != nil ||
+		!validJSONRPCErrorObject(reply["error"]) {
+		return nil, false
+	}
+	return reply["id"], true
+}
+
+// validJSONRPCErrorObject reports whether raw is an object whose code is an
+// integer and whose message is a string, the two members the JSON-RPC 2.0
+// specification requires of every error.
+func validJSONRPCErrorObject(raw json.RawMessage) bool {
+	// A map keeps member names exact: struct decoding would match "Code" and
+	// "Message" case-insensitively and accept an error a client reads as empty.
+	var errObj map[string]json.RawMessage
+	var message *string
+	if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &errObj) != nil ||
+		json.Unmarshal(errObj["message"], &message) != nil || message == nil {
+		return false
+	}
+	code := errObj["code"]
+	// Read the raw token so a quoted code such as "-32001", which json.Number
+	// would accept, is refused.
+	if len(code) == 0 || (code[0] != '-' && (code[0] < '0' || code[0] > '9')) {
+		return false
+	}
+	_, err := json.Number(code).Int64()
+	return err == nil
 }
 
 func httpInitializeRequestID(msg []byte) any {

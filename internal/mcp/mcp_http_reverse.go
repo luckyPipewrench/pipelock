@@ -909,6 +909,71 @@ func RunHTTPListenerProxy(
 				PolicyHash:    requestBaseOpts.receiptPolicyHash(),
 			})
 		}
+		// relayUpstreamClientError answers the client with the upstream's own
+		// 4xx: its status, the headers a client acts on (the OAuth challenge in
+		// WWW-Authenticate above all) and its body, once the response scanner
+		// has passed them. Collapsing a refusal into 502 told clients the
+		// gateway had failed, so they could not reauthenticate, see the 405
+		// that means "no GET stream", or read a JSON-RPC error. Anything the
+		// scanner flags or cannot read gets the sanitized 502 instead. It
+		// returns false for any other status so the caller carries on.
+		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent receipt.EmitOpts) bool {
+			if !transport.IsClientError(upResp.StatusCode) {
+				return false
+			}
+			outcomeReason := "upstream_http_client_error"
+			defer func() {
+				if intent.ActionID != "" {
+					emitMCPOutcomeReceipt(requestBaseOpts.receiptEmitter(), requestBaseOpts.v2ReceiptEmitter(), requestBaseOpts.ReceiptGroup, safeLogW, intent, "error", -1, outcomeReason, requestBaseOpts.requireReceipts())
+				}
+			}()
+			withhold := func(reason string) {
+				outcomeReason = reason
+				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d reply withheld: %s\n", upResp.StatusCode, reason)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write(upstreamErrorResponse(rpcID, fmt.Errorf("upstream HTTP request failed")))
+			}
+			// 407 is the listener's own credential challenge. An upstream 407
+			// relayed as-is would read as Pipelock refusing the client's
+			// listener credential, so it is withheld like any other reply
+			// that cannot be relayed faithfully, and the intent still closes.
+			if upResp.StatusCode == http.StatusProxyAuthRequired {
+				withhold("upstream 407 is not relayed")
+				return true
+			}
+			// A session escalated to block every response gets no upstream
+			// content, refusals included, matching ForwardScanned.
+			if reqRec != nil && decide.UpgradeAction("", reqRec.EscalationLevel(), adaptiveCfg) == config.ActionBlock {
+				withhold("session escalation blocks responses")
+				return true
+			}
+			reply, err := readUpstreamClientError(upResp)
+			if err != nil {
+				withhold("reply cannot be read for scanning")
+				return true
+			}
+			if problem := reply.framingProblem(rpcID); problem != "" {
+				if problem == refusalFramingDisguised {
+					recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, problem)
+				}
+				withhold(problem)
+				return true
+			}
+			if ok, finding := reply.scan(requestBaseOpts); !ok {
+				recordListenerFinding(reqRec, session.SignalBlock, auditSessionKey, mcpReceiptLayerResponse, finding)
+				withhold(finding)
+				return true
+			}
+			relayOpts := requestBaseOpts
+			relayOpts.Rec = reqRec
+			relayOpts.AdaptiveCfg = adaptiveCfg
+			relayOpts.AdaptiveCfgFn = nil
+			if ok, reason := reply.writeIfActive(w, clientState, relayOpts); !ok {
+				withhold(reason)
+			}
+			return true
+		}
 		blockedByForwardedHeaderDLP := func() bool {
 			headerResult := scanMCPListenerHeadersForTarget(r.Context(), r.Header, reqScanner, opts.requestBodyCfg(), upstreamURL)
 			if headerResult == nil {
@@ -1100,6 +1165,9 @@ func RunHTTPListenerProxy(
 			upResp.Body = newIdleTimeoutReader(upResp.Body, upstreamIdleReadTimeout)
 			defer func() { _ = upResp.Body.Close() }()
 
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
+				return
+			}
 			if upResp.StatusCode >= 400 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 				w.Header().Set("Content-Type", "application/json")
@@ -1254,6 +1322,12 @@ func RunHTTPListenerProxy(
 			defer func() { _ = upResp.Body.Close() }()
 			if upResp.StatusCode >= 500 {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
+			}
+			// A refused DELETE (405 when the server does not let clients end
+			// sessions, 404 for an unknown one) is relayed, and the session
+			// state below is kept because nothing was terminated.
+			if relayUpstreamClientError(upResp, nil, clientState.recorder, listenerStateAuditKey(), receipt.EmitOpts{}) {
+				return
 			}
 			if !validMCPSessionDeleteStatus(upResp.StatusCode) {
 				_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream DELETE returned unsupported HTTP %d\n", upResp.StatusCode)
@@ -1721,8 +1795,12 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// 202 Accepted: notification acknowledged, no body.
-		if upResp.StatusCode == http.StatusAccepted {
+		// An empty 2xx acknowledges a notification or client response. The
+		// client always gets 202 Accepted, the status the MCP specification
+		// requires, even when the upstream answered 204 or another empty 2xx.
+		// A request is owed an answer, so only the legacy 202 acknowledges
+		// one; any other empty 2xx falls through to the sanitized 502.
+		if transport.AcceptedWithoutBody(upResp) && (upResp.StatusCode == http.StatusAccepted || !transport.ExpectsReply(decision.ForwardMessage)) {
 			if !clientState.commitIfActive(func() {
 				commitMCPToolCall(baselineRec, mcpFrameBaselineIdentity(frame))
 				w.WriteHeader(http.StatusAccepted)
@@ -1744,8 +1822,13 @@ func RunHTTPListenerProxy(
 			return
 		}
 
-		// Upstream error: sanitize before forwarding (don't leak body content
-		// that could contain injection payloads).
+		// A 4xx is relayed once scanned; see relayUpstreamClientError.
+		if relayUpstreamClientError(upResp, frame.ID, reqRec, auditSessionKey, decision.Outcome.Receipt) {
+			return
+		}
+
+		// Upstream failure (5xx): sanitize before forwarding (don't leak body
+		// content that could contain injection payloads).
 		if upResp.StatusCode >= 400 {
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream HTTP %d\n", upResp.StatusCode)
 			w.Header().Set("Content-Type", "application/json")

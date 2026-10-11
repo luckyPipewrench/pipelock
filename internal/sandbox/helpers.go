@@ -132,6 +132,9 @@ func appliedLaunchOutcome(strict, noNetNS, seccompSupported bool, landlock, secc
 	if !landlock.Active {
 		return LaunchOutcomeRefused, fmt.Errorf("landlock is required for sandbox filesystem containment; use a kernel with Landlock support or a separately labelled `pipelock contain` host boundary")
 	}
+	if strict && !seccompSupported && landlock.Version < 9 {
+		return LaunchOutcomeRefused, fmt.Errorf("strict mode on this architecture requires Landlock ABI 9 for Unix socket isolation (kernel ABI %d) and a supported seccomp filter; this build has no seccomp support", landlock.Version)
+	}
 	if !seccomp.Active && (strict || seccompSupported) {
 		return LaunchOutcomeRefused, fmt.Errorf("seccomp was not applied; refusing a launch whose build supports the filter")
 	}

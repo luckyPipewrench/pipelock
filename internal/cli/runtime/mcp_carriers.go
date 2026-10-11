@@ -75,7 +75,7 @@ func resolveChildEnvironmentForOS(envFileCarrier string, mappings, unset []strin
 		key = environmentKey(key, goos)
 		value, ok := os.LookupEnv(carrier)
 		if !ok {
-			return nil, fmt.Errorf("--env-carrier %q: required carrier %s is unset", mapping, carrier)
+			return nil, fmt.Errorf("--env-carrier: required carrier %s is unset", carrier)
 		}
 		if key == "PATH" {
 			base, found := values[key]
@@ -121,10 +121,10 @@ func environmentKey(key, goos string) string {
 func parseCarrierMapping(flag, mapping string) (string, string, error) {
 	target, carrier, ok := strings.Cut(mapping, "=")
 	if !ok || target == "" || carrier == "" || strings.Contains(carrier, "=") {
-		return "", "", fmt.Errorf("%s %q: expected TARGET=CARRIER", flag, mapping)
+		return "", "", fmt.Errorf("%s: expected TARGET=CARRIER", flag)
 	}
 	if err := validateCarrierName(flag, carrier); err != nil {
-		return "", "", fmt.Errorf("%s %q: %w", flag, mapping, err)
+		return "", "", err
 	}
 	return target, carrier, nil
 }

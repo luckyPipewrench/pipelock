@@ -182,8 +182,17 @@ start on any other host.
    Drop `--server-name` here: the registered name becomes the server name, and a
    different explicit name is refused.
 
-4. Check the result with `pipelock mcp identity inspect --config ... --upstream
-   "$T3_MCP_URL"`, then start a fresh session and look for the startup line
+4. Check the result from the launch environment where T3 supplies the current session's `T3_MCP_URL` and `T3_MCP_AUTHORIZATION`, using the same carrier mapping as the proxy. The wrapper's export does not set the variable in a separate operator shell. Set it for this invocation without printing the credential:
+
+   ```sh
+   PIPELOCK_VSCODE_T3_MCP_AUTH="$T3_MCP_AUTHORIZATION" \
+   pipelock mcp identity inspect \
+     --config "$HOME/.config/pipelock/t3-identities.yaml" \
+     --upstream "$T3_MCP_URL" \
+     --header-carrier Authorization=PIPELOCK_VSCODE_T3_MCP_AUTH
+   ```
+
+   Then start a fresh session and look for the startup line
    `MCP identity: server=local-orchestrator source=verified-local-service
    binding=verified-local-session` on the wrapper's stderr.
 

@@ -646,6 +646,7 @@ type Proxy struct {
 	receiptKeysHeld      []string                              // hex public keys this process has loaded to sign receipts
 	envelopeEmitterPtr   atomic.Pointer[envelope.Emitter]      // mediation envelope emitter (nil = disabled)
 	envelopeVerifierPtr  atomic.Pointer[envelope.Verifier]     // inbound mediation envelope verifier (nil = disabled)
+	envelopeReplayState  *envelope.Verifier                    // last enabled verifier; guarded by reloadSerialMu
 	shieldEngine         *shield.Engine                        // browser shield HTML/JS rewriter (nil = not initialized)
 	frozenTools          *FrozenToolRegistry                   // frozen tool inventories for airlock hard tier
 	wd                   *health.Watchdog                      // wedge-detection watchdog (nil = disabled)
@@ -924,6 +925,7 @@ func New(cfg *config.Config, logger *audit.Logger, sc *scanner.Scanner, m *metri
 		return nil, fmt.Errorf("inbound envelope verifier init: %w", err)
 	}
 	p.envelopeVerifierPtr.Store(verifier)
+	p.envelopeReplayState = verifier
 
 	// Build edition (agent registry in enterprise, noop in OSS).
 	ed, edErr := edition.NewEditionFunc(cfg, sc)
@@ -2416,7 +2418,7 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 	}
 	envelopeVerifier, envVerifyErr := buildInboundEnvelopeVerifier(cfg)
 	if envVerifyErr == nil {
-		envelopeVerifier.PreserveReplayState(p.envelopeVerifierPtr.Load())
+		envelopeVerifier.PreserveReplayState(p.envelopeReplayState)
 	}
 
 	if envVerifyErr != nil {
@@ -2620,6 +2622,9 @@ func (p *Proxy) Reload(cfg *config.Config, sc *scanner.Scanner) bool {
 		p.envelopeEmitterPtr.Store(nil)
 	}
 	p.envelopeVerifierPtr.Store(envelopeVerifier)
+	if envelopeVerifier != nil {
+		p.envelopeReplayState = envelopeVerifier
+	}
 	// Receipt publish: Store the staged emitter (may be nil) and
 	// mirror the receiptKeyPath field. When the recorder is missing
 	// we leave p.receiptKeyPath untouched so the startup-time invariant

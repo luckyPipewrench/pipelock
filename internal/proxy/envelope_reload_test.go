@@ -993,17 +993,25 @@ func TestProxyReloadRetainsInboundReplayState(t *testing.T) {
 	if _, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody)); err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range []bool{false, true} {
+	for _, change := range []string{"unrelated", "capacity", "disable-reenable"} {
 		next := p.CurrentConfig().Clone()
-		if change {
+		if change == "capacity" {
 			next.Mode = config.ModeStrict
 			next.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = 16
+		}
+		if change == "disable-reenable" {
+			disabled := next.Clone()
+			disabled.MediationEnvelope.VerifyInbound.Enabled = false
+			if !p.Reload(disabled, scanner.MustNew(disabled)) || p.envelopeVerifierPtr.Load() != nil {
+				t.Fatal("disable failed")
+			}
 		}
 		if !p.Reload(next, scanner.MustNew(next)) {
 			t.Fatal("reload failed")
 		}
-		if _, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody)); err == nil {
-			t.Fatal("reload forgot nonce")
+		_, err := p.envelopeVerifierPtr.Load().VerifyRequest(req, []byte(testInboundBody))
+		if code, ok := envelope.VerificationFailureCodeOf(err); !ok || code != envelope.VerificationFailureReplay {
+			t.Fatalf("want replay failure after reload, got %v", err)
 		}
 	}
 }

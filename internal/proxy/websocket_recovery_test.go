@@ -38,8 +38,8 @@ func TestWSRelayContainsUnexpectedPanic(t *testing.T) {
 					t.Fatal(err)
 				}
 				var b [1]byte
-				if _, err := peer.Read(b[:]); err == nil {
-					t.Fatal("peer remained open")
+				if _, err := peer.Read(b[:]); !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+					t.Fatalf("want closed connection, got %v", err)
 				}
 			}
 		})

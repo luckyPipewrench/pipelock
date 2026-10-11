@@ -1339,7 +1339,8 @@ fn html_decode<B: Budget>(s: &str, budget: &mut B) -> Result<String, String> {
 }
 
 // HTML numeric references always produce Unicode scalars. html-escape leaves
-// invalid scalar references unchanged; HTML5 (and Go) replaces them instead.
+// invalid scalar references unchanged; the v5 profile replaces them instead,
+// including values too large for a fixed-width accumulator.
 fn html_numeric_references(s: &str) -> String {
     const C1: [u32; 32] = [
         0x20ac, 0x81, 0x201a, 0x192, 0x201e, 0x2026, 0x2020, 0x2021, 0x2c6, 0x2030, 0x160, 0x2039,

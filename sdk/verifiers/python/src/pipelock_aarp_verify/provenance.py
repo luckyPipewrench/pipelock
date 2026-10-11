@@ -42,6 +42,68 @@ MAX_INPUT_BYTES = 2 << 20
 MAX_OUTPUT_BYTES = 1 << 20
 MAX_OPERATIONS = 32
 MAX_CUMULATIVE_PROCESSED_BYTES = 16 << 20
+
+
+def _html_decode_v5(value: str) -> str:
+    c1 = (
+        0x20AC,
+        0x81,
+        0x201A,
+        0x192,
+        0x201E,
+        0x2026,
+        0x2020,
+        0x2021,
+        0x2C6,
+        0x2030,
+        0x160,
+        0x2039,
+        0x152,
+        0x8D,
+        0x17D,
+        0x8F,
+        0x90,
+        0x2018,
+        0x2019,
+        0x201C,
+        0x201D,
+        0x2022,
+        0x2013,
+        0x2014,
+        0x2DC,
+        0x2122,
+        0x161,
+        0x203A,
+        0x153,
+        0x9D,
+        0x17E,
+        0x178,
+    )
+
+    def decode(match: re.Match[str]) -> str:
+        part = match[0]
+        if not part.startswith("&#"):
+            return html.unescape(part)
+        numeric = re.match(r"&#(?:[xX]([0-9a-fA-F]+)|([0-9]+));?", part)
+        if numeric is None:
+            return part
+        digits, radix = (numeric[1], 16) if numeric[1] is not None else (numeric[2], 10)
+        scalar = 0
+        for digit in digits:
+            # Saturation consumes arbitrarily long references without relying
+            # on Python's bounded decimal-string conversion or integer width.
+            scalar = min(scalar * radix + int(digit, radix), 0x110000)
+        if 0x80 <= scalar <= 0x9F:
+            scalar = c1[scalar - 0x80]
+        if scalar == 0 or scalar > 0x10FFFF or 0xD800 <= scalar <= 0xDFFF:
+            scalar = 0xFFFD
+        return chr(scalar) + part[numeric.end() :]
+
+    # Each reference sees the original pass input. Generated ampersands must
+    # wait for the next charged pass, and named references never reach numerics.
+    return re.sub(r"&[^&]*", decode, value)
+
+
 _KINDS = (
     "identity",
     "url_component",
@@ -757,7 +819,7 @@ class Recipe:
                 return v
             for _ in range(16):
                 charge(v)
-                out = html.unescape(v)
+                out = _html_decode_v5(v) if profile == "v5" else html.unescape(v)
                 if out == v:
                     break
                 v = out

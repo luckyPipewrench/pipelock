@@ -654,7 +654,7 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 	case OperationTextSegment:
 		return selectScannerTextSegment(value, op.Occurrence)
 	case OperationHTMLEntityDecode:
-		return scannerHTMLEntityDecode(value, budget)
+		return scannerHTMLEntityDecode(value, budget, profile.version)
 	case OperationWhitespaceCompact:
 		return scannerWhitespaceCompact(value), nil
 	case OperationURLNoiseStrip:
@@ -1091,7 +1091,7 @@ func selectScannerTextSegment(value string, occurrence uint32) (string, error) {
 	return segments[occurrence], nil
 }
 
-func scannerHTMLEntityDecode(value string, budget chargeBudget) (string, error) {
+func scannerHTMLEntityDecode(value string, budget chargeBudget, version transformProfileVersion) (string, error) {
 	if !strings.Contains(value, "&") {
 		return value, nil
 	}
@@ -1099,13 +1099,121 @@ func scannerHTMLEntityDecode(value string, budget chargeBudget) (string, error) 
 		if err := budget.charge(value); err != nil {
 			return "", err
 		}
-		decoded := html.UnescapeString(value)
+		var decoded string
+		if version == transformProfileV5 {
+			decoded = htmlEntityDecodeV5(value)
+		} else {
+			decoded = html.UnescapeString(value)
+		}
 		if decoded == value {
 			break
 		}
 		value = decoded
 	}
 	return value, nil
+}
+
+// htmlEntityDecodeV5 decodes each reference from the original pass input.
+// An ampersand produced by a reference is decoded only on the next charged pass.
+func htmlEntityDecodeV5(value string) string {
+	var out strings.Builder
+	for {
+		start := strings.IndexByte(value, '&')
+		if start < 0 {
+			out.WriteString(value)
+			return out.String()
+		}
+		out.WriteString(value[:start])
+		value = value[start:]
+		end := len(value)
+		if next := strings.IndexByte(value[1:], '&'); next >= 0 {
+			end = next + 1
+		}
+		part := value[:end]
+		if strings.HasPrefix(part, "&#") {
+			out.WriteString(htmlNumericReferenceV5(part))
+		} else {
+			out.WriteString(html.UnescapeString(part))
+		}
+		value = value[end:]
+	}
+}
+
+// htmlC1ReferenceReplacements is read-only after initialization. Only original
+// scalar values in the C1 window have entries.
+var htmlC1ReferenceReplacements = map[uint32]uint32{
+	0x80: 0x20ac,
+	0x81: 0x81,
+	0x82: 0x201a,
+	0x83: 0x192,
+	0x84: 0x201e,
+	0x85: 0x2026,
+	0x86: 0x2020,
+	0x87: 0x2021,
+	0x88: 0x2c6,
+	0x89: 0x2030,
+	0x8a: 0x160,
+	0x8b: 0x2039,
+	0x8c: 0x152,
+	0x8d: 0x8d,
+	0x8e: 0x17d,
+	0x8f: 0x8f,
+	0x90: 0x90,
+	0x91: 0x2018,
+	0x92: 0x2019,
+	0x93: 0x201c,
+	0x94: 0x201d,
+	0x95: 0x2022,
+	0x96: 0x2013,
+	0x97: 0x2014,
+	0x98: 0x2dc,
+	0x99: 0x2122,
+	0x9a: 0x161,
+	0x9b: 0x203a,
+	0x9c: 0x153,
+	0x9d: 0x9d,
+	0x9e: 0x17e,
+	0x9f: 0x178,
+}
+
+func htmlNumericReferenceV5(value string) string {
+	pos, radix := 2, uint32(10)
+	if pos < len(value) && (value[pos] == 'x' || value[pos] == 'X') {
+		pos++
+		radix = 16
+	}
+	digits := pos
+	var scalar uint32
+	for pos < len(value) {
+		var digit uint32
+		switch ch := value[pos]; {
+		case ch >= '0' && ch <= '9':
+			digit = uint32(ch - '0')
+		case radix == 16 && ch >= 'a' && ch <= 'f':
+			digit = uint32(ch-'a') + 10
+		case radix == 16 && ch >= 'A' && ch <= 'F':
+			digit = uint32(ch-'A') + 10
+		default:
+			goto decoded
+		}
+		// Saturate before overflow, but consume every remaining digit.
+		scalar = min(scalar*radix+digit, uint32(utf8.MaxRune)+1)
+		pos++
+	}
+decoded:
+	if pos == digits {
+		return value
+	}
+	if pos < len(value) && value[pos] == ';' {
+		pos++
+	}
+	if replacement, ok := htmlC1ReferenceReplacements[scalar]; ok {
+		scalar = replacement
+	}
+	if scalar == 0 || scalar > utf8.MaxRune || scalar >= 0xd800 && scalar <= 0xdfff {
+		scalar = utf8.RuneError
+	}
+	return string(rune(scalar)) + value[pos:]
 }
 
 func scannerWhitespaceCompact(value string) string {

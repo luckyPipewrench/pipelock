@@ -423,7 +423,9 @@ def unit_cache_errors(unit: dict) -> list[str]:
     test_steps = [i for i, s in enumerate(steps) if s.get("name") == "Run tests (no race)"]
     if len(test_steps) != 1:
         errors.append(f"{UNIT_PRODUCER} must have exactly one 'Run tests (no race)' step")
-    elif steps.index(saves[0]) < test_steps[0] or (len(prunes) == 1 and steps.index(prunes[0]) > steps.index(saves[0])):
+    elif len(prunes) == 1 and not test_steps[0] < steps.index(prunes[0]) < steps.index(saves[0]):
+        # Pruning before the tests would delete every restored entry: nothing
+        # restored is newer than the start marker until a test run touches it.
         errors.append(f"{UNIT_PRODUCER} must run its tests, then prune, then save its Go cache")
     return errors
 
@@ -765,6 +767,18 @@ test "${{ needs.test-replay-go127.result }}" = "success"
                 run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
                 run["run"] = run["run"].replace("go test ", "go test " + spelling, 1)
                 self.assertIn(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache", unit_lane_errors(broken))
+
+        # Every out-of-order arrangement of test, prune and save fails.
+        order_error = f"{UNIT_PRODUCER} must run its tests, then prune, then save its Go cache"
+        names = ("Run tests (no race)", "Prune unused Go cache entries")
+        for moved, before in ((names[1], names[0]), ("save", names[0]), ("save", names[1])):
+            with self.subTest(moved=moved, before=before):
+                broken = copy.deepcopy(self.jobs)
+                job_steps = broken[UNIT_PRODUCER]["steps"]
+                pick = (lambda s: str(s.get("uses", "")).startswith("actions/cache/save@")) if moved == "save" else (lambda s, n=moved: s.get("name") == n)
+                step = job_steps.pop(next(i for i, s in enumerate(job_steps) if pick(s)))
+                job_steps.insert(next(i for i, s in enumerate(job_steps) if s.get("name") == before), step)
+                self.assertIn(order_error, unit_cache_errors(broken[UNIT_PRODUCER]))
 
         # A renamed test step is reported, not raised.
         broken = copy.deepcopy(self.jobs)

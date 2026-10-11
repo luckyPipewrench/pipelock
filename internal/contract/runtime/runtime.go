@@ -19,6 +19,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/contract/inference/normalize"
 	contractreceipt "github.com/luckyPipewrench/pipelock/internal/contract/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/contract/store"
+	"github.com/luckyPipewrench/pipelock/internal/digestorigin"
 	"github.com/luckyPipewrench/pipelock/internal/session"
 )
 
@@ -87,6 +88,9 @@ type ActiveSet struct {
 	generation   uint64
 	selectors    []contract.ManifestSelector
 	contracts    map[string]contract.ContractEnvelope
+	// origins holds the computed manifest and contract hashes for the set's
+	// lifetime, so receipts stamped with them never scan them as content.
+	origins []digestorigin.Digest
 }
 
 // NewActiveSet builds an immutable active set from a validated store state.
@@ -116,12 +120,27 @@ func NewActiveSet(state store.State) (*ActiveSet, error) {
 			return nil, fmt.Errorf("%w: selector %q contract_hash mismatch", ErrInvalidDecisionInput, selector.SelectorID)
 		}
 	}
+	var origins []digestorigin.Digest
+	for _, hash := range append([]string{state.ManifestHash}, selectorContractHashes(selectors)...) {
+		if d, ok := digestorigin.Retain(strings.TrimPrefix(hash, "sha256:")); ok {
+			origins = append(origins, d)
+		}
+	}
 	return &ActiveSet{
 		manifestHash: state.ManifestHash,
 		generation:   state.Envelope.Body.Generation,
 		selectors:    selectors,
 		contracts:    contracts,
+		origins:      origins,
 	}, nil
+}
+
+func selectorContractHashes(selectors []contract.ManifestSelector) []string {
+	out := make([]string, 0, len(selectors))
+	for _, s := range selectors {
+		out = append(out, s.ContractHash)
+	}
+	return out
 }
 
 // ManifestHash returns the active manifest hash stamped into receipts.

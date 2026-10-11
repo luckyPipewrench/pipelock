@@ -558,7 +558,10 @@ func TestGuardHelpersCoverAbsentAndInvalidInputs(t *testing.T) {
 		cfg.FlightRecorder.SignCheckpoints = true
 		cfg.FlightRecorder.RequireReceipts = true
 		t.Setenv("PIPELOCK_POSTURE_PROOF", "relative-proof.json")
-		if _, err := newGuardEvidence(t.Context(), cfg, nil, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "loading Guard posture binding") {
+		// Receipt redaction binds the recorder to a scanner generation.
+		sc := scanner.MustNew(cfg)
+		t.Cleanup(sc.Close)
+		if _, err := newGuardEvidence(t.Context(), cfg, sc, metrics.New(), io.Discard); err == nil || !strings.Contains(err.Error(), "loading Guard posture binding") {
 			t.Fatalf("posture binding error = %v", err)
 		}
 	})

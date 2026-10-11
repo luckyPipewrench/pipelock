@@ -675,7 +675,12 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				// each Emit (to a formerly root-only file), silent to operators.
 				// A non-nil InitError means every Emit will fail until resolved,
 				// so name the cause and the remediation here.
-				if initErr := s.receiptEmitter.InitError(); initErr != nil {
+				if initErr := s.receiptEmitter.InitError(); errors.Is(initErr, receipt.ErrRetainedContent) {
+					// A configuration refusal, not a chain-resume fault: name
+					// the field and pattern and refuse to start.
+					s.cleanup()
+					return nil, fmt.Errorf("flight_recorder: %w", initErr)
+				} else if initErr != nil {
 					_, _ = io.WriteString(opts.Stderr, receiptResumeFailureNotice(initErr))
 				} else {
 					if openErr := emitStartupSessionOpen(s.receiptEmitter); openErr != nil {

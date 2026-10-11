@@ -623,6 +623,88 @@ unverifiable. `pipelock evidence doctor DIR` reports duplicate sequence values,
 conflicting `prev_hash` values, receipt-chain collisions, missing genesis, and
 gaps without modifying the directory.
 
+## Receipt content boundary
+
+With `flight_recorder.redact: true`, Pipelock scans what a receipt says, not
+the cryptography that proves it. Each receipt kind (v1 action receipts, v2
+evidence receipts, session controls, transcript roots, receipt group gates and
+signed decision records) classifies every field. Chain hashes, signatures,
+signer keys, nonces, timestamps and IDs that Pipelock generated are never
+scanned, so a signature or chain head that happens to resemble a rule-bundle
+pattern cannot refuse receipts. The same holds for the random suffix of a run
+session (`<base>.run.<suffix>`) and for a policy hash Pipelock computed from its
+configuration. An ID, hash or session suffix a caller supplied is scanned like
+any other content, even when it has the same shape as a generated one.
+
+Content is scanned alone, as a joined value list, as reassembled fragments,
+and as structured JSON.
+
+Reassembly joins client-influenced parts: content values and member names
+Pipelock did not declare, with a repeated value counted once per occurrence.
+Exact producer constants and retained operator values stay scanned alone, in
+the joined value list and as structured JSON. In reassembly they carry no
+client fragment, so they never combine with each other and do not widen the
+client search, but each may stand as one piece between client fragments, in
+any position, because a credential can contain a fixed word (a host name
+holding the principal "local", for example). A fixed value repeated in a
+receipt counts once. For v1 action receipts the fixed values are the emitter's
+configured principal and default actor, the recorder session base in a session
+opener, the fixed session-control targets and recognized transport labels. An
+agent override that differs from the configured actor, or an unrecognized
+transport label, is a client part. For v2 receipts, recognized payload-kind,
+action-type, transport, verdict and decision-source labels are fixed;
+principal, actor and arbitrary payload values are client parts. Unknown fields
+and caller-chosen member names are always client parts.
+
+The recorder's derived mirror fields take the same role: they repeat detail
+content with fixed formatting, so each may stand as one piece but is not a
+client fragment. Unattested mirror fields are client parts. A split that
+needs two or more fixed values as separate pieces is outside the bound, as is
+a split that needs a constant the receipt does not carry as text (an enum
+value that is dropped from the scanned content, such as a reversibility label).
+
+Reassembly follows field order, skipping unrelated parts. It tries every order
+of 2 or 3 parts and the reverse order of 4. A receipt of at most 20 client
+parts runs that full search when the combinations would build at most 4 MiB of
+text, and is refused whole when they would build more. A receipt with more
+client parts is ordinary evidence, so width alone doesn't refuse it. Pipelock
+then runs every pair, in both orders, when that work and the number of
+combinations stay inside those same limits, and every order of 3 when those fit
+too. The combinations that hold one fixed value run at the widest of those
+sizes that fits the same limits. The receipt is refused whole when even the
+pairs don't fit. A secret split into five or more pieces, into four pieces in
+any order other than forward or reverse, or into three pieces on a receipt too
+wide for the 3-part search, is outside that bound and isn't reassembled. Joins
+of 4 run only on a receipt of at most 20 client parts.
+
+Before signing:
+
+- A matching content field (target, pattern, agent label and similar) is
+  redacted, and the receipt is signed and recorded as usual.
+- A matching identity field, a match that spans fields, or content beyond the
+  scan bounds refuses that one receipt with `receipt content rejected`. The
+  error names the field and pattern, never the value. The chain does not
+  advance, and the next clean receipt succeeds.
+- Transcript roots, session controls, group gates and signed decision records
+  are never redacted. A match refuses them, and no seal or success is reported.
+
+The recorder entry's `type`, `event_kind`, `transport` and `summary` are
+derived from the signed receipt and checked at write time. Its `session_id`
+must be a session the recorder acquired. The session's operator base is
+scanned once, when the recorder acquires it, and a match refuses the
+acquisition with `receipt content rejected`.
+
+Content that every receipt carries (principal, actor, a policy hash Pipelock did
+not compute, and the session base) is checked at startup, at reload and when a
+receipt group or a Guard run activates. A match refuses the configuration with
+`configuration content trips the receipt detector`. Guard refuses the run even
+when `require_receipts` is off. A refused reload keeps the previous
+configuration.
+
+Each recorder keeps the detector it was started with for its whole life. A
+reload replaces the request scanner but not the receipt detector, so retained
+content is always checked against the detector that will scan the receipts.
+
 ## Resume and rotation integrity
 
 When one pipelock writer process restarts or rotates the evidence file, the

@@ -116,8 +116,17 @@ func TestRecursiveDecodingPreprocessingParity(t *testing.T) {
 		for _, includeURL := range []bool{false, true} {
 			got := decodeEncodingsFixpoint(input, includeURL)
 			want := referenceDecodeEncodingsFixpoint(input, includeURL)
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("recursive views differ for %q (URL %v):\ngot %#v\nwant %#v", input, includeURL, got, want)
+			for _, legacy := range want {
+				found := false
+				for _, view := range got {
+					if view == legacy {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatalf("legacy recursive view lost for %q (URL %v): %#v", input, includeURL, legacy)
+				}
 			}
 		}
 	}

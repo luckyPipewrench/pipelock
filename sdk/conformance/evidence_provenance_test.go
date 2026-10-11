@@ -339,3 +339,7 @@ func executedOperationKinds(recipe normalize.Recipe, input string, applyErr erro
 	}
 	return executed
 }
+
+func TestEvidenceProvenanceV4Corpus(t *testing.T) {
+	replayProvenanceCorpus(t, "v4", normalize.EvidenceProvenanceProfileV4Digest)
+}

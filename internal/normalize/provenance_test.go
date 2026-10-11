@@ -594,6 +594,7 @@ func TestSupportedOperationKinds(t *testing.T) {
 		OperationASCIIAlphanumericStrip,
 		OperationASCIIUpper,
 		OperationJSONUnicodeEscape,
+		OperationDecodeRecovery,
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("SupportedOperationKinds() = %v, want %v", got, want)
@@ -756,5 +757,38 @@ func TestOperationParameterPresence(t *testing.T) {
 	}
 	if got, err := back.Apply("A%42C"); err != nil || got != "abc" {
 		t.Fatalf("Go-issued recipe round trip: got %q, err %v", got, err)
+	}
+}
+
+func TestTransformProfileV4DigestAndVocabulary(t *testing.T) {
+	path := filepath.Clean(filepath.Join("..", "..", "sdk", "conformance", "testdata", "transform-profile", "evidence-provenance-transform-v4.json"))
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if got, want := "sha256:"+hex.EncodeToString(sum[:]), EvidenceProvenanceProfileV4Digest; got != want {
+		t.Fatalf("v4 digest = %q, want %q", got, want)
+	}
+	var profile struct {
+		Format              string `json:"format"`
+		Profile             string `json:"profile"`
+		Version             int    `json:"version"`
+		OperationVocabulary []struct {
+			Kind string `json:"kind"`
+		} `json:"operation_vocabulary"`
+	}
+	if err := json.Unmarshal(data, &profile); err != nil {
+		t.Fatal(err)
+	}
+	if profile.Format != "pipelock-evidence-provenance-transform-profile/v4" || profile.Version != 4 {
+		t.Fatalf("profile identity = format %q version %d", profile.Format, profile.Version)
+	}
+	gotKinds := make([]OperationKind, 0, len(profile.OperationVocabulary))
+	for _, operation := range profile.OperationVocabulary {
+		gotKinds = append(gotKinds, OperationKind(operation.Kind))
+	}
+	if !slices.Equal(gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV4Digest)) {
+		t.Fatalf("v4 vocabulary = %v, want %v", gotKinds, SupportedOperationKindsForProfile(EvidenceProvenanceProfileV4Digest))
 	}
 }

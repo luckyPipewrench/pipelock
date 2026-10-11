@@ -403,10 +403,8 @@ func (s *Scanner) scanCoreResponseWithMemo(content string, suppress coreResponse
 	// Quinary: vowel-folded matching.
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(content)
-		if folded != content {
-			if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
-			}
+		if matches := filterCoreResponsePass(folded, content, memo.match(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), ViewVowelFold, suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: folded}
 		}
 	}
 
@@ -511,10 +509,8 @@ func (s *Scanner) matchDecodedCoreNormalized(decoded, decodedViewLabel string, s
 	}
 	if len(s.core.responseVowelFoldPatterns) > 0 {
 		folded := normalize.FoldVowels(normalized)
-		if folded != normalized {
-			if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
-				return responseMatchSet{matches: matches, content: folded}
-			}
+		if matches := filterCoreResponsePass(folded, normalized, matchPatternsPreFiltered(s.core.responseVowelFoldPreFilter, s.core.responseVowelFoldPatterns, folded), vowelFoldViewLabel(decodedViewLabel), suppress); len(matches) > 0 {
+			return responseMatchSet{matches: matches, content: folded}
 		}
 	}
 	return responseMatchSet{}
@@ -783,8 +779,12 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	}
 
 	// Individual query keys and values (decoded + encoding variants).
-	for key, values := range parsed.Query() {
+	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
+		key := pair.key
 		decodedKey := IterativeDecode(key)
+		if decodedKey != key {
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(key, decodes)...)
+		}
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
 		for _, d := range decodes.decode(decodedKey, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -792,8 +792,12 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
 		}
-		for _, v := range values {
+		{
+			v := pair.value
 			decoded := IterativeDecode(v)
+			if decoded != v {
+				targets = append(targets, queryValueDecodedTargetsWithDecodes(v, decodes)...)
+			}
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
 			// The floor sees the same decoded views configured DLP does, so an
 			// empty configured pattern list cannot reopen an encoding.
@@ -807,6 +811,9 @@ func (s *Scanner) checkCoreDLPWithDecodes(parsed *url.URL, decodes *decodingMemo
 	// Dot-collapse hostname.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
 		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
+		for _, d := range decodes.decode(hostname, false) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+		}
 	}
 
 	// Noise-stripped path.

@@ -231,6 +231,7 @@ const (
 	OperationASCIIAlphanumericStrip OperationKind = "ascii_alphanumeric_strip"
 	OperationASCIIUpper             OperationKind = "ascii_upper"
 	OperationJSONUnicodeEscape      OperationKind = "json_unicode_escape"
+	OperationDecodeRecovery         OperationKind = "decode_recovery"
 )
 
 // SupportedOperationKinds is the union of the registered recipe vocabularies.
@@ -248,7 +249,7 @@ func SupportedOperationKinds() []OperationKind {
 		OperationWhitespaceCompact, OperationURLNoiseStrip, OperationOrderedQueryConcat,
 		OperationQuerySubsequence, OperationHostnameDotRemove, OperationEncodedRun,
 		OperationCanaryCanonicalize, OperationASCIIAlphanumericStrip,
-		OperationASCIIUpper, OperationJSONUnicodeEscape,
+		OperationASCIIUpper, OperationJSONUnicodeEscape, OperationDecodeRecovery,
 	}
 }
 
@@ -256,17 +257,16 @@ func SupportedOperationKinds() []OperationKind {
 // registered transform profile. V1 stays frozen even when a later profile adds
 // an operation.
 func SupportedOperationKindsForProfile(digest string) []OperationKind {
-	// The vocabulary is one ordered list. v1 drops the last three kinds
-	// (ascii_alphanumeric_strip, ascii_upper, json_unicode_escape). v2 drops
-	// the last two. v3 is the full list. Inserting a kind anywhere but at the
-	// end changes a published profile.
+	// Published vocabularies have fixed lengths; new kinds append to the list.
 	kinds := SupportedOperationKinds()
 	switch digest {
 	case EvidenceProvenanceProfileV1Digest:
-		return kinds[:len(kinds)-3]
+		return kinds[:27]
 	case EvidenceProvenanceProfileV2Digest:
-		return kinds[:len(kinds)-2]
+		return kinds[:28]
 	case EvidenceProvenanceProfileV3Digest:
+		return kinds[:30]
+	case EvidenceProvenanceProfileV4Digest:
 		return kinds
 	default:
 		return nil
@@ -323,7 +323,9 @@ const (
 	// EvidenceProvenanceProfileV3Digest identifies the profile that adds ASCII
 	// uppercase folding, JSON unicode-escape decoding, base32hex, and NFC
 	// recomposition of matching_normalize.
-	EvidenceProvenanceProfileV3Digest       = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
+	EvidenceProvenanceProfileV3Digest = "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
+	// EvidenceProvenanceProfileV4Digest adds partial query decoding and bounded encoding recovery.
+	EvidenceProvenanceProfileV4Digest       = "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c"
 	evidenceProvenanceProfileMaxInputBytes  = 2 << 20
 	evidenceProvenanceProfileMaxOutputBytes = 1 << 20
 )
@@ -334,6 +336,7 @@ const (
 	transformProfileV1 transformProfileVersion = iota + 1
 	transformProfileV2
 	transformProfileV3
+	transformProfileV4
 )
 
 type transformProfile struct {
@@ -353,6 +356,9 @@ var evidenceProvenanceProfiles = map[string]transformProfile{
 	},
 	EvidenceProvenanceProfileV3Digest: {
 		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV3,
+	},
+	EvidenceProvenanceProfileV4Digest: {
+		maxInputBytes: evidenceProvenanceProfileMaxInputBytes, maxOutputBytes: evidenceProvenanceProfileMaxOutputBytes, version: transformProfileV4,
 	},
 }
 
@@ -401,6 +407,10 @@ func (r Recipe) Validate() error {
 // vocabularies when a later profile adds a step.
 func operationAllowedByProfile(op Operation, version transformProfileVersion) error {
 	switch op.Kind {
+	case OperationDecodeRecovery:
+		if version < transformProfileV4 {
+			return fmt.Errorf("unsupported by transform profile")
+		}
 	case OperationASCIIAlphanumericStrip:
 		if version < transformProfileV2 {
 			return fmt.Errorf("unsupported by transform profile")
@@ -603,7 +613,7 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 	case OperationVowelFold:
 		return FoldVowels(value), nil
 	case OperationQueryUnescape:
-		return scannerQueryUnescape(value, budget)
+		return scannerQueryUnescape(value, budget, profile.version)
 	case OperationInvisibleSpace:
 		return ReplaceInvisibleWithSpace(value), nil
 	case OperationMatchingNormalize:
@@ -638,6 +648,8 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 			return "", fmt.Errorf("liberal base64 decode: %w", err)
 		}
 		return string(decoded), nil
+	case OperationDecodeRecovery:
+		return DecodeRecovery(value, op.Alphabet, op.Occurrence)
 	case OperationEncodedTokenNormalize:
 		return scannerEncodedTokenNormalize(value, op.Alphabet, profile.version), nil
 	case OperationTextSegment:
@@ -649,9 +661,9 @@ func (op Operation) apply(value string, budget chargeBudget, profile transformPr
 	case OperationURLNoiseStrip:
 		return scannerURLNoiseStrip(value, profile.version), nil
 	case OperationOrderedQueryConcat:
-		return scannerOrderedQueryConcat(value, budget)
+		return scannerOrderedQueryConcat(value, budget, profile.version)
 	case OperationQuerySubsequence:
-		return scannerQuerySubsequence(value, op.Indices, budget)
+		return scannerQuerySubsequence(value, op.Indices, budget, profile.version)
 	case OperationHostnameDotRemove:
 		return strings.ReplaceAll(value, ".", ""), nil
 	case OperationEncodedRun:
@@ -743,6 +755,14 @@ func (op Operation) validate() error {
 			return fmt.Errorf("unknown base64 alphabet %q", op.Alphabet)
 		}
 		return op.without(paramAlphabet | paramDecodePadding).noParametersForValidation(reject)
+	case OperationDecodeRecovery:
+		if op.Alphabet != "hex" && op.Alphabet != "standard" && op.Alphabet != "url" {
+			return fmt.Errorf("unknown recovery alphabet %q", op.Alphabet)
+		}
+		if op.Occurrence > 3 || op.Alphabet == "hex" && op.Occurrence > 1 {
+			return fmt.Errorf("recovery occurrence out of range")
+		}
+		return op.without(paramAlphabet | paramOccurrence).noParametersForValidation(reject)
 	case OperationEncodedTokenNormalize:
 		switch op.Alphabet {
 		case "hex", "base32", "base64_standard", "base64_url":
@@ -840,12 +860,15 @@ func (op Operation) selectURLComponent(value string) (string, error) {
 	}
 }
 
-func scannerQueryUnescape(value string, budget chargeBudget) (string, error) {
+func scannerQueryUnescape(value string, budget chargeBudget, version transformProfileVersion) (string, error) {
 	for range evidenceProvenanceScannerMaxDecodeRounds {
 		if err := budget.charge(value); err != nil {
 			return "", err
 		}
 		decoded, err := url.QueryUnescape(value)
+		if version >= transformProfileV4 {
+			decoded, err = QueryUnescapePartial(value), nil
+		}
 		if err != nil || decoded == value {
 			break
 		}
@@ -1135,12 +1158,12 @@ func scannerURLNoiseStripV1(value string) string {
 	}, value)
 }
 
-func scannerOrderedQueryConcat(rawQuery string, budget chargeBudget) (string, error) {
+func scannerOrderedQueryConcat(rawQuery string, budget chargeBudget, version transformProfileVersion) (string, error) {
 	var result strings.Builder
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
-			decoded, err := scannerQueryUnescape(value, budget)
+			decoded, err := scannerQueryUnescape(value, budget, version)
 			if err != nil {
 				return "", err
 			}
@@ -1150,12 +1173,12 @@ func scannerOrderedQueryConcat(rawQuery string, budget chargeBudget) (string, er
 	return result.String(), nil
 }
 
-func scannerQuerySubsequence(rawQuery string, indices []uint8, budget chargeBudget) (string, error) {
+func scannerQuerySubsequence(rawQuery string, indices []uint8, budget chargeBudget, version transformProfileVersion) (string, error) {
 	values := make([]string, 0, evidenceProvenanceQueryMaxValues)
 	for _, pair := range strings.Split(rawQuery, "&") {
 		_, value, _ := strings.Cut(pair, "=")
 		if value != "" {
-			decoded, err := scannerQueryUnescape(value, budget)
+			decoded, err := scannerQueryUnescape(value, budget, version)
 			if err != nil {
 				return "", err
 			}

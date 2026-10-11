@@ -16,6 +16,7 @@ from pipelock_aarp_verify.provenance import (
     PROFILE_DIGEST,
     PROFILE_DIGEST_V2,
     PROFILE_DIGEST_V3,
+    PROFILE_DIGEST_V4,
     UNICODE_VERSION,
     ProvenanceError,
     Recipe,
@@ -31,6 +32,7 @@ CORPUS = (
 )
 CORPUS_V2 = CORPUS.with_name("evidence-provenance-v2.json")
 CORPUS_V3 = CORPUS.with_name("evidence-provenance-v3.json")
+CORPUS_V4 = CORPUS.with_name("evidence-provenance-v4.json")
 
 
 def test_evidence_provenance_transform_v3_corpus() -> None:
@@ -273,3 +275,23 @@ def test_liberal_decode_errors_name_the_operation(
     recipe = Recipe.from_json(PROFILE_DIGEST, [operation])
     with pytest.raises(ProvenanceError, match=label):
         recipe.apply(value)
+
+def test_evidence_provenance_transform_v4_corpus() -> None:
+    corpus = json.loads(CORPUS_V4.read_text())
+    assert corpus["profile_digest"] == PROFILE_DIGEST_V4
+    assert corpus["vectors"], "v4 corpus has no vectors"
+    for vector in corpus["vectors"]:
+        recipe = Recipe.from_json(
+            vector.get("transform_profile_digest", corpus["profile_digest"]),
+            vector.get("recipe", []),
+        )
+        if vector.get("want_error"):
+            with pytest.raises(ProvenanceError) as excinfo:
+                recipe.apply_bytes(base64.b64decode(vector["input_b64"], validate=True))
+            assert vector["want_error"] in str(excinfo.value), vector["id"]
+        else:
+            assert recipe.apply_bytes(
+                base64.b64decode(vector["input_b64"], validate=True)
+            ).encode() == base64.b64decode(vector["output_b64"], validate=True), vector[
+                "id"
+            ]

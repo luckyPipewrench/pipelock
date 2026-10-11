@@ -59,7 +59,7 @@ func benchKnownSecretsScanner(b *testing.B, count int) *Scanner {
 	b.Helper()
 	var secrets strings.Builder
 	for i := range count {
-		_, _ = fmt.Fprintf(&secrets, "bench-known-value-%02d-"+"Zq7Lm2Xc9Vb4"+"Nn8Kp3Rt6Wy1", i) // split so secret scanners skip the fake value
+		_, _ = fmt.Fprintf(&secrets, "bench-known-value-%02d-"+"Zq7Lm2Xc9Vb4"+"Nn8Kp3Rt6Wy1"+"\n", i) // split so secret scanners skip the fake value
 	}
 	path := filepath.Join(b.TempDir(), "secrets.txt")
 	if err := os.WriteFile(path, []byte(secrets.String()), 0o600); err != nil {

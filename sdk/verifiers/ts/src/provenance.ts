@@ -11,7 +11,9 @@ export const EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST =
   "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
 export const EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST =
   "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
-type ProfileVersion = "v1" | "v2" | "v3";
+export const EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST =
+  "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c";
+type ProfileVersion = "v1" | "v2" | "v3" | "v4";
 
 const MAX_INPUT_BYTES = 2 << 20;
 const MAX_OUTPUT_BYTES = 1 << 20;
@@ -50,6 +52,7 @@ const kinds = new Set([
   "ascii_alphanumeric_strip",
   "ascii_upper",
   "json_unicode_escape",
+  "decode_recovery",
 ]);
 
 export function supportedOperationKinds(): string[] {
@@ -61,7 +64,10 @@ export function supportedOperationKindsForProfile(digest: string): string[] {
   return [...kinds].filter(
     (kind) =>
       (profile !== "v1" || kind !== "ascii_alphanumeric_strip") &&
-      (profile === "v3" || (kind !== "ascii_upper" && kind !== "json_unicode_escape")),
+      (profile === "v3" ||
+        profile === "v4" ||
+        (kind !== "ascii_upper" && kind !== "json_unicode_escape")) &&
+      (profile === "v4" || kind !== "decode_recovery"),
   );
 }
 
@@ -204,6 +210,7 @@ function resolveEvidenceProvenanceProfile(digest: unknown): ProfileVersion {
   if (digest === EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST) return "v1";
   if (digest === EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST) return "v2";
   if (digest === EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST) return "v3";
+  if (digest === EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST) return "v4";
   fail("recipe: transform profile digest: unknown profile");
 }
 
@@ -224,14 +231,20 @@ export function validateEvidenceProvenanceRecipe(
     const kind = opString(op, "kind", true)!;
     if (!kinds.has(kind)) fail(`recipe operation ${index} (${kind}): unknown operation`);
     validateOperation(op, kind);
+    if (kind === "decode_recovery" && profile !== "v4") fail("unsupported by transform profile");
     if (kind === "ascii_alphanumeric_strip" && profile === "v1")
       fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
-    if ((kind === "ascii_upper" || kind === "json_unicode_escape") && profile !== "v3")
+    if (
+      (kind === "ascii_upper" || kind === "json_unicode_escape") &&
+      profile !== "v3" &&
+      profile !== "v4"
+    )
       fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
     if (
       (kind === "base32_decode" || kind === "base32_decode_liberal") &&
       op.alphabet !== undefined &&
-      profile !== "v3"
+      profile !== "v3" &&
+      profile !== "v4"
     )
       fail(`recipe operation ${index} (${kind}): unsupported by transform profile`);
   }
@@ -310,6 +323,14 @@ function validateOperation(op: Record<string, unknown>, kind: string): void {
       opBool(op, "decode_padding");
       return;
     }
+    case "decode_recovery": {
+      assertFields(op, kind, ["kind", "alphabet", "occurrence"]);
+      const a = opString(op, "alphabet", true)!;
+      if (!["hex", "standard", "url"].includes(a)) fail("unknown recovery alphabet");
+      if (opUint(op, "occurrence") > (a === "hex" ? 1 : 3))
+        fail("recovery occurrence out of range");
+      return;
+    }
     case "encoded_token_normalize": {
       assertFields(op, kind, ["kind", "alphabet"]);
       if (
@@ -382,11 +403,14 @@ export function applyEvidenceProvenanceRecipe(
   return encoder.encode(value);
 }
 
-function percentDecode(value: string): string {
+function percentDecode(value: string, partial = false): string {
   const bytes: number[] = [];
   const chars = [...value];
   for (let i = 0; i < chars.length; i++) {
-    if (chars[i] === "%") {
+    if (
+      chars[i] === "%" &&
+      (!partial || /^[0-9a-f]{2}$/iu.test(chars.slice(i + 1, i + 3).join("")))
+    ) {
       const h = chars.slice(i + 1, i + 3).join("");
       if (!/^[0-9a-f]{2}$/iu.test(h)) fail("percent decode: malformed escape");
       bytes.push(Number.parseInt(h, 16));
@@ -398,7 +422,16 @@ function percentDecode(value: string): string {
 function queryUnescapeOnce(value: string): string {
   return percentDecode(value.replaceAll("+", " "));
 }
-function queryUnescape(value: string, charge: (value: string) => void): string {
+function queryUnescape(value: string, charge: (value: string) => void, partial = false): string {
+  if (partial) {
+    for (let i = 0; i < 500; i++) {
+      charge(value);
+      const next = percentDecode(value.replaceAll("+", " "), true);
+      if (next === value) break;
+      value = next;
+    }
+    return value;
+  }
   for (let i = 0; i < 500; i++) {
     charge(value);
     try {
@@ -565,7 +598,7 @@ function matching(value: string, profile: ProfileVersion): string {
     unicode15Normalize(confusableAscii(unicode15Normalize(stripInvisible(value), "NFKC")), "NFD"),
   );
   return mapUnicode15ExoticWhitespace(
-    profile === "v3" ? unicode15Normalize(stripped, "NFC") : stripped,
+    profile === "v3" || profile === "v4" ? unicode15Normalize(stripped, "NFC") : stripped,
   );
 }
 
@@ -797,7 +830,7 @@ function apply(
     case "vowel_fold":
       return value.replace(/[aeiouAEIOU]/gu, (c) => (c >= "A" && c <= "Z" ? "A" : "a"));
     case "query_unescape":
-      return queryUnescape(value, charge);
+      return queryUnescape(value, charge, profile === "v4");
     case "invisible_space":
       return stripInvisible(value, " ");
     case "matching_normalize":
@@ -820,6 +853,12 @@ function apply(
         opBool(op, "decode_padding"),
         false,
       );
+    case "decode_recovery":
+      return decodeRecovery(
+        value,
+        op.alphabet as string,
+        (op.occurrence as number | undefined) ?? 0,
+      );
     case "encoded_token_normalize":
       return encodedToken(value, op.alphabet as string, profile);
     case "text_segment": {
@@ -841,7 +880,7 @@ function apply(
         .split("&")
         .map((x) => (x.includes("=") ? x.slice(x.indexOf("=") + 1) : ""))
         .filter(Boolean)
-        .map((item) => queryUnescape(item, charge))
+        .map((item) => queryUnescape(item, charge, profile === "v4"))
         .join("");
     case "query_subsequence": {
       const values = value
@@ -849,7 +888,7 @@ function apply(
         .map((x) => (x.includes("=") ? x.slice(x.indexOf("=") + 1) : ""))
         .filter(Boolean)
         .slice(0, 20)
-        .map((item) => queryUnescape(item, charge));
+        .map((item) => queryUnescape(item, charge, profile === "v4"));
       return (op.indices as number[])
         .map((i) => values[i] ?? fail(`query subsequence: index ${i} unavailable`))
         .join("");
@@ -875,4 +914,23 @@ function apply(
 
 function stripLineBreaks(value: string): string {
   return value.replace(/[\r\n]/gu, "");
+}
+
+function decodeRecovery(value: string, alphabet: string, occurrence: number): string {
+  const source = alphabet === "hex" ? stripV2HexPrefixes(value) : value;
+  let token = source.replace(
+    alphabet === "hex"
+      ? /[^0-9a-fA-F]/gu
+      : alphabet === "standard"
+        ? /[^A-Za-z0-9+/=]/gu
+        : /[^A-Za-z0-9_=\-]/gu,
+    "",
+  );
+  if (token.length > 4096) return "";
+  token = token.slice(occurrence);
+  if (alphabet === "hex")
+    return text(Buffer.from(token.slice(0, Math.floor(token.length / 2) * 2), "hex"), "output");
+  token = token.split("=")[0]!;
+  if (token.length % 4 === 1) token = token.slice(0, -1);
+  return text(Buffer.from(token, alphabet === "url" ? "base64url" : "base64"), "output");
 }

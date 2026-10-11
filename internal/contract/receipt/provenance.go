@@ -407,6 +407,8 @@ func operationKindByte(kind normalize.OperationKind) (byte, error) {
 		return 29, nil
 	case normalize.OperationJSONUnicodeEscape:
 		return 30, nil
+	case normalize.OperationDecodeRecovery:
+		return 31, nil
 	default:
 		return 0, fmt.Errorf("unknown operation %q", kind)
 	}

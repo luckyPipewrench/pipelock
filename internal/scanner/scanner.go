@@ -1961,8 +1961,8 @@ const maxDecodeRounds = normalize.ScannerQueryUnescapeMaxRounds
 //pipelock:provenance-transform query_unescape
 func IterativeDecode(s string) string {
 	for range maxDecodeRounds {
-		decoded, err := url.QueryUnescape(s)
-		if err != nil || decoded == s {
+		decoded := normalize.QueryUnescapePartial(s)
+		if decoded == s {
 			break
 		}
 		s = decoded
@@ -2703,6 +2703,7 @@ func decodeEncodingsFixpoint(s string, includeURL bool) []decodedResult {
 
 func decodeEncodingsOnce(s string, includeURL bool) []decodedResult {
 	out := decodeEncodings(s)
+	out = append(out, recoverEncodingViews(s)...)
 	if !includeURL {
 		return out
 	}
@@ -2750,8 +2751,12 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Noise-strip each value to catch dot-separated keys (e.g. "s.k.-.a.n.t.-..." → "sk-ant-...").
 	// Try hex/base64/base32 decoding to catch encoded secrets
 	// (e.g. ?key=736b2d616e742d... is hex-encoded sk-ant-...).
-	for key, values := range parsed.Query() {
+	for _, pair := range rawQuerySecurityPairs(parsed.RawQuery) {
+		key := pair.key
 		decodedKey := IterativeDecode(key)
+		if decodedKey != key {
+			targets = append(targets, queryValueDecodedTargetsWithDecodes(key, decodes)...)
+		}
 		targets = append(targets, dlpTarget{decodedKey, dlpViewLabel("url_query_key"), ""})
 		for _, d := range decodes.decode(decodedKey, false) {
 			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
@@ -2759,8 +2764,12 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 		if stripped := stripURLNoise(decodedKey); stripped != decodedKey {
 			targets = append(targets, dlpTarget{stripped, dlpViewLabel("url_noise_stripped"), decodedKey})
 		}
-		for _, v := range values {
+		{
+			v := pair.value
 			decoded := IterativeDecode(v)
+			if decoded != v {
+				targets = append(targets, queryValueDecodedTargetsWithDecodes(v, decodes)...)
+			}
 			targets = append(targets, dlpTarget{decoded, dlpViewLabel("url_query_value"), ""})
 			targets = append(targets, queryValueDecodedTargetsWithDecodes(decoded, decodes)...)
 			if stripped := stripURLNoise(decoded); stripped != decoded {
@@ -2795,6 +2804,9 @@ func (s *Scanner) checkDLPWithDecodesAt(parsed *url.URL, decodes *decodingMemo, 
 	// Dots break regex character classes, so individual labels pass DLP checks.
 	if hostname := parsed.Hostname(); strings.Contains(hostname, ".") {
 		targets = append(targets, dlpTarget{removeHostnameDots(hostname), dlpViewLabel("subdomain"), hostname})
+		for _, d := range decodes.decode(hostname, false) {
+			targets = append(targets, dlpTarget{d.text, dlpViewLabel(d.encoding), ""})
+		}
 	}
 
 	// Strip URL noise from path to catch secrets split by dots, slashes, and
@@ -3219,23 +3231,39 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 		{text: strings.ToLower(decodedURL), viewLabel: lowerViewLabel("control_stripped_url:url_decoded")},
 	}
 
-	hits := newKnownValueWindowHits(texts)
-	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits); matched {
-			reason := reasonPrefix
-			if match.partialLen > 0 {
-				reason += fmt.Sprintf(" (partial %d)", match.partialLen)
-			} else if match.encoding != "" {
-				reason += " (" + match.encoding + "-encoded)"
+	for phase := range 2 {
+		if phase == 1 {
+			var decodes decodingMemo
+			texts = decodedKnownSecretViews(decodedURL, &decodes)
+		}
+
+		hits := newKnownValueWindowHits(texts)
+		for _, secret := range secrets {
+			var match knownSecretMatch
+			var start, end int
+			var viewLabel string
+			var matched bool
+			if phase == 0 {
+				match, start, end, viewLabel, matched = matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits)
+			} else {
+				match, start, end, viewLabel, matched = matchDecodedKnownSecret(secret, s.knownSecretWindows[secret], texts, hits)
 			}
-			return Result{
-				Allowed: false,
-				Reason:  reason,
-				Scanner: ScannerDLP,
-				Score:   1.0,
-				spans: []MatchSpan{
-					newMatchSpan(start, end, viewLabel, reasonPrefix, "", ""),
-				},
+			if matched {
+				reason := reasonPrefix
+				if match.partialLen > 0 {
+					reason += fmt.Sprintf(" (partial %d)", match.partialLen)
+				} else if match.encoding != "" {
+					reason += " (" + match.encoding + "-encoded)"
+				}
+				return Result{
+					Allowed: false,
+					Reason:  reason,
+					Scanner: ScannerDLP,
+					Score:   1.0,
+					spans: []MatchSpan{
+						newMatchSpan(start, end, viewLabel, reasonPrefix, "", ""),
+					},
+				}
 			}
 		}
 	}

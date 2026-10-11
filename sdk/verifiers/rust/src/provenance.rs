@@ -17,6 +17,8 @@ pub const PROFILE_DIGEST_V2: &str =
     "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7";
 pub const PROFILE_DIGEST_V3: &str =
     "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e";
+pub const PROFILE_DIGEST_V4: &str =
+    "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c";
 // Retained for v1-oriented callers; receipt replay always resolves the exact
 // supplied digest rather than falling back to this value.
 pub const PROFILE_DIGEST: &str = PROFILE_DIGEST_V1;
@@ -42,12 +44,13 @@ enum ProfileVersion {
     V1,
     V2,
     V3,
+    V4,
 }
 
 pub fn is_known_profile_digest(digest: &str) -> bool {
     matches!(
         digest,
-        PROFILE_DIGEST_V1 | PROFILE_DIGEST_V2 | PROFILE_DIGEST_V3
+        PROFILE_DIGEST_V1 | PROFILE_DIGEST_V2 | PROFILE_DIGEST_V3 | PROFILE_DIGEST_V4
     )
 }
 
@@ -69,10 +72,11 @@ impl Recipe {
             .map(|(i, v)| Operation::from_json(v).map_err(|e| format!("recipe operation {i}: {e}")))
             .collect::<Result<Vec<_>, _>>()?;
         for operation in &operations {
-            if (profile == ProfileVersion::V1 && operation.kind == "ascii_alphanumeric_strip")
-                || (profile != ProfileVersion::V3
+            if (profile != ProfileVersion::V4 && operation.kind == "decode_recovery")
+                || (profile == ProfileVersion::V1 && operation.kind == "ascii_alphanumeric_strip")
+                || (!matches!(profile, ProfileVersion::V3 | ProfileVersion::V4)
                     && ["ascii_upper", "json_unicode_escape"].contains(&operation.kind.as_str()))
-                || (profile != ProfileVersion::V3
+                || (!matches!(profile, ProfileVersion::V3 | ProfileVersion::V4)
                     && ["base32_decode", "base32_decode_liberal"]
                         .contains(&operation.kind.as_str())
                     && operation.fields.contains_key("alphabet"))
@@ -238,6 +242,7 @@ impl Operation {
             "base64_decode" => (&["kind"], &["decode_padding"]),
             "base64_decode_liberal" => (&["kind", "alphabet"], &["decode_padding"]),
             "encoded_token_normalize" => (&["kind", "alphabet"], &[]),
+            "decode_recovery" => (&["kind", "alphabet"], &["occurrence"]),
             "text_segment" => (&["kind"], &["occurrence"]),
             "query_subsequence" => (&["kind", "indices"], &[]),
             "encoded_run" => (&["kind", "minimum_length"], &["occurrence"]),
@@ -333,6 +338,17 @@ impl Operation {
                     "unknown encoded-token alphabet {:?}",
                     required_str(&self.fields, "alphabet")?
                 ));
+            }
+            "decode_recovery" => {
+                let a = required_str(&self.fields, "alphabet")?;
+                if !["hex", "standard", "url"].contains(&a) {
+                    return Err("unknown recovery alphabet".to_string());
+                }
+                if optional_u32(&self.fields, "occurrence")?.unwrap_or(0)
+                    > if a == "hex" { 1 } else { 3 }
+                {
+                    return Err("recovery occurrence out of range".to_string());
+                }
             }
             "encoded_token_normalize" => {}
             "text_segment" => {
@@ -443,7 +459,7 @@ impl Operation {
                     x => x,
                 })
                 .collect()),
-            "query_unescape" => query_unescape(value, budget),
+            "query_unescape" => query_unescape(value, budget, profile == ProfileVersion::V4),
             "invisible_space" => Ok(map_invisible(value, Some(' '))),
             "matching_normalize" => Ok(matching_normalize(value, profile)),
             "hex_decode_liberal" => strict_hex(value, false, "liberal hex decode"),
@@ -466,6 +482,11 @@ impl Operation {
                 false,
                 "liberal base64 decode",
             ),
+            "decode_recovery" => decode_recovery(
+                value,
+                required_str(&self.fields, "alphabet")?,
+                optional_u32(&self.fields, "occurrence")?.unwrap_or(0),
+            ),
             "encoded_token_normalize" => Ok(encoded_token_normalize(
                 value,
                 required_str(&self.fields, "alphabet")?,
@@ -480,13 +501,13 @@ impl Operation {
             "url_noise_strip" => Ok(url_noise_strip(value, profile)),
             "ordered_query_concat" => query_values(value)
                 .into_iter()
-                .map(|v| query_unescape(&v, budget))
+                .map(|v| query_unescape(&v, budget, profile == ProfileVersion::V4))
                 .collect(),
             "query_subsequence" => {
                 let values = query_values(value)
                     .into_iter()
                     .take(20)
-                    .map(|v| query_unescape(&v, budget))
+                    .map(|v| query_unescape(&v, budget, profile == ProfileVersion::V4))
                     .collect::<Result<Vec<_>, _>>()?;
                 self.fields["indices"]
                     .as_array()
@@ -534,6 +555,7 @@ fn validate_digest(digest: &str) -> Result<ProfileVersion, String> {
         PROFILE_DIGEST_V1 => Ok(ProfileVersion::V1),
         PROFILE_DIGEST_V2 => Ok(ProfileVersion::V2),
         PROFILE_DIGEST_V3 => Ok(ProfileVersion::V3),
+        PROFILE_DIGEST_V4 => Ok(ProfileVersion::V4),
         _ => Err("recipe: transform profile digest: unknown profile".to_string()),
     }
 }
@@ -583,10 +605,19 @@ fn strict_percent_decode(s: &str, plus: bool) -> Result<String, String> {
     String::from_utf8(percent_decode_str(&bytes).collect())
         .map_err(|_| "output: invalid UTF-8".to_string())
 }
-fn query_unescape<B: Budget>(s: &str, budget: &mut B) -> Result<String, String> {
+fn query_unescape<B: Budget>(s: &str, budget: &mut B, partial: bool) -> Result<String, String> {
     let mut v = s.to_string();
     for _ in 0..500 {
         budget.charge(&v)?;
+        if partial {
+            let next = String::from_utf8(percent_decode_str(&v.replace('+', " ")).collect())
+                .map_err(|_| "output: invalid UTF-8".to_string())?;
+            if next == v {
+                break;
+            }
+            v = next;
+            continue;
+        }
         match strict_percent_decode(&v, true) {
             Ok(next) if next != v => v = next,
             _ => break,
@@ -991,7 +1022,7 @@ fn matching_normalize(s: &str, profile: ProfileVersion) -> String {
         .collect::<String>();
     // ForMatching maps the explicit exotic set to spaces, but deliberately
     // preserves leading/trailing and repeated ordinary whitespace.
-    let x = if profile == ProfileVersion::V3 {
+    let x = if matches!(profile, ProfileVersion::V3 | ProfileVersion::V4) {
         x.nfc().collect::<String>()
     } else {
         x
@@ -1130,7 +1161,7 @@ fn encoded_token_normalize_v1(s: &str, a: &str) -> String {
 fn url_noise_strip(value: &str, profile: ProfileVersion) -> String {
     match profile {
         ProfileVersion::V1 => strip_chars(value, "./ \t\n\r+,;|"),
-        ProfileVersion::V2 | ProfileVersion::V3 => value
+        ProfileVersion::V2 | ProfileVersion::V3 | ProfileVersion::V4 => value
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '='))
             .collect(),
@@ -1261,4 +1292,42 @@ mod tests {
             Recipe::from_json(PROFILE_DIGEST, &json!([{"kind": "ordered_query_concat"}])).unwrap();
         assert_eq!(recipe.apply(&input).unwrap(), "x".repeat(21));
     }
+}
+
+fn decode_recovery(value: &str, alphabet: &str, occurrence: u32) -> Result<String, String> {
+    let source = if alphabet == "hex" {
+        strip_v2_hex_prefixes(value)
+    } else {
+        value.to_string()
+    };
+    let mut token: String = source
+        .bytes()
+        .filter(|c| {
+            if alphabet == "hex" {
+                c.is_ascii_hexdigit()
+            } else {
+                c.is_ascii_alphanumeric()
+                    || *c == b'='
+                    || if alphabet == "standard" {
+                        *c == b'+' || *c == b'/'
+                    } else {
+                        *c == b'-' || *c == b'_'
+                    }
+            }
+        })
+        .map(char::from)
+        .collect();
+    if token.len() > 4096 || occurrence as usize >= token.len() {
+        return Ok(String::new());
+    }
+    token = token[occurrence as usize..].to_string();
+    if alphabet == "hex" {
+        let bytes = hex::decode(&token[..token.len() / 2 * 2]).map_err(|e| e.to_string())?;
+        return String::from_utf8(bytes).map_err(|_| "output: invalid UTF-8".to_string());
+    }
+    token = token.split('=').next().unwrap_or("").to_string();
+    if token.len() % 4 == 1 {
+        token.pop();
+    }
+    base64_decode(&token, alphabet == "url", false, false, "decode recovery")
 }

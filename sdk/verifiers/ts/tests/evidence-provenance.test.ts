@@ -10,6 +10,7 @@ import {
   EVIDENCE_PROVENANCE_PROFILE_V1_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V2_DIGEST,
   EVIDENCE_PROVENANCE_PROFILE_V3_DIGEST,
+  EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST,
   supportedOperationKindsForProfile,
 } from "../src/provenance.js";
 import { findPackageRoot } from "./paths.js";
@@ -35,6 +36,7 @@ const corpusPathV3 = resolve(
   packageRoot,
   "../../conformance/testdata/transform-profile/evidence-provenance-v3.json",
 );
+const corpusPathV4 = corpusPathV3.replace("v3.json", "v4.json");
 const corpus = JSON.parse(readFileSync(corpusPath, "utf8")) as {
   profile_digest: string;
   operation_coverage: string[];
@@ -267,4 +269,34 @@ test("url_component hostname rejects a malformed authority like Go", () => {
     recipe,
   );
   assert.equal(Buffer.from(ok).toString("utf8"), "api.vendor.example");
+});
+
+test("evidence provenance: v4 corpus executes every vector byte-exactly", () => {
+  const v4 = JSON.parse(readFileSync(corpusPathV4, "utf8")) as {
+    profile_digest: string;
+    vectors: Vector[];
+  };
+  assert.equal(v4.profile_digest, EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST);
+  assert.ok(v4.vectors.length > 0, "v4 corpus has no vectors");
+  for (const vector of v4.vectors) {
+    const recipe: { transform_profile_digest: string; operations: unknown[] } = {
+      transform_profile_digest: vector.transform_profile_digest ?? v4.profile_digest,
+      operations: vector.recipe ?? [],
+    };
+    if (vector.want_error) {
+      assert.throws(
+        () => applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        (error: unknown) => error instanceof Error && error.message.includes(vector.want_error!),
+        vector.id,
+      );
+    } else {
+      assert.equal(
+        Buffer.from(
+          applyEvidenceProvenanceRecipe(Buffer.from(vector.input_b64, "base64"), recipe),
+        ).toString("base64"),
+        vector.output_b64,
+        vector.id,
+      );
+    }
+  }
 });

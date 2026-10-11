@@ -708,8 +708,8 @@ func (s *Scanner) scanTextForDLPWithDecodes(ctx context.Context, text string, op
 	// cannot create a masking bypass: a disabled check never runs rather than
 	// running and being filtered away.
 	if opts.scanSecretLeak {
-		matches = append(matches, s.checkSecretsInText(s.envSecrets, cleaned, "Environment Variable Leak", "env")...)
-		matches = append(matches, s.checkSecretsInText(s.fileSecrets, cleaned, "Known Secret Leak", "")...)
+		matches = append(matches, s.checkSecretsInTextWithDecodes(s.envSecrets, cleaned, "Environment Variable Leak", "env", decodes)...)
+		matches = append(matches, s.checkSecretsInTextWithDecodes(s.fileSecrets, cleaned, "Known Secret Leak", "", decodes)...)
 	}
 
 	// Deduplicate matches by pattern name + encoding.
@@ -1000,6 +1000,11 @@ func decodeHTMLEntitiesWithPassCount(text string) (string, int) {
 // If encodedOverride is non-empty, all matches use that as the Encoded field (e.g. "env").
 // Otherwise, the actual encoding label from matchSecretEncodingSpan is used.
 func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encodedOverride string) []TextDLPMatch {
+	var decodes decodingMemo
+	return s.checkSecretsInTextWithDecodes(secrets, text, patternName, encodedOverride, &decodes)
+}
+
+func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternName, encodedOverride string, decodes *decodingMemo) []TextDLPMatch {
 	if len(secrets) == 0 {
 		return nil
 	}
@@ -1007,17 +1012,35 @@ func (s *Scanner) checkSecretsInText(secrets []string, text, patternName, encode
 	texts := []spanTextView{{text: text, viewLabel: ViewDLPNormalized}}
 	lowerTexts := []spanTextView{{text: strings.ToLower(text), viewLabel: lowerViewLabel(ViewDLPNormalized)}}
 
-	hits := newKnownValueWindowHits(texts)
-	for _, secret := range secrets {
-		if match, start, end, viewLabel, matched := matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits); matched {
-			m := TextDLPMatch{PatternName: patternName, Severity: "critical", PartialLen: match.partialLen}
-			if encodedOverride != "" {
-				m.Encoded = encodedOverride
+	for phase := range 2 {
+		if phase == 1 {
+			texts = decodedKnownSecretViews(text, decodes)
+		}
+
+		hits := newKnownValueWindowHits(texts)
+		for _, secret := range secrets {
+			var match knownSecretMatch
+			var start, end int
+			var viewLabel string
+			var matched bool
+			if phase == 0 {
+				match, start, end, viewLabel, matched = matchSecretEncodingSpanWithHits(secret, s.knownSecretWindows[secret], s.knownSecretEncodings[secret], texts, lowerTexts, hits)
 			} else {
-				m.Encoded = match.encoding
+				match, start, end, viewLabel, matched = matchDecodedKnownSecret(secret, s.knownSecretWindows[secret], texts, hits)
 			}
-			m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")
-			return []TextDLPMatch{m}
+			if matched {
+				m := TextDLPMatch{PatternName: patternName, Severity: "critical", PartialLen: match.partialLen}
+				if encodedOverride != "" {
+					m.Encoded = encodedOverride
+				} else {
+					m.Encoded = match.encoding
+					if m.Encoded == "" && phase == 1 {
+						m.Encoded = strings.TrimPrefix(viewLabel, ViewDLPNormalized+":")
+					}
+				}
+				m.span = newMatchSpan(start, end, viewLabel, patternName, "", "")
+				return []TextDLPMatch{m}
+			}
 		}
 	}
 	return nil

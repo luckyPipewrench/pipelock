@@ -28,6 +28,7 @@ PROFILE_DIGEST_V2 = (
 PROFILE_DIGEST_V3 = (
     "sha256:4f7b178addc2bafd55b6d524ac94d6b2ee7ccbe3595e836dd02dc579cc1b251e"
 )
+PROFILE_DIGEST_V4 = "sha256:f9566968c9a50297d67b48fd207329e685e3c61a176befd22aa8aad1d0f6877c"
 # Compatibility name for v1-focused callers. Recipes always dispatch from the
 # exact digest supplied on the wire and never fall back to this value.
 PROFILE_DIGEST = PROFILE_DIGEST_V1
@@ -67,6 +68,7 @@ _KINDS = (
     "ascii_alphanumeric_strip",
     "ascii_upper",
     "json_unicode_escape",
+    "decode_recovery",
 )
 _FIELDS = {
     "kind",
@@ -89,6 +91,8 @@ def profile_version(digest: str) -> str:
         return "v2"
     if digest == PROFILE_DIGEST_V3:
         return "v3"
+    if digest == PROFILE_DIGEST_V4:
+        return "v4"
     raise ProvenanceError(
         f"recipe: transform profile digest: unknown profile {digest!r}"
     )
@@ -213,7 +217,8 @@ def supported_operation_kinds_for_profile(digest: str) -> tuple[str, ...]:
         kind
         for kind in _KINDS
         if (version != "v1" or kind != "ascii_alphanumeric_strip")
-        and (version == "v3" or kind not in {"ascii_upper", "json_unicode_escape"})
+        and (version in {"v3", "v4"} or kind not in {"ascii_upper", "json_unicode_escape"})
+        and (version == "v4" or kind != "decode_recovery")
     )
 
 
@@ -316,13 +321,21 @@ def _strict_percent(value: str, plus: bool = False) -> str:
         raise ProvenanceError("output: invalid UTF-8") from exc
 
 
-def _query_unescape(value: str, charge: Callable[[str], None]) -> str:
+def _query_unescape(
+    value: str, charge: Callable[[str], None], partial: bool = False
+) -> str:
     for _ in range(500):
         charge(value)
-        try:
-            decoded = _strict_percent(value, plus=True)
-        except ProvenanceError:
-            break
+        if partial:
+            try:
+                decoded = unquote_to_bytes(value.replace("+", " ")).decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise ProvenanceError("output: invalid UTF-8") from exc
+        else:
+            try:
+                decoded = _strict_percent(value, plus=True)
+            except ProvenanceError:
+                break
         if decoded == value:
             break
         value = decoded
@@ -444,8 +457,10 @@ class Recipe:
             raise ProvenanceError(
                 "ascii_alphanumeric_strip is unsupported by transform profile"
             )
-        if kind in {"ascii_upper", "json_unicode_escape"} and profile != "v3":
+        if kind in {"ascii_upper", "json_unicode_escape"} and profile not in {"v3", "v4"}:
             raise ProvenanceError(f"{kind} is unsupported by transform profile")
+        if kind == "decode_recovery" and profile != "v4":
+            raise ProvenanceError("unsupported by transform profile")
         for field in ("selector", "profile"):
             if field in op and (not isinstance(op[field], str) or _control(op[field])):
                 raise ProvenanceError(f"{field} for {kind} contains control character")
@@ -493,7 +508,7 @@ class Recipe:
         elif kind in {"base32_decode", "base64_decode", "base32_decode_liberal"}:
             allowed.add("decode_padding")
             if kind.startswith("base32") and "alphabet" in op:
-                if profile != "v3":
+                if profile not in {"v3", "v4"}:
                     raise ProvenanceError(
                         "alphabet is unsupported by transform profile"
                     )
@@ -508,6 +523,16 @@ class Recipe:
             required.add("alphabet")
             if op.get("alphabet") not in {"standard", "url"}:
                 raise ProvenanceError(f"unknown base64 alphabet {op.get('alphabet')!r}")
+        elif kind == "decode_recovery":
+            allowed |= {"alphabet", "occurrence"}
+            required.add("alphabet")
+            if not isinstance(op.get("alphabet"), str) or op["alphabet"] not in {
+                "hex", "standard", "url"
+            }:
+                raise ProvenanceError("unknown recovery alphabet")
+            offset = op.get("occurrence", 0)
+            if not _uint(offset, 32) or offset > (1 if op["alphabet"] == "hex" else 3):
+                raise ProvenanceError("recovery occurrence out of range")
         elif kind == "encoded_token_normalize":
             allowed.add("alphabet")
             required.add("alphabet")
@@ -652,7 +677,7 @@ class Recipe:
         if k == "vowel_fold":
             return v.translate(str.maketrans("aeiouAEIOU", "aaaaaAAAAA"))
         if k == "query_unescape":
-            return _query_unescape(v, charge)
+            return _query_unescape(v, charge, profile == "v4")
         if k == "invisible_space":
             return "".join(" " if _invisible(ch) else ch for ch in v)
         if k == "matching_normalize":
@@ -666,7 +691,7 @@ class Recipe:
                 for ch in unicode.normalize("NFD", normalized)
                 if unicode.category(ch) != "Mn"
             )
-            if profile == "v3":
+            if profile in {"v3", "v4"}:
                 normalized = unicode.normalize("NFC", normalized)
             return _matching_whitespace(normalized)
         if k.endswith("_liberal"):
@@ -682,6 +707,8 @@ class Recipe:
                 op.get("alphabet", "standard"),
                 f"liberal {base} decode",
             )
+        if k == "decode_recovery":
+            return _decode_recovery(v, op["alphabet"], op.get("occurrence", 0))
         if k == "encoded_token_normalize":
             return _encoded_token(v, op["alphabet"], profile)
         if k == "text_segment":
@@ -717,13 +744,13 @@ class Recipe:
             )
         if k == "ordered_query_concat":
             return "".join(
-                _query_unescape(x.partition("=")[2], charge)
+                _query_unescape(x.partition("=")[2], charge, profile == "v4")
                 for x in v.split("&")
                 if x.partition("=")[2]
             )
         if k == "query_subsequence":
             values = [
-                _query_unescape(x.partition("=")[2], charge)
+                _query_unescape(x.partition("=")[2], charge, profile == "v4")
                 for x in v.split("&")
                 if x.partition("=")[2]
             ][:20]
@@ -884,3 +911,31 @@ def _url_component(value: str, op: dict[str, Any]) -> str:
     return (
         op["selector"] if component == "query_key" else values[op.get("occurrence", 0)]
     )
+
+
+def _decode_recovery(value: str, alphabet: str, occurrence: int) -> str:
+    source = _strip_v2_hex_prefixes(value) if alphabet == "hex" else value
+    pattern = {
+        "hex": r"[^0-9a-fA-F]",
+        "standard": r"[^A-Za-z0-9+/=]",
+        "url": r"[^A-Za-z0-9_=\-]",
+    }[alphabet]
+    token = re.sub(pattern, "", source)
+    if len(token) > 4096:
+        return ""
+    token = token[occurrence:]
+    if alphabet == "hex":
+        decoded = bytes.fromhex(token[: len(token) // 2 * 2])
+    else:
+        token = token.partition("=")[0]
+        if len(token) % 4 == 1:
+            token = token[:-1]
+        decoded = base64.b64decode(
+            token + "=" * (-len(token) % 4),
+            altchars=b"-_" if alphabet == "url" else None,
+            validate=True,
+        )
+    try:
+        return decoded.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProvenanceError("output: invalid UTF-8") from exc

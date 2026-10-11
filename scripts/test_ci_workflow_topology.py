@@ -379,6 +379,36 @@ def unit_lane_errors(jobs: dict) -> list[str]:
         errors.append(f"{UNIT_PRODUCER} runs no go test command")
     if any(re.search(r"(?:^|\s)-race(?:\s|$)", line) for line in go_tests):
         errors.append(f"{UNIT_PRODUCER} runs the race detector; that belongs to the race lane")
+    if any(re.search(r"(?:^|\s)-count=", line) for line in go_tests):
+        errors.append(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache")
+    errors.extend(unit_cache_errors(unit))
+    return errors
+
+
+def unit_cache_errors(unit: dict) -> list[str]:
+    """The no-race lane's Go cache: restored everywhere, saved only by main.
+
+    The combined actions/cache action saves from every event, so pull requests
+    would spend the repository's cache allowance on entries main never reads.
+    """
+    errors = []
+    steps = unit.get("steps", [])
+    uses = [str(step.get("uses", "")) for step in steps]
+    if any(re.match(r"actions/cache@", value) for value in uses):
+        errors.append(f"{UNIT_PRODUCER} uses the combined cache action, which saves from pull requests")
+    restores = [step for step in steps if str(step.get("uses", "")).startswith("actions/cache/restore@")]
+    saves = [step for step in steps if str(step.get("uses", "")).startswith("actions/cache/save@")]
+    if len(restores) != 1 or len(saves) != 1:
+        errors.append(f"{UNIT_PRODUCER} must restore and save its Go cache exactly once each")
+        return errors
+    if restores[0].get("with", {}).get("key") != saves[0].get("with", {}).get("key"):
+        errors.append(f"{UNIT_PRODUCER} saves its Go cache under a different key than it restores")
+    for step in saves + [s for s in steps if s.get("name") == "Prune unused Go cache entries"]:
+        condition = str(step.get("if", ""))
+        if "github.event_name == 'push'" not in condition or "github.ref == 'refs/heads/main'" not in condition:
+            errors.append(f"{UNIT_PRODUCER} step {step.get('name') or step.get('uses')} must run only on a push to main")
+    if steps.index(saves[0]) < max(i for i, s in enumerate(steps) if s.get("name") == "Run tests (no race)"):
+        errors.append(f"{UNIT_PRODUCER} saves its Go cache before the tests ran")
     return errors
 
 
@@ -690,6 +720,26 @@ test "${{ needs.test-replay-go127.result }}" = "success"
         self.assertIn("test-unit-go126 must test both build variants", errors)
         self.assertIn("test-unit-go126 does not cover every package shard", errors)
         self.assertIn("test-unit-go126 must run on every event except a documentation-only pull request", errors)
+
+    def test_unit_lane_cache_drift_fails_the_contract(self):
+        self.assertEqual(unit_cache_errors(self.jobs[UNIT_PRODUCER]), [])
+        steps = self.jobs[UNIT_PRODUCER]["steps"]
+        save = next(i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/cache/save@"))
+
+        broken = copy.deepcopy(self.jobs)
+        broken[UNIT_PRODUCER]["steps"][save]["if"] = "${{ success() }}"
+        self.assertTrue(any("must run only on a push to main" in e for e in unit_cache_errors(broken[UNIT_PRODUCER])))
+
+        broken = copy.deepcopy(self.jobs)
+        restore = next(i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("actions/cache/restore@"))
+        broken[UNIT_PRODUCER]["steps"][restore]["uses"] = steps[restore]["uses"].replace("actions/cache/restore@", "actions/cache@")
+        errors = unit_cache_errors(broken[UNIT_PRODUCER])
+        self.assertIn(f"{UNIT_PRODUCER} uses the combined cache action, which saves from pull requests", errors)
+
+        broken = copy.deepcopy(self.jobs)
+        run = next(s for s in broken[UNIT_PRODUCER]["steps"] if s.get("name") == "Run tests (no race)")
+        run["run"] = run["run"].replace("go test ", "go test -count=1 ", 1)
+        self.assertIn(f"{UNIT_PRODUCER} sets -count, which disables Go's test-result cache", unit_lane_errors(broken))
 
     def test_docs_only_skip_requires_classifier_proof(self):
         gate = next(

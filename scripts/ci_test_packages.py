@@ -73,14 +73,15 @@ REST_SHARDS = ("rest-0", "rest-1", "rest-2", "rest-3")
 #
 # Measured without -race on four pinned cores: internal/mcp took 694s and
 # internal/proxy 552s alone, so each splits three ways; every rest package
-# together came to about eight minutes of four-way work, so two rest shards.
+# together came to about eight minutes of four-way work. Two rest shards left the
+# enterprise pair the slowest jobs in the lane at about six minutes, so three.
 UNIT_SPLITS = {
     "proxy": 3,
     "scanner": 1,
     "mcp": 3,
     "runtime": 1,
 }
-UNIT_REST_SHARDS = ("rest-0", "rest-1")
+UNIT_REST_SHARDS = ("rest-0", "rest-1", "rest-2")
 
 # Trees whose coverage is collected by a separate non-race pass instead of the
 # race run. -race forces atomic coverage counters, which made the scanner's

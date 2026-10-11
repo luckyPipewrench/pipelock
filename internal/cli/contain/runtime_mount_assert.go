@@ -4,11 +4,14 @@
 package contain
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
 )
+
+var errRuntimeMountEvidenceUnavailable = errors.New("runtime mount evidence is unavailable")
 
 type runtimeMount struct {
 	device, root, filesystem string
@@ -27,6 +30,9 @@ func assertManagedRuntimeMounts(env netnsAssertEnv) error {
 }
 
 func runtimeMountRefusal(err error) error {
+	if errors.Is(err, errRuntimeMountEvidenceUnavailable) {
+		return fmt.Errorf("runtime socket isolation cannot be verified: %w; permit the posture checker to read /proc/self/mountinfo, /proc/1/mountinfo and runtime directories; check procfs hidepid and access permissions", err)
+	}
 	return fmt.Errorf("runtime socket isolation is not applied: %w; add %s to the agent unit; update managed wrappers with `pipelock contain install` and restart the agent service", err, strings.Join(runtimeSocketProperties(), ", "))
 }
 
@@ -36,7 +42,7 @@ func checkManagedRuntimeMounts(env netnsAssertEnv) error {
 
 func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) error {
 	if env.readFile == nil || env.readDir == nil {
-		return fmt.Errorf("runtime mount readers are unavailable")
+		return fmt.Errorf("%w: runtime mount readers are unavailable", errRuntimeMountEvidenceUnavailable)
 	}
 	self, err := readRuntimeMounts(env, "/proc/self/mountinfo")
 	if err != nil {
@@ -79,7 +85,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 	for _, path := range []string{"/run", "/run/pipelock-contain"} {
 		entries, err := env.readDir(path)
 		if err != nil {
-			return fmt.Errorf("inspect isolated runtime directory %s: %w", path, err)
+			return fmt.Errorf("%w: inspect isolated runtime directory %s: %w", errRuntimeMountEvidenceUnavailable, path, err)
 		}
 		name := "pipelock-contain"
 		if path != "/run" {
@@ -95,7 +101,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount, error) {
 	data, err := env.readFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read runtime mount evidence %s: %w", path, err)
+		return nil, fmt.Errorf("%w: read runtime mount evidence %s: %w", errRuntimeMountEvidenceUnavailable, path, err)
 	}
 	candidates := make(map[string]map[string]runtimeMount)
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {

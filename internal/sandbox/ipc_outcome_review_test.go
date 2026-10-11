@@ -23,3 +23,15 @@ func TestPartialOutcomeNamesUnenforcedUnixSockets(t *testing.T) {
 		}
 	}
 }
+
+func TestAppliedOutcomeNamesUnixSocketFallback(t *testing.T) {
+	for _, outcome := range []AppliedLaunchOutcome{LaunchOutcomeFull, LaunchOutcomeAdvisoryOverride} {
+		for _, version := range []int{1, 5, 6, 8, 9} {
+			var out bytes.Buffer
+			reportAppliedLaunchOutcome(&out, outcome, version)
+			if strings.Contains(out.String(), "Unix socket fallback: AF_UNIX sockets, datagram pairs and recvmsg/recvmmsg denied") != (version < 9) {
+				t.Errorf("ABI %d outcome %s fallback notice = %q", version, outcome, out.String())
+			}
+		}
+	}
+}

@@ -155,19 +155,21 @@ func appliedLaunchOutcome(strict, noNetNS, seccompSupported bool, landlock, secc
 
 func reportAppliedLaunchOutcome(w io.Writer, outcome AppliedLaunchOutcome, landlockVersion int) {
 	ipcDetail := ""
+	fallbackDetail := ""
 	if landlockVersion < 9 {
 		ipcDetail = "; pathname AF_UNIX is not enforced"
+		fallbackDetail = fmt.Sprintf("; Unix socket fallback: AF_UNIX sockets, datagram pairs and recvmsg/recvmmsg denied (Landlock ABI %d<9)", landlockVersion)
 	}
 	if landlockVersion < 6 {
 		ipcDetail += "; abstract AF_UNIX is not enforced"
 	}
 	switch outcome {
 	case LaunchOutcomeFull:
-		_, _ = fmt.Fprintln(w, "[sandbox] launch outcome: FULL (Landlock + seccomp + network namespace applied)")
+		_, _ = fmt.Fprintf(w, "[sandbox] launch outcome: FULL (Landlock + seccomp + network namespace applied%s)\n", fallbackDetail)
 	case LaunchOutcomePartial:
 		_, _ = fmt.Fprintf(w, "[sandbox] launch outcome: PARTIAL (Landlock + network namespace applied; seccomp filter unavailable in this build%s)\n", ipcDetail)
 	case LaunchOutcomeAdvisoryOverride:
-		_, _ = fmt.Fprintln(w, "[sandbox] launch outcome: ADVISORY-OVERRIDE (no network namespace; direct egress may bypass Pipelock)")
+		_, _ = fmt.Fprintf(w, "[sandbox] launch outcome: ADVISORY-OVERRIDE (no network namespace; direct egress may bypass Pipelock%s)\n", fallbackDetail)
 	case LaunchOutcomeAdvisoryOverridePartial:
 		_, _ = fmt.Fprintf(w, "[sandbox] launch outcome: ADVISORY-OVERRIDE (network) + PARTIAL (seccomp unavailable in this build; direct egress may bypass Pipelock%s)\n", ipcDetail)
 	}

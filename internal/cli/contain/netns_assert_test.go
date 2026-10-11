@@ -255,6 +255,30 @@ func TestRuntimeMountEvidence(t *testing.T) {
 	}
 }
 
+func TestRuntimeMountReaderRefusalNamesEvidenceAccess(t *testing.T) {
+	for _, path := range []string{"/proc/self/mountinfo", "/proc/1/mountinfo", "/run"} {
+		t.Run(path, func(t *testing.T) {
+			env := defaultNetnsAssertEnv()
+			env.readFile = func(name string) ([]byte, error) {
+				if name == path {
+					return nil, os.ErrPermission
+				}
+				return managedRuntimeFixtureReadFile(name)
+			}
+			env.readDir = func(name string) ([]os.DirEntry, error) {
+				if name == path {
+					return nil, os.ErrPermission
+				}
+				return managedRuntimeFixtureReadDir(name)
+			}
+			err := assertManagedRuntimeMounts(env)
+			if !errors.Is(err, os.ErrPermission) || !strings.Contains(err.Error(), "cannot be verified") || strings.Contains(err.Error(), "TemporaryFileSystem=") {
+				t.Fatalf("reader refusal should name evidence access without mount remediation: %v", err)
+			}
+		})
+	}
+}
+
 func TestRuntimeMountEvidenceSeparateVarRun(t *testing.T) {
 	env := defaultNetnsAssertEnv()
 	env.readDir = managedRuntimeFixtureReadDir

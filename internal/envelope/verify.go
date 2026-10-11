@@ -185,6 +185,9 @@ func NewVerifier(cfg VerifierConfig) (*Verifier, error) {
 func (v *Verifier) PreserveReplayState(previous *Verifier) {
 	if v != nil && previous != nil && v.replayCache != nil && previous.replayCache != nil {
 		v.replayCache.replayState = previous.replayCache.replayState
+		v.replayCache.mu.Lock()
+		v.replayCache.maxSkew = max(v.replayCache.maxSkew, previous.skew, v.skew)
+		v.replayCache.mu.Unlock()
 	}
 }
 

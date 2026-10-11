@@ -99,7 +99,7 @@ func TestRuntimeCRLRevokesProfileSelection(t *testing.T) {
 			context = edition.WithAgentOverride(context, "client")
 		}
 		resolved, id := ed.ResolveAgent(context, req)
-		if resolved.Name != edition.ProfileDefault || id.Auth != envelope.ActorAuthUnknown {
+		if resolved.Name != edition.ProfileDefault || id.Profile != edition.ProfileDefault || id.Auth != envelope.ActorAuthUnknown {
 			t.Errorf("revoked selection: %s %+v", resolved.Name, id)
 		}
 	}

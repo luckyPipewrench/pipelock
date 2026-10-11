@@ -10,7 +10,6 @@ package addressprotect
 import (
 	"encoding/base64"
 	"encoding/hex"
-	"net/url"
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -225,12 +224,12 @@ func (c *Checker) effectiveAllowlist(agentID string) map[string][]string {
 const maxDecodeRounds = 10
 
 // iterativeURLDecode applies URL decoding until the string stops changing.
-// Duplicates scanner.IterativeDecode because scanner imports addressprotect
-// (circular import). normalize.StripZeroWidth is fine - no cycle there.
+// Shares partial unescape with scanner.IterativeDecode. The loop remains here
+// because scanner imports addressprotect.
 func iterativeURLDecode(s string) string {
 	for range maxDecodeRounds {
-		decoded, err := url.QueryUnescape(s)
-		if err != nil || decoded == s {
+		decoded := normalize.QueryUnescapePartial(s)
+		if decoded == s {
 			break
 		}
 		s = decoded

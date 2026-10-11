@@ -295,3 +295,10 @@ def test_evidence_provenance_transform_v4_corpus() -> None:
             ).encode() == base64.b64decode(vector["output_b64"], validate=True), vector[
                 "id"
             ]
+
+
+def test_v4_nested_utf8_charges_intermediate_bytes() -> None:
+    charges: list[int] = []
+    recipe = Recipe.from_json(PROFILE_DIGEST_V4, [{"kind": "query_unescape"}])
+    assert recipe.apply("%C3%25A9", charges.append) == "é"
+    assert charges == [8, 8, 4, 2]

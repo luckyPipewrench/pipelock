@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,11 +12,29 @@ import (
 )
 
 func BenchmarkRequestBodyDLP(b *testing.B) {
+	benchmarkRequestBodyDLP(b, false)
+}
+
+func BenchmarkRequestBodyDLPWithEnvSecret(b *testing.B) {
+	benchmarkRequestBodyDLP(b, true)
+}
+
+func benchmarkRequestBodyDLP(b *testing.B, withEnvSecret bool) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
-	cfg.DLP.ScanEnv = false
+	const secret = "q8Zr2Lm9Xv4Tn7Kp" + "1Wc6Hy3Bd5Fg0JsQ"
+	if withEnvSecret {
+		b.Setenv("PIPELOCK_BENCH_SECRET", secret)
+	} else {
+		cfg.DLP.ScanEnv = false
+	}
 	sc := MustNew(cfg)
 	b.Cleanup(sc.Close)
+	if withEnvSecret {
+		if !cfg.DLP.ScanEnv || sc.minEnvSecretLen != 16 || !slices.Contains(sc.envSecrets, secret) {
+			b.Fatal("production-default env-secret scanning was not exercised")
+		}
+	}
 	for _, size := range []int{2048, 65536} {
 		name := "2KiB"
 		if size == 65536 {

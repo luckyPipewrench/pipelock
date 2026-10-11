@@ -28,9 +28,15 @@ func rawQuerySecurityPairs(query string) []rawQuerySecurityPair {
 
 // decodedKnownSecretViews shares the bounded candidate graph used for pattern
 // DLP. Matching encoded representations alone misses secrets inside a carrier.
-func decodedKnownSecretViews(text string, decodes *decodingMemo) []spanTextView {
+func (s *Scanner) decodedKnownSecretViews(text string, decodes *decodingMemo) []spanTextView {
 	var views []spanTextView
+	minimum := min(minKnownSecretSubstringLen, s.minEnvSecretLen)
 	add := func(value string) {
+		// Decoding cannot grow a candidate; shorter input cannot contain a
+		// whole configured secret or an eligible partial-secret window.
+		if len(value) < minimum {
+			return
+		}
 		for _, decoded := range decodes.decode(value, true) {
 			views = append(views, spanTextView{text: decoded.text, viewLabel: dlpViewLabel(decoded.encoding)})
 		}

@@ -140,6 +140,36 @@
       ],
       "output_b64": "JTQxJVpaQg==",
       "transform_profile_digest": "sha256:01e022d444562a25591cd379e894f5f6cde9eda9527fb92af2330373a25e7af7"
+    },
+    {
+      "id": "nested-utf8-two-byte",
+      "input_b64": "JUMzJTI1QTk=",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "w6k="
+    },
+    {
+      "id": "nested-utf8-three-byte",
+      "input_b64": "JUUyJTI1ODIlMjVBQw==",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "4oKs"
+    },
+    {
+      "id": "nested-utf8-malformed",
+      "input_b64": "JUMzJTI1QTklWlo=",
+      "recipe": [
+        {
+          "kind": "query_unescape"
+        }
+      ],
+      "output_b64": "w6klWlo="
     }
   ]
 }

@@ -1014,7 +1014,7 @@ func (s *Scanner) checkSecretsInTextWithDecodes(secrets []string, text, patternN
 
 	for phase := range 2 {
 		if phase == 1 {
-			texts = decodedKnownSecretViews(text, decodes)
+			texts = s.decodedKnownSecretViews(text, decodes)
 		}
 
 		hits := newKnownValueWindowHits(texts)

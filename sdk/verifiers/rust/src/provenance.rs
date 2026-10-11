@@ -5,7 +5,7 @@
 
 use base64::{alphabet, engine::general_purpose, Engine};
 use data_encoding::BASE32;
-use percent_encoding::percent_decode_str;
+use percent_encoding::{percent_decode, percent_decode_str};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use unicode_normalization::{char::is_combining_mark, UnicodeNormalization};
@@ -163,11 +163,14 @@ impl ProcessingBudget {
 }
 
 trait Budget {
-    fn charge(&mut self, value: &str) -> Result<(), String>;
+    fn charge_bytes(&mut self, value: &[u8]) -> Result<(), String>;
+    fn charge(&mut self, value: &str) -> Result<(), String> {
+        self.charge_bytes(value.as_bytes())
+    }
 }
 
 impl Budget for ProcessingBudget {
-    fn charge(&mut self, value: &str) -> Result<(), String> {
+    fn charge_bytes(&mut self, value: &[u8]) -> Result<(), String> {
         self.remaining = match self.remaining.checked_sub(value.len()) {
             Some(remaining) => remaining,
             None => {
@@ -185,9 +188,9 @@ struct CombinedBudget<'a> {
 }
 
 impl Budget for CombinedBudget<'_> {
-    fn charge(&mut self, value: &str) -> Result<(), String> {
-        self.per_recipe.charge(value)?;
-        self.total.charge(value)
+    fn charge_bytes(&mut self, value: &[u8]) -> Result<(), String> {
+        self.per_recipe.charge_bytes(value)?;
+        self.total.charge_bytes(value)
     }
 }
 
@@ -588,18 +591,26 @@ fn strict_percent_decode(s: &str, plus: bool) -> Result<String, String> {
         .map_err(|_| "output: invalid UTF-8".to_string())
 }
 fn query_unescape<B: Budget>(s: &str, budget: &mut B, partial: bool) -> Result<String, String> {
+    if partial {
+        // Keep intermediate bytes until the operation's UTF-8 boundary.
+        let mut value = s.as_bytes().to_vec();
+        for _ in 0..500 {
+            budget.charge_bytes(&value)?;
+            let plus_decoded: Vec<u8> = value
+                .iter()
+                .map(|b| if *b == b'+' { b' ' } else { *b })
+                .collect();
+            let next: Vec<u8> = percent_decode(&plus_decoded).collect();
+            if next == value {
+                break;
+            }
+            value = next;
+        }
+        return String::from_utf8(value).map_err(|_| "output: invalid UTF-8".to_string());
+    }
     let mut v = s.to_string();
     for _ in 0..500 {
         budget.charge(&v)?;
-        if partial {
-            let next = String::from_utf8(percent_decode_str(&v.replace('+', " ")).collect())
-                .map_err(|_| "output: invalid UTF-8".to_string())?;
-            if next == v {
-                break;
-            }
-            v = next;
-            continue;
-        }
         match strict_percent_decode(&v, true) {
             Ok(next) if next != v => v = next,
             _ => break,
@@ -607,6 +618,7 @@ fn query_unescape<B: Budget>(s: &str, budget: &mut B, partial: bool) -> Result<S
     }
     Ok(v)
 }
+
 fn url_component(
     value: &str,
     component: &str,
@@ -1234,6 +1246,24 @@ fn encoded_run(s: &str, n: u32, min: u32) -> Result<String, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn v4_nested_utf8_charges_intermediate_bytes() {
+        let recipe =
+            Recipe::from_json(PROFILE_DIGEST_V4, &json!([{"kind": "query_unescape"}])).unwrap();
+        let mut budget = ProcessingBudget::new(22);
+        assert_eq!(
+            recipe
+                .apply_with_budget_impl("%C3%25A9", &mut budget)
+                .unwrap(),
+            "é"
+        );
+        assert_eq!(budget.remaining, 0);
+        let mut exhausted = ProcessingBudget::new(21);
+        assert!(recipe
+            .apply_with_budget_impl("%C3%25A9", &mut exhausted)
+            .is_err());
+    }
 
     #[test]
     fn recipe_limits_reject_unbounded_verifier_work() {

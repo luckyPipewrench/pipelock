@@ -300,3 +300,17 @@ test("evidence provenance: v4 corpus executes every vector byte-exactly", () => 
     }
   }
 });
+
+test("evidence provenance v4: nested UTF-8 charges intermediate byte counts", () => {
+  const charges: number[] = [];
+  const output = applyEvidenceProvenanceRecipe(
+    Buffer.from("%C3%25A9"),
+    {
+      transform_profile_digest: EVIDENCE_PROVENANCE_PROFILE_V4_DIGEST,
+      operations: [{ kind: "query_unescape" }],
+    },
+    (bytes) => charges.push(bytes),
+  );
+  assert.equal(Buffer.from(output).toString("utf8"), "é");
+  assert.deepEqual(charges, [8, 8, 4, 2]);
+});

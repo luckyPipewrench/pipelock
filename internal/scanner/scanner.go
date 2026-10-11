@@ -3238,7 +3238,7 @@ func (s *Scanner) checkSecretsInURL(secrets []string, parsed *url.URL, reasonPre
 	for phase := range 2 {
 		if phase == 1 {
 			var decodes decodingMemo
-			texts = decodedKnownSecretViews(decodedURL, &decodes)
+			texts = s.decodedKnownSecretViews(decodedURL, &decodes)
 		}
 
 		hits := newKnownValueWindowHits(texts)

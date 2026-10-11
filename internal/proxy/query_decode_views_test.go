@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bufio"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -245,5 +246,43 @@ func TestQueryDecodeViewsAuditMalformedURL(t *testing.T) {
 	}
 	if hits.Load() != 0 {
 		t.Fatal("audit mode forwarded uninspected credential")
+	}
+}
+
+func TestQueryDecodeViewsConnectEncodedHostname(t *testing.T) {
+	addr, cleanup := setupForwardProxy(t, queryViewsProxyConfig)
+	defer cleanup()
+	credential := "AKIA" + "Q3ZT7XKP2M5RN8WB"
+	for name, form := range map[string]struct {
+		encoded string
+		width   int
+	}{
+		"h4 base32": {strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(credential))), 8},
+		"h5 base64": {base64.RawURLEncoding.EncodeToString([]byte(credential)), 6},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var labels []string
+			for start := 0; start < len(form.encoded); start += form.width {
+				labels = append(labels, form.encoded[start:min(start+form.width, len(form.encoded))])
+			}
+			host := strings.Join(labels, ".") + ".vendor.example:443"
+			conn := dialProxy(t, addr)
+			defer func() { _ = conn.Close() }()
+			if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host); err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body, err := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusForbidden || !strings.Contains(strings.ToLower(string(body)), "dlp") {
+				t.Fatalf("CONNECT encoded hostname status=%d, expected DLP rejection", resp.StatusCode)
+			}
+		})
 	}
 }

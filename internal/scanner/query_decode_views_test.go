@@ -5,9 +5,12 @@ package scanner
 
 import (
 	"context"
+	"encoding/base32"
 	"encoding/base64"
 	"encoding/hex"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -123,5 +126,74 @@ func TestQueryDecodeViewsConfiguredQuery(t *testing.T) {
 		if r.Allowed || r.Scanner != ScannerDLP || !strings.Contains(r.Reason, "Recovery Marker") {
 			t.Errorf("configured query: allowed=%v scanner=%s", r.Allowed, r.Scanner)
 		}
+	}
+}
+
+func TestQueryDecodeViewsEncodedHostname(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	credential := "AKIA" + "Q3ZT7XKP2M5RN8WB"
+	for name, form := range map[string]struct {
+		encoded string
+		width   int
+	}{
+		"h4 base32": {strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(credential))), 8},
+		"h5 base64": {base64.RawURLEncoding.EncodeToString([]byte(credential)), 6},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var labels []string
+			for start := 0; start < len(form.encoded); start += form.width {
+				labels = append(labels, form.encoded[start:min(start+form.width, len(form.encoded))])
+			}
+			result := sc.Scan(t.Context(), "https://"+strings.Join(labels, ".")+".vendor.example/")
+			if result.Allowed || (result.Scanner != ScannerDLP && result.Scanner != ScannerCoreDLP) || !strings.Contains(result.Reason, "AWS") {
+				t.Fatalf("encoded hostname escaped DLP: allowed=%v scanner=%s reason=%s", result.Allowed, result.Scanner, result.Reason)
+			}
+		})
+	}
+	if result := sc.Scan(t.Context(), "https://ordinary.status.vendor.example/"); !result.Allowed {
+		t.Fatalf("benign hostname blocked: %s", result.Reason)
+	}
+}
+
+func TestQueryDecodeViewsKnownSecretMinimum(t *testing.T) {
+	secret := "aB3" + "dE6"
+	path := filepath.Join(t.TempDir(), "secrets.txt")
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.MinEnvSecretLength = len(secret)
+	cfg.DLP.SecretsFile = path
+	sc := MustNew(cfg)
+	t.Cleanup(sc.Close)
+	if len(sc.fileSecrets) != 1 {
+		t.Fatal("operator-configured short secret was not loaded")
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte("u:" + secret))
+	if len(encoded) >= minKnownSecretSubstringLen {
+		t.Fatal("fixture does not exercise the configured minimum")
+	}
+	body := "Basic " + encoded
+	if result := sc.ScanTextForDLP(t.Context(), body); result.Clean {
+		t.Error("text lost short secret carrier")
+	}
+	if result := sc.ScanRequestBodyTextForDLP(t.Context(), body); result.Clean {
+		t.Error("body lost short secret carrier")
+	}
+	if result := sc.Scan(t.Context(), "https://api.vendor.example/?q="+url.QueryEscape(body)); result.Allowed {
+		t.Error("URL lost short secret carrier")
+	}
+	views := sc.decodedKnownSecretViews(encoded, nil)
+	if len(views) == 0 {
+		t.Fatal("short configured secret candidate was skipped")
+	}
+	if len(sc.decodedKnownSecretViews("tiny", nil)) != 0 {
+		t.Error("impossible short candidate was decoded")
 	}
 }

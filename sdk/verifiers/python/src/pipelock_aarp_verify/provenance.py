@@ -320,20 +320,27 @@ def _strict_percent(value: str, plus: bool = False) -> str:
 
 
 def _query_unescape(
-    value: str, charge: Callable[[str], None], partial: bool = False
+    value: str, charge: Callable[[str | bytes], None], partial: bool = False
 ) -> str:
+    if partial:
+        # The profile checks UTF-8 after the operation, not between passes.
+        raw = value.encode("utf-8")
+        for _ in range(500):
+            charge(raw)
+            decoded_bytes = unquote_to_bytes(raw.replace(b"+", b" "))
+            if decoded_bytes == raw:
+                break
+            raw = decoded_bytes
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProvenanceError("output: invalid UTF-8") from exc
     for _ in range(500):
         charge(value)
-        if partial:
-            try:
-                decoded = unquote_to_bytes(value.replace("+", " ")).decode("utf-8")
-            except UnicodeDecodeError as exc:
-                raise ProvenanceError("output: invalid UTF-8") from exc
-        else:
-            try:
-                decoded = _strict_percent(value, plus=True)
-            except ProvenanceError:
-                break
+        try:
+            decoded = _strict_percent(value, plus=True)
+        except ProvenanceError:
+            break
         if decoded == value:
             break
         value = decoded
@@ -584,9 +591,9 @@ class Recipe:
             raise ProvenanceError("recipe input: exceeds profile byte limit")
         remaining = MAX_CUMULATIVE_PROCESSED_BYTES
 
-        def charge(processed: str) -> None:
+        def charge(processed: str | bytes) -> None:
             nonlocal remaining
-            size = len(processed.encode())
+            size = len(processed.encode() if isinstance(processed, str) else processed)
             if size > remaining:
                 raise ProvenanceError("recipe: exceeds cumulative processing budget")
             if charge_fixture_work is not None:
@@ -612,7 +619,7 @@ class Recipe:
         self,
         v: str,
         op: dict[str, Any],
-        charge: Callable[[str], None],
+        charge: Callable[[str | bytes], None],
         profile: str,
     ) -> str:
         k = op["kind"]

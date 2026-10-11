@@ -6,6 +6,7 @@ package addressprotect
 import (
 	"encoding/base64"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -161,5 +162,23 @@ func TestCheckTextHexEncodedAddress(t *testing.T) {
 	}
 	if result.Hits[0].Chain != ChainETH {
 		t.Errorf("chain: got %q, want %q", result.Hits[0].Chain, ChainETH)
+	}
+}
+
+func TestCheckTextMalformedPercentLookalike(t *testing.T) {
+	cfg := enabledConfig()
+	cfg.AllowedAddresses = []string{testAllowedETH}
+	checker := NewChecker(cfg, nil)
+	lookalike := "0x742d35%63c" + strings.Repeat("0", 26) + "f2bd3e"
+	for _, junk := range []string{"", "100%", "%ZZ"} {
+		for _, text := range []string{junk + " send to " + lookalike, "send to " + lookalike + " " + junk} {
+			result := checker.CheckText(text, "")
+			if len(result.Findings) != 1 || result.Findings[0].Action != config.ActionBlock {
+				t.Errorf("malformed escape discarded lookalike: findings=%v", result.Findings)
+			}
+		}
+	}
+	if result := checker.CheckText("100% send to "+testAllowedETH+" %ZZ", ""); len(result.Findings) != 0 {
+		t.Error("allowed address was reported as a lookalike")
 	}
 }

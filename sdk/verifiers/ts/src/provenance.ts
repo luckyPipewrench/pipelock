@@ -370,8 +370,8 @@ export function applyEvidenceProvenanceRecipe(
   const profile = resolveEvidenceProvenanceProfile(recipe.transform_profile_digest);
   let value = source;
   let remaining = MAX_CUMULATIVE_PROCESSED_BYTES;
-  const charge = (processed: string): void => {
-    const size = byteLength(processed);
+  const charge = (processed: string | Uint8Array): void => {
+    const size = typeof processed === "string" ? byteLength(processed) : processed.length;
     if (size > remaining) fail("recipe: exceeds cumulative processing budget");
     chargeFixtureWork(size);
     remaining -= size;
@@ -411,15 +411,37 @@ function percentDecode(value: string, partial = false): string {
 function queryUnescapeOnce(value: string): string {
   return percentDecode(value.replaceAll("+", " "));
 }
-function queryUnescape(value: string, charge: (value: string) => void, partial = false): string {
+function queryUnescape(
+  value: string,
+  charge: (value: string | Uint8Array) => void,
+  partial = false,
+): string {
   if (partial) {
-    for (let i = 0; i < 500; i++) {
-      charge(value);
-      const next = percentDecode(value.replaceAll("+", " "), true);
-      if (next === value) break;
-      value = next;
+    // Intermediate passes may contain an incomplete UTF-8 sequence. The
+    // profile validates UTF-8 at operation boundaries, not pass boundaries.
+    let bytes = Buffer.from(encoder.encode(value));
+    const hex = (b: number | undefined): number => {
+      if (b !== undefined && b >= 48 && b <= 57) return b - 48;
+      if (b !== undefined && b >= 65 && b <= 70) return b - 65 + 10;
+      if (b !== undefined && b >= 97 && b <= 102) return b - 97 + 10;
+      return -1;
+    };
+    for (let pass = 0; pass < 500; pass++) {
+      charge(bytes);
+      const next: number[] = [];
+      for (let i = 0; i < bytes.length; i++) {
+        const high = hex(bytes[i + 1]);
+        const low = hex(bytes[i + 2]);
+        if (bytes[i] === 37 && high >= 0 && low >= 0) {
+          next.push((high << 4) | low);
+          i += 2;
+        } else next.push(bytes[i] === 43 ? 32 : bytes[i]!);
+      }
+      const decoded = Buffer.from(next);
+      if (decoded.equals(bytes)) break;
+      bytes = decoded;
     }
-    return value;
+    return text(bytes, "output");
   }
   for (let i = 0; i < 500; i++) {
     charge(value);
@@ -706,7 +728,7 @@ function encodedTokenV1(value: string, alphabet: string): string {
   }
   return changed && result.length >= 4 ? result : "";
 }
-function htmlDecode(value: string, charge: (value: string) => void): string {
+function htmlDecode(value: string, charge: (value: string | Uint8Array) => void): string {
   // `he` ships the full WHATWG/HTML5 named-character-reference table. Its
   // non-strict text-mode decoding matches Go html.UnescapeString's liberal
   // treatment of malformed and semicolon-less references.
@@ -748,7 +770,7 @@ function rawHostname(value: string): string {
 function apply(
   value: string,
   op: Record<string, unknown>,
-  charge: (value: string) => void,
+  charge: (value: string | Uint8Array) => void,
   profile: ProfileVersion,
 ): string {
   const kind = op.kind as string;

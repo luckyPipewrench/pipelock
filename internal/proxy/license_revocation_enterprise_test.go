@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -166,4 +167,75 @@ func requireLicenseRevocationOutcome(t *testing.T, rph *receiptProxyHelper) {
 func revocationReceiptConnectionConfig(cfg *config.Config) {
 	revocationConnectionConfig(cfg)
 	cfg.FlightRecorder.RequireReceipts = true
+}
+
+// Frames arriving while revocation wakes a blocked read must not become DLP findings.
+func TestWSReceiptsAfterRevocation(t *testing.T) {
+	for _, op := range []ws.OpCode{ws.OpText, ws.OpPing} {
+		t.Run(opCodeLabel(op), func(t *testing.T) {
+			backend, stop := wsEchoServer(t)
+			defer stop()
+			addr, p, cleanup := setupWSProxyDefaultWithProxy(t, revocationReceiptConnectionConfig)
+			defer cleanup()
+			rph := newReceiptProxyHelper(t)
+			p.receiptEmitterPtr.Store(rph.emitter)
+			conn := dialWS(t, addr, backend)
+			defer func() { _ = conn.Close() }()
+			if err := wsutil.WriteClientText(conn, []byte("hello")); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := wsutil.ReadServerData(conn); err != nil {
+				t.Fatalf("positive control: %v", err)
+			}
+			if !p.SetLicenseRevoked(p.CurrentConfig(), true) {
+				t.Fatal("revocation not published")
+			}
+			if err := wsutil.WriteClientMessage(conn, op, []byte("plain2")); err != nil {
+				t.Fatal(err)
+			}
+			if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			_, _, readErr := wsutil.ReadServerData(conn)
+			if !errors.Is(readErr, io.EOF) && !errors.Is(readErr, net.ErrClosed) {
+				t.Errorf("revocation must close without a policy frame: %v", readErr)
+			}
+			testwait.For(t, 3*time.Second, func() bool {
+				entries, err := os.ReadDir(rph.dir)
+				if err != nil {
+					return false
+				}
+				for _, entry := range entries {
+					if !strings.HasSuffix(entry.Name(), ".jsonl") {
+						continue
+					}
+					data, err := os.ReadFile(filepath.Join(rph.dir, entry.Name()))
+					if err != nil {
+						continue
+					}
+					for _, line := range strings.Split(string(data), "\n") {
+						if json.Valid([]byte(line)) && strings.Contains(line, "session_close") && strings.Contains(line, "license_revoked") {
+							return true
+						}
+					}
+				}
+				return false
+			}, "signed revocation session close")
+			outcome := false
+			for _, rcpt := range rph.findReceipts(t) {
+				if err := receipt.VerifyWithKey(rcpt, rph.pubHex); err != nil {
+					t.Fatal(err)
+				}
+				if rcpt.ActionRecord.Layer == receiptOutcomeLayer && strings.Contains(rcpt.ActionRecord.Pattern, "reason=license_revoked") {
+					outcome = true
+				}
+				if rcpt.ActionRecord.Layer == "dlp" || strings.Contains(rcpt.ActionRecord.Pattern, "dlp_match") {
+					t.Errorf("revocation misclassified as DLP: %+v", rcpt.ActionRecord)
+				}
+			}
+			if !outcome {
+				t.Fatal("signed license_revoked outcome missing")
+			}
+		})
+	}
 }

@@ -2631,6 +2631,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				return
 			}
 		}
+		if ctx.Err() != nil {
+			return
+		}
 
 		if r.blockIdentityReload() {
 			blocked = true
@@ -2651,8 +2654,14 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 				plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusNormalClosure, "client closed")
 				return
 			}
+			if ctx.Err() != nil {
+				return
+			}
 			if r.enforceClientControlPayload(ctx, log, payload, &controlMsgTail) {
 				blocked = true
+				return
+			}
+			if ctx.Err() != nil {
 				return
 			}
 			// Ping/Pong: forward to upstream (proxy is CLIENT to upstream).
@@ -2774,6 +2783,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 
 		if r.cfg.RequestBodyScanning.Enabled && r.scanText {
 			buf, bodyResult := r.scanClientMessageBody(ctx, msg)
+			if ctx.Err() != nil {
+				return
+			}
 			wsMergeRedactionReport(&r.redactionLog, bodyResult.RedactionReport)
 			if r.proxy != nil {
 				recordBodyRedactionMetrics(r.proxy.metrics, TransportWS, r.metricAgent, bodyResult.RedactionReport)
@@ -2811,6 +2823,9 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		if ctx.Err() != nil {
+			return
+		}
 		// CEE: record outbound frame for cross-request exfiltration detection.
 		// Entropy tracking applies to all frame types (text + binary) since
 		// binary frames can carry high-entropy exfiltrated data. Fragment
@@ -2848,6 +2863,9 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// to warn with no adaptive scoring or action upgrade.
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
 	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
+	if ctx.Err() != nil {
+		return nil, false
+	}
 	if !r.observeUpstreamResponseTaint(!scanResult.Clean && !scanResult.Failed()) {
 		return nil, true
 	}
@@ -3172,6 +3190,11 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		if ctx.Err() != nil {
+			r.upstreamCancelled = true
+			return
+		}
+
 		if r.blockIdentityReload() {
 			blocked = true
 			return
@@ -3193,6 +3216,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			payload, responseBlocked := r.enforceUpstreamTextPayload(ctx, log, payload, false)
 			if responseBlocked {
 				blocked = true
+				return
+			}
+			if ctx.Err() != nil {
+				r.upstreamCancelled = true
 				return
 			}
 			// Forward Ping/Pong to client (proxy is SERVER to client, no masking).
@@ -3335,6 +3362,10 @@ func (r *wsRelay) upstreamToClient(ctx context.Context, cancel context.CancelFun
 			}
 		}
 
+		if ctx.Err() != nil {
+			r.upstreamCancelled = true
+			return
+		}
 		// Forward complete message to client (proxy is SERVER, no masking).
 		err = wsutil.WriteServerMessage(r.clientConn, opCode, msg)
 		if err != nil {

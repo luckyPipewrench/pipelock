@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -49,6 +50,10 @@ func TestLicenseProfileRemovalKeepsSurvivor(t *testing.T) {
 	if _, _, err := wsutil.ReadServerData(conn); err != nil {
 		t.Fatalf("surviving connection severed: %v", err)
 	}
+	if err := wsutil.WriteClientMessage(conn, ws.OpClose, ws.NewCloseFrameBody(ws.StatusNormalClosure, "done")); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
 }
 
 // Re-adding profiles after removal preserves the unchanged license generation.

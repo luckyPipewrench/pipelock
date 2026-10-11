@@ -16,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/edition"
 	"github.com/luckyPipewrench/pipelock/internal/license"
+	"github.com/luckyPipewrench/pipelock/internal/signing"
 )
 
 // Removing one CIDR profile preserves the other under the same valid license.
@@ -54,6 +55,23 @@ func TestServerReloadProfileRemovalKeepsSurvivor(t *testing.T) {
 }
 
 func TestServerReloadProvenLossEndsSharedGeneration(t *testing.T) {
+	requireProvenLossReload(t, false, false)
+}
+
+func TestServerReloadProvenLossChangedInputs(t *testing.T) {
+	requireProvenLossReload(t, true, false)
+}
+
+func TestServerReloadProvenLossRejectedProxySwap(t *testing.T) {
+	for _, changed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "same_inputs", true: "changed_inputs"}[changed], func(t *testing.T) {
+			requireProvenLossReload(t, changed, true)
+		})
+	}
+}
+
+func requireProvenLossReload(t *testing.T, changed, reject bool) {
+	t.Helper()
 	oldFactory := edition.NewEditionFunc
 	edition.NewEditionFunc = enterprise.NewEdition
 	t.Cleanup(func() { edition.NewEditionFunc = oldFactory })
@@ -91,7 +109,10 @@ func TestServerReloadProvenLossEndsSharedGeneration(t *testing.T) {
 		}
 	}
 	writeCRL(false)
-	path := writeServerTestConfig(t, "mode: balanced\nlicense_require_intermediate: false\nlicense_key: "+token+"\nlicense_public_key: "+hex.EncodeToString(pub)+"\nlicense_crl_file: "+crlPath+"\nagents:\n  client:\n    source_cidrs: [192.0.2.0/24]\n")
+	configText := func() string {
+		return "mode: balanced\nlicense_require_intermediate: false\nlicense_key: " + token + "\nlicense_public_key: " + hex.EncodeToString(pub) + "\nlicense_crl_file: " + crlPath + "\nagents:\n  client:\n    source_cidrs: [192.0.2.0/24]\n"
+	}
+	path := writeServerTestConfig(t, configText())
 	s, _ := newTestServer(t, func(o *ServerOpts) {
 		o.ConfigFile = path
 		o.Listen = serverTestEphemeralListen
@@ -102,13 +123,60 @@ func TestServerReloadProvenLossEndsSharedGeneration(t *testing.T) {
 		t.Fatal("positive control: licensed profile missing")
 	}
 	old := s.proxy.CurrentConfig()
+	if changed {
+		crlPath = filepath.Join(filepath.Dir(crlPath), "replacement-crl.json")
+	}
 	writeCRL(true)
+	if changed {
+		path = writeServerTestConfig(t, configText())
+	}
 	next, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !config.SameLicenseInputs(old, next) || hasNamedAgentProfiles(next.Agents) {
-		t.Fatal("precondition: same-input verified revocation must strip named profiles")
+	if config.SameLicenseInputs(old, next) == changed || hasNamedAgentProfiles(next.Agents) {
+		t.Fatal("precondition: verified revocation must strip profiles with the intended inputs")
+	}
+	if reject {
+		keyPath := filepath.Join(t.TempDir(), "envelope.key")
+		if err := signing.SavePrivateKey(priv, keyPath); err != nil {
+			t.Fatal(err)
+		}
+		next.MediationEnvelope.Enabled = true
+		next.MediationEnvelope.Sign = true
+		next.MediationEnvelope.SigningKeyPath = keyPath
+		if err := next.Validate(); err != nil {
+			t.Fatal(err)
+		}
+		reachedSwap := false
+		t.Cleanup(setReloadBeforeProxySwapHookForTest(func(server *Server) {
+			if server != s {
+				return
+			}
+			reachedSwap = true
+			if err := os.WriteFile(keyPath, []byte("invalid signing key"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}))
+		if err := s.Reload(next); err == nil {
+			t.Fatal("invalid proxy candidate committed")
+		}
+		if !reachedSwap {
+			t.Fatal("reload did not reach the proxy commit boundary")
+		}
+		if s.proxy.CurrentConfig() != old {
+			t.Fatal("rejected reload replaced the old config")
+		}
+		select {
+		case <-ra.LicenseRevoked:
+			t.Fatal("rejected proven-loss reload ended the old generation")
+		default:
+		}
+		current, ok := s.proxy.Edition().LookupProfile("client")
+		if !ok || current.LicenseRevoked != ra.LicenseRevoked {
+			t.Fatal("rejected reload changed the old licensed profile")
+		}
+		return
 	}
 	if err := s.Reload(next); err != nil {
 		t.Fatal(err)

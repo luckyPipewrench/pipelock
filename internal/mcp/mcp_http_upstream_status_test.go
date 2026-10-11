@@ -767,3 +767,21 @@ func TestUpstreamClientErrorFinding(t *testing.T) {
 		}
 	}
 }
+
+// The listener answers 407 itself when the client's listener credential is
+// missing or wrong. An upstream 407 must not impersonate that challenge.
+func TestHTTPListener_UpstreamProxyAuthRequiredIsNotRelayed(t *testing.T) {
+	upstream := newUpstreamStatusServer(t, upstreamStatusReply{
+		status: http.StatusProxyAuthRequired,
+		header: http.Header{"Content-Type": {"text/plain"}, "Proxy-Authenticate": {`Bearer realm="upstream"`}},
+		body:   []byte("upstream proxy wants credentials"),
+	})
+	baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{Scanner: testScannerForHTTP(t)})
+	resp, body := doListenerRequest(t, http.MethodPost, baseURL+"/", upstreamStatusInitialize, nil)
+	if resp.StatusCode != http.StatusBadGateway || bytes.Contains(body, []byte("upstream proxy wants credentials")) {
+		t.Fatalf("status=%d body=%s, want sanitized 502", resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("Proxy-Authenticate"); got != "" {
+		t.Fatalf("Proxy-Authenticate relayed from upstream: %q", got)
+	}
+}

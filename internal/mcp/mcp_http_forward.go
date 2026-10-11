@@ -556,10 +556,14 @@ func RunHTTPProxy(
 			// and sanitizes upstream request failures/status errors so raw
 			// upstream bytes cannot cross this logging boundary.
 			_, _ = fmt.Fprintf(safeLogW, "pipelock: upstream error: %v\n", err)
-			// A notification has no ID to answer, so a failure on one is logged
-			// only; an error response with a null ID is a reply the client never
-			// asked for.
+			// A notification has no ID to answer, so a failure on one gets no
+			// client reply; an error response with a null ID is a reply the
+			// client never asked for. Notifications are never tracked, so an
+			// intent receipt is closed from the input decision directly.
 			if isRPCNotification(frame.ID) {
+				if decision.Outcome.Receipt.ActionID != "" {
+					emitMCPOutcomeReceipt(fwdOpts.receiptEmitter(), fwdOpts.v2ReceiptEmitter(), fwdOpts.ReceiptGroup, safeLogW, decision.Outcome.Receipt, "error", -1, "upstream_error", fwdOpts.requireReceipts())
+				}
 				continue
 			}
 			// Send sanitized error to client - don't include upstream body content

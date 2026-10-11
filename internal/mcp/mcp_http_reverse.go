@@ -918,7 +918,10 @@ func RunHTTPListenerProxy(
 		// scanner flags or cannot read gets the sanitized 502 instead. It
 		// returns false for any other status so the caller carries on.
 		relayUpstreamClientError := func(upResp *http.Response, rpcID json.RawMessage, reqRec session.Recorder, auditSessionKey string, intent receipt.EmitOpts) bool {
-			if !transport.IsClientError(upResp.StatusCode) {
+			// 407 is the listener's own credential challenge. An upstream 407
+			// relayed as-is would read as Pipelock refusing the client's
+			// listener credential, so it takes the sanitized 502 instead.
+			if !transport.IsClientError(upResp.StatusCode) || upResp.StatusCode == http.StatusProxyAuthRequired {
 				return false
 			}
 			outcomeReason := "upstream_http_client_error"

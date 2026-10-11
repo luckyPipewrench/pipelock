@@ -63,7 +63,7 @@ func TestHTTPListener_ClientErrorHonorsLiveResponseGates(t *testing.T) {
 					_, _ = io.WriteString(w, replyText)
 				}))
 				t.Cleanup(upstream.Close)
-				baseURL, _ := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
+				baseURL, logBuf := startListenerProxyWithOpts(t, upstream.URL, MCPProxyOpts{
 					Scanner: testScannerForHTTP(t), KillSwitch: ks,
 					ServerIdentityFn: func() ServerIdentity {
 						if gate == "identity" && changed.Load() {
@@ -80,6 +80,12 @@ func TestHTTPListener_ClientErrorHonorsLiveResponseGates(t *testing.T) {
 				resp, body := doListenerRequest(t, method, baseURL+"/", request, header)
 				if resp.StatusCode != http.StatusBadGateway || strings.Contains(string(body), replyText) {
 					t.Fatalf("revoked upstream content relayed: status=%d body=%s", resp.StatusCode, body)
+				}
+				// The reason proves the request reached the upstream and the
+				// live gate, not an earlier refusal, withheld the reply.
+				wantReason := map[string]string{"identity": "upstream identity changed", "kill switch": "kill switch blocks responses"}[gate]
+				if !changed.Load() || !strings.Contains(logBuf.String(), "reply withheld: "+wantReason) {
+					t.Fatalf("upstream reached=%v log=%q, want withhold reason %q", changed.Load(), logBuf.String(), wantReason)
 				}
 			})
 		}

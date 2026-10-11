@@ -132,7 +132,8 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 		t.Fatalf("json chain should verify: %s", unpinned)
 	}
 	var unpinnedReport struct {
-		HeadVerified *bool `json:"head_verified"`
+		HeadVerified *bool    `json:"head_verified"`
+		Warnings     []string `json:"warnings"`
 	}
 	if err := json.Unmarshal([]byte(unpinned), &unpinnedReport); err != nil {
 		t.Fatalf("decode json verdict: %v", err)
@@ -140,19 +141,26 @@ func TestChain_ExpectedHeadJSONField(t *testing.T) {
 	if unpinnedReport.HeadVerified == nil || *unpinnedReport.HeadVerified {
 		t.Fatalf("json = %q, want head_verified false with no expected head", unpinned)
 	}
+	if len(unpinnedReport.Warnings) != 1 || !strings.Contains(unpinnedReport.Warnings[0], "chain end is unanchored") {
+		t.Fatalf("json = %q, want unanchored chain warning", unpinned)
+	}
 
 	pinned, _, code := runRoot(t, "chain", "--key", fix.keyHex, "--expect-head", evidenceTipHash(t, fix), "--json", evidence)
 	if code != cliutil.ExitOK {
 		t.Fatalf("json chain with head should verify: %s", pinned)
 	}
 	var pinnedReport struct {
-		HeadVerified *bool `json:"head_verified"`
+		HeadVerified *bool    `json:"head_verified"`
+		Warnings     []string `json:"warnings"`
 	}
 	if err := json.Unmarshal([]byte(pinned), &pinnedReport); err != nil {
 		t.Fatalf("decode json verdict: %v", err)
 	}
 	if pinnedReport.HeadVerified == nil || !*pinnedReport.HeadVerified {
 		t.Fatalf("json = %q, want head_verified true", pinned)
+	}
+	if len(pinnedReport.Warnings) != 0 {
+		t.Fatalf("json = %q, want no unanchored warning for a verified head", pinned)
 	}
 }
 

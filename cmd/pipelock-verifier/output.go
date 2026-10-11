@@ -82,7 +82,7 @@ func emitReport(stdout, stderr io.Writer, r auditPacketReport, jsonMode bool) {
 
 // emitChainReport mirrors emitReport for the chain subcommand.
 func emitChainReport(stdout, stderr io.Writer, r chainReport, jsonMode bool) {
-	if r.Valid && r.RecordType != recordTypeEvidenceV2 {
+	if r.Valid && (r.RecordType != recordTypeEvidenceV2 || !r.HeadVerified) {
 		r.Warnings = append(r.Warnings, unanchoredChainWarning)
 	}
 	if jsonMode {

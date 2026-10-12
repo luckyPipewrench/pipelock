@@ -39,6 +39,13 @@
       "schedule": ["at any time"]
     },
     {
+      "description": "Keep the TypeScript verifier on the Unicode package that supplies its required property modules. Version 2.0.7 omits Binary_Property/Assigned/regex.js, preventing the verifier CLI from starting. Updates require checking the imported modules and cross-language conformance before changing this pin.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["sdk/verifiers/ts/**"],
+      "matchPackageNames": ["@unicode/unicode-15.0.0"],
+      "allowedVersions": "2.0.2"
+    },
+    {
       "description": "Hold TypeScript at 5.x in the verifier. TS 6.0 needs tsconfig and source migrations we have not scoped.",
       "matchManagers": ["npm"],
       "matchFileNames": ["sdk/verifiers/ts/**"],

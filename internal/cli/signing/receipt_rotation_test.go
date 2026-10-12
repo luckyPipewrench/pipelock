@@ -229,7 +229,7 @@ func TestVerifyReceiptCmd_RotatedChainNeedsBothKeys(t *testing.T) {
 	}
 	out := buf.String()
 	if !strings.Contains(out, "VALID PREFIX, END UNPROVEN") {
-		t.Errorf("expected CHAIN VALID, got: %s", out)
+		t.Errorf("expected VALID PREFIX, END UNPROVEN, got: %s", out)
 	}
 	if !strings.Contains(out, "signing key rotated") {
 		t.Errorf("expected rotation note, got: %s", out)

@@ -31,7 +31,7 @@ It provides these commands:
 
 ```text
 pipelock-verifier-rs audit-packet PATH [--json] [--key HEX_OR_FILE]... [--offline] [--allow-self-consistent-only] [--no-trust-required] [--expect-sha256 HEX]
-pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--dir] [--session-id ID]
+pipelock-verifier-rs chain PATH [--json] [--key HEX_OR_FILE]... [--rotation-endorsement FILE]... [--allow-unpinned] [--allow-prefix] [--expect-head HASH] [--expect-seq N] [--dir] [--session-id ID]
 pipelock-verifier-rs group EVIDENCE_DIR --group-id ID --key HEX_OR_FILE... [--json]
 pipelock-verifier-rs receipt PATH [--json] [--key HEX_OR_FILE]
 ```
@@ -48,6 +48,7 @@ Exit codes match the Go and TypeScript verifiers:
 
 - `0` valid
 - `1` invalid
+- `3` valid prefix, end unproven (chain commands)
 - `2` runtime error
 - `64` usage error
 

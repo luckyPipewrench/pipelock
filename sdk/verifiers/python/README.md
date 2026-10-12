@@ -35,7 +35,7 @@ rejection, so one bad parallel signature can neither mask nor poison a good one.
 
 ```
 python -m pipelock_aarp_verify aarp PATH --trust TRUST_JSON [--chain] [--json]
-python -m pipelock_aarp_verify receipt PATH --key PUBLIC_KEY_HEX [--json]
+python -m pipelock_aarp_verify receipt PATH --key PUBLIC_KEY_HEX [--json] [--chain] [--group] [--allow-unpinned] [--allow-prefix] [--expect-head HASH] [--expect-seq N]
 ```
 
 - `PATH`: a single envelope (`*.aarp.json`) or, with `--chain`, a JSONL stream
@@ -57,7 +57,8 @@ not replace the separately pinned published Python verifier in the ordinary
 legacy corpus gate or claim that the published package supports this new kind.
 
 Exit codes: `0` appraised / linked, `1` fatal / not linked, `2` I/O or
-trust-file error, `64` usage error. A fatal envelope with `--json` prints
+trust-file error, `3` valid receipt-chain prefix with an unproven end,
+`64` usage error. A fatal envelope with `--json` prints
 `{"envelope_fatal": true, ...}` and exits non-zero.
 
 There is no console-script entry point on purpose (this is a reference impl, not

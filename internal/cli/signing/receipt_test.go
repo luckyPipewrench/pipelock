@@ -1485,7 +1485,7 @@ func TestVerifyReceiptCmd_ChainValid(t *testing.T) {
 
 	output := buf.String()
 	if !strings.Contains(output, "VALID PREFIX, END UNPROVEN") {
-		t.Errorf("expected CHAIN UNPINNED, got: %s", output)
+		t.Errorf("expected VALID PREFIX, END UNPROVEN, got: %s", output)
 	}
 	if !strings.Contains(output, unpinnedReceiptBanner) {
 		t.Errorf("expected unpinned banner, got: %s", output)
@@ -1510,7 +1510,7 @@ func TestVerifyReceiptCmd_ChainAllowUnpinned(t *testing.T) {
 
 	output := buf.String()
 	if !strings.Contains(output, "VALID PREFIX, END UNPROVEN") {
-		t.Errorf("expected CHAIN UNPINNED, got: %s", output)
+		t.Errorf("expected VALID PREFIX, END UNPROVEN, got: %s", output)
 	}
 	if !strings.Contains(output, "Receipts:  6") {
 		t.Errorf("expected 6 receipts, got: %s", output)
@@ -1532,7 +1532,7 @@ func TestVerifyReceiptCmd_ChainWithKey(t *testing.T) {
 	}
 
 	if !strings.Contains(buf.String(), "VALID PREFIX, END UNPROVEN") {
-		t.Errorf("expected CHAIN VALID, got: %s", buf.String())
+		t.Errorf("expected VALID PREFIX, END UNPROVEN, got: %s", buf.String())
 	}
 }
 
@@ -1904,7 +1904,7 @@ func TestVerifyReceiptCmd_ChainDirAcrossRestart(t *testing.T) {
 
 	output := buf.String()
 	if !strings.Contains(output, "VALID PREFIX, END UNPROVEN") {
-		t.Errorf("expected CHAIN VALID, got: %s", output)
+		t.Errorf("expected VALID PREFIX, END UNPROVEN, got: %s", output)
 	}
 	if !strings.Contains(output, "Receipts:  6") {
 		t.Errorf("expected 6 receipts, got: %s", output)
@@ -2373,7 +2373,7 @@ func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
 		t.Fatalf("verify-receipt selected location: %v", err)
 	}
 	if !strings.Contains(verifyOut.String(), "VALID PREFIX, END UNPROVEN") {
-		t.Fatalf("verify-receipt output = %q, want CHAIN VALID", verifyOut.String())
+		t.Fatalf("verify-receipt output = %q, want VALID PREFIX, END UNPROVEN", verifyOut.String())
 	}
 	cleanReport := filepath.Join(t.TempDir(), "clean-report.json")
 	verifyClean := VerifyReceiptCmd()

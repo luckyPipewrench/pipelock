@@ -254,13 +254,9 @@ function runCLI(args: string[]): {
   stderr: string;
   error?: Error;
 } {
-  const result = spawnSync(
-    process.execPath,
-    [resolve(root, "dist/src/cli.js"), ...args, ...(args[0] === "chain" ? ["--allow-prefix"] : [])],
-    {
-      encoding: "utf8",
-    },
-  );
+  const result = spawnSync(process.execPath, [resolve(root, "dist/src/cli.js"), ...args], {
+    encoding: "utf8",
+  });
   return {
     status: result.status,
     stdout: result.stdout,
@@ -685,8 +681,14 @@ test("legacy chain --dir and single-file verification reject a torn final fragme
       "--rotation-endorsement",
       join(intact, "rotation-endorsement.json"),
     ];
-    const ok = runCLI(args(intact, true));
+    // An intact open run verifies but cannot prove its end: exit 3 by
+    // default, and 0 only when the caller explicitly accepts the prefix.
+    const prefix = runCLI(args(intact, true));
+    assert.equal(prefix.status, 3, `${prefix.stdout}\n${prefix.stderr}`);
+    assert.match(prefix.stdout, /VALID PREFIX, END UNPROVEN/u);
+    const ok = runCLI([...args(intact, true), "--allow-prefix"]);
     assert.equal(ok.status, 0, `${ok.stdout}\n${ok.stderr}`);
+    assert.match(ok.stdout, /VALID PREFIX, END UNPROVEN/u);
     const torn = join(temp, "torn");
     cpSync(parity, torn, { recursive: true });
     writeFileSync(join(torn, shard), `${readFileSync(join(torn, shard), "utf8")}{"torn":`);

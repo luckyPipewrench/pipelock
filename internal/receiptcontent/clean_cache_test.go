@@ -166,6 +166,13 @@ func TestCachedDetectorBoundsMemory(t *testing.T) {
 	if inner.calls.Load() != before {
 		t.Fatal("a text in steady use was evicted")
 	}
+	// Promoting the hot text on every hit stays inside the same bound.
+	for i := range cached.cache.shards {
+		s := &cached.cache.shards[i]
+		if len(s.cur) > 4 || len(s.prev) > 4 {
+			t.Fatalf("after promotion shard %d holds %d+%d digests, limit 4 each", i, len(s.cur), len(s.prev))
+		}
+	}
 }
 
 func TestCachedDetectorRefusesInvalidConstruction(t *testing.T) {

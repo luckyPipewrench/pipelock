@@ -62,7 +62,7 @@ var safeRequestIDRE = regexp.MustCompile(`^req-(?:[0-9]+|[0-9a-f]{8}-[0-9a-f]{4}
 
 // safeMCPRequestIDRE permits the bounded synthetic JSON-RPC ids used by the
 // replay lab. It is consulted only for MCP transports; HTTP receipt request ids
-// remain constrained to Pipelock's req-N counter.
+// remain constrained to safeRequestIDRE.
 var safeMCPRequestIDRE = regexp.MustCompile(`^(?:[0-9]{1,9}|"[a-z0-9_-]{1,32}")$`)
 
 // safeRunNonceRE matches the per-process receipt nonce emitted as 16 random
@@ -125,13 +125,13 @@ func ValidateReceiptPublicSafe(ar receipt.ActionRecord) error {
 		return err
 	}
 
-	// request_id, when present, must be pipelock's own internal counter shape.
+	// request_id, when present, must be pipelock's own internal request id shape.
 	requestIDSafe := safeRequestIDRE.MatchString(ar.RequestID)
 	if strings.HasPrefix(ar.Transport, "mcp_") {
 		requestIDSafe = requestIDSafe || safeMCPRequestIDRE.MatchString(ar.RequestID)
 	}
 	if ar.RequestID != "" && !requestIDSafe {
-		return fmt.Errorf("%w: request_id %q is not the internal counter shape", errAllowlist, ar.RequestID)
+		return fmt.Errorf("%w: request_id %q is not an internal request id shape", errAllowlist, ar.RequestID)
 	}
 	if ar.RunNonce != "" && !safeRunNonceRE.MatchString(ar.RunNonce) {
 		return fmt.Errorf("%w: run_nonce %q is not the expected nonce shape", errAllowlist, ar.RunNonce)

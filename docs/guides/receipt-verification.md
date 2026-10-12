@@ -657,8 +657,8 @@ client search, but each may stand as one piece between client fragments, in
 any position, because a credential can contain a fixed word (a host name
 holding the principal "local", for example). A fixed value repeated in a
 receipt counts once. For v1 action receipts the fixed values are the emitter's
-configured principal and default actor, the `anonymous` actor recorded for a
-request that names no agent, the recorder session base in a session opener,
+configured principal and default actor, the `anonymous` actor Pipelock
+records when a request names no usable agent, the recorder session base in a session opener,
 the fixed session-control targets, recognized transport labels and recognized
 decision layer names. An agent override that differs from the configured
 actor, or an unrecognized transport or layer label, is a client part. For v2
@@ -681,7 +681,9 @@ needs two or more fixed values as separate pieces is outside the bound, as is
 a split that needs a constant the receipt does not carry as text (an enum
 value that is dropped from the scanned content, such as a reversibility label).
 So is a split between the decision text and a field it does not sit next to
-in field order.
+in field order. Field order is the receipt's member names sorted at each level,
+with nested objects in place and dropped values skipped. On a v1 outcome
+receipt the decision text sits between `layer` and `principal`.
 
 Reassembly follows field order, skipping unrelated parts. It tries every order
 of 2 or 3 parts and the reverse order of 4. A receipt of at most 20 client

@@ -427,7 +427,13 @@ func driveFragmentedWebSocket(ctx context.Context, h http.Handler) error {
 	}
 	// Only the proxy's policy close proves the block. A timeout means the
 	// decision was not observed yet, so it must not count as blocked.
-	_ = conn.SetReadDeadline(time.Now().Add(fragmentedBlockDeadline))
+	// The dialer stops watching ctx once the handshake succeeds, so the read
+	// must also honor the capture deadline that bounds this scenario.
+	readDeadline := time.Now().Add(fragmentedBlockDeadline)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(readDeadline) {
+		readDeadline = ctxDeadline
+	}
+	_ = conn.SetReadDeadline(readDeadline)
 	_, _, readErr := wsutil.ReadServerData(conn)
 	if readErr == nil {
 		return fmt.Errorf("fragmented secret unexpectedly reached WebSocket backend")

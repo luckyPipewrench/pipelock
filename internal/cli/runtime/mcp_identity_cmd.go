@@ -451,6 +451,16 @@ func splitObservedFiles(obs localservice.Observation, chosen []string) (pinned [
 		}
 		byPath[f.Path] = f
 	}
+	replaced := make(map[string]bool)
+	for _, f := range obs.Files {
+		// A tied digest does not account for a replaced copy still held at
+		// this path. Compare inodes only: btrfs can report different devices
+		// for a descriptor and a mapping of the same file.
+		current := byPath[f.Path]
+		if current.SHA256 != "" && f.SHA256 == "" && f.Ino != current.Ino {
+			replaced[f.Path] = true
+		}
+	}
 	taken := make(map[string]bool, len(chosen))
 	for _, raw := range chosen {
 		path := cleanObservedPath(raw)
@@ -460,6 +470,8 @@ func splitObservedFiles(obs localservice.Observation, chosen []string) (pinned [
 			return nil, nil, fmt.Errorf("--mapped-file %q is not held open or mapped by the service; held files are: %s", raw, heldPaths(obs.Files))
 		case f.SHA256 == "":
 			return nil, nil, fmt.Errorf("--mapped-file %q is held but its digest could not be tied to the held file, so it cannot be pinned", raw)
+		case replaced[path]:
+			return nil, nil, fmt.Errorf("--mapped-file %q cannot be pinned: the service still holds a replaced copy of it; restart the service so it holds only the current file before registering", raw)
 		case taken[path]:
 			return nil, nil, fmt.Errorf("--mapped-file %q is given more than once", raw)
 		}

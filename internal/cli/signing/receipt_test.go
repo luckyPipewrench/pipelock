@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/evidence/endproof"
 	"github.com/luckyPipewrench/pipelock/internal/fleetreceipt"
 	posturepkg "github.com/luckyPipewrench/pipelock/internal/posture"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -2374,6 +2376,19 @@ func TestReceiptCommandsSelectEvidenceLocation(t *testing.T) {
 	}
 	if !strings.Contains(verifyOut.String(), "VALID PREFIX, END UNPROVEN") {
 		t.Fatalf("verify-receipt output = %q, want VALID PREFIX, END UNPROVEN", verifyOut.String())
+	}
+	// Without --allow-prefix the same selected location must refuse with the
+	// dedicated prefix exit code, not succeed and not report a broken chain.
+	strict := VerifyReceiptCmd()
+	var strictOut bytes.Buffer
+	strict.SetOut(&strictOut)
+	strict.SetArgs([]string{"--chain", root, "--location", selectedID, "--key", keyHex})
+	var strictErr *cliutil.ExitError
+	if err := strict.Execute(); !errors.As(err, &strictErr) || strictErr.Code != endproof.ExitPrefix {
+		t.Fatalf("strict selected location err = %v, want exit %d", err, endproof.ExitPrefix)
+	}
+	if !strings.Contains(strictOut.String(), "VALID PREFIX, END UNPROVEN") {
+		t.Fatalf("strict selected location output = %q, want VALID PREFIX, END UNPROVEN", strictOut.String())
 	}
 	cleanReport := filepath.Join(t.TempDir(), "clean-report.json")
 	verifyClean := VerifyReceiptCmd()

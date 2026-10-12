@@ -7,11 +7,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -602,6 +604,62 @@ func TestYAMLScalarQuotesWhenNeeded(t *testing.T) {
 			t.Parallel()
 			if got := yamlScalar(tt.in); got != tt.want {
 				t.Errorf("yamlScalar(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSplitObservedFilesVerifiedDuplicate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		verified bool
+	}{
+		{name: "verified digest wins", verified: true},
+		{name: "only unverified entries refuse"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			orders := make(map[bool]bool)
+			for seed := 0; seed < 20; seed++ {
+				files := []localservice.ObservedFile{{Path: testIdentityModule, Dev: 1, Ino: 2}}
+				duplicate := files[0]
+				if tt.verified {
+					duplicate.SHA256 = testIdentityModDigest
+				}
+				files = append(files, duplicate)
+				for i := range 16 {
+					files = append(files, localservice.ObservedFile{Path: fmt.Sprintf("/usr/lib/vendor-%02d.so", i), SHA256: testIdentityOtherHash})
+				}
+				// Deterministic permutations exercise both duplicate orders without
+				// making a regression depend on a random seed from the host.
+				for i := len(files) - 1; i > 0; i-- {
+					j := (seed + i*i) % (i + 1)
+					files[i], files[j] = files[j], files[i]
+				}
+				// Observe sorts by path using the same unstable sort before this consumer.
+				sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+				orders[files[0].SHA256 != ""] = true
+				pinned, held, err := splitObservedFiles(localservice.Observation{Files: files}, []string{testIdentityModule})
+				if !tt.verified {
+					if err == nil || !strings.Contains(err.Error(), "cannot be pinned") {
+						t.Fatalf("seed %d: error = %v, want refusal", seed, err)
+					}
+					continue
+				}
+				if err != nil {
+					t.Fatalf("seed %d: %v", seed, err)
+				}
+				if len(pinned) != 1 || pinned[0].Path != testIdentityModule || pinned[0].SHA256 != testIdentityModDigest {
+					t.Fatalf("seed %d: pinned = %+v", seed, pinned)
+				}
+				if len(held) != 16 {
+					t.Fatalf("seed %d: held = %+v", seed, held)
+				}
+			}
+			if tt.verified && len(orders) != 2 {
+				t.Fatal("permutations must exercise both digest-bearing and digest-less entries first")
 			}
 		})
 	}

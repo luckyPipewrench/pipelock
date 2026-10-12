@@ -444,6 +444,11 @@ func writeRegistration(out io.Writer, entry config.MCPIdentity, obs localservice
 func splitObservedFiles(obs localservice.Observation, chosen []string) (pinned []config.MCPIdentityFilePin, held []localservice.ObservedFile, err error) {
 	byPath := make(map[string]localservice.ObservedFile, len(obs.Files))
 	for _, f := range obs.Files {
+		// A descriptor can verify even when a duplicate mapping cannot. Keep
+		// its tied digest regardless of the observation or path-sort order.
+		if previous, ok := byPath[f.Path]; ok && previous.SHA256 != "" && f.SHA256 == "" {
+			continue
+		}
 		byPath[f.Path] = f
 	}
 	taken := make(map[string]bool, len(chosen))

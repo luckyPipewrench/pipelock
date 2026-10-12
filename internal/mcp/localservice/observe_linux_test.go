@@ -84,6 +84,34 @@ func TestObserveFakeProcFiles(t *testing.T) {
 			want: func(path string) []ObservedFile { return []ObservedFile{{Path: path}} },
 		},
 		{
+			name: "empty descriptor and mapping with equal devices are one verified entry",
+			setup: func(f *fakeProc, path string) {
+				if err := os.Truncate(path, 0); err != nil {
+					f.t.Fatal(err)
+				}
+				dev, ino := fileIdent(f.t, path)
+				f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
+				f.setMaps(mapsLine(dev, ino, path))
+			},
+			want: func(path string) []ObservedFile {
+				return []ObservedFile{{Path: path, SHA256: sha256Hex(nil)}}
+			},
+		},
+		{
+			name: "empty descriptor and mapping with different devices are one verified entry",
+			setup: func(f *fakeProc, path string) {
+				if err := os.Truncate(path, 0); err != nil {
+					f.t.Fatal(err)
+				}
+				dev, ino := fileIdent(f.t, path)
+				f.symlink(path, strconv.Itoa(fakePID)+"/fd/4")
+				f.setMaps(mapsLine(dev^1, ino, path))
+			},
+			want: func(path string) []ObservedFile {
+				return []ObservedFile{{Path: path, SHA256: sha256Hex(nil)}}
+			},
+		},
+		{
 			name: "held path that no longer exists is reported without a digest",
 			setup: func(f *fakeProc, path string) {
 				dev, ino := mapsIdent(f.t, path)
@@ -507,7 +535,7 @@ func TestObserveFilesIdentityReconciliation(t *testing.T) {
 				mapping.dev = dev
 				clear(ids)
 				held = []heldFile{mapping, fd}
-				want = append([]ObservedFile{{Path: path, Dev: dev, Ino: ino}}, want...)
+				// The verified descriptor takes precedence in either held order.
 			}
 			if got := observeFiles(held); !reflect.DeepEqual(got, want) {
 				t.Fatalf("observeFiles = %+v, want %+v", got, want)
@@ -558,5 +586,103 @@ func TestObserveOpenedFileErrors(t *testing.T) {
 				t.Fatalf("hashOpenedIfSameInode = %+v, %v; want %+v, %v", got, verified, want, wantVerified)
 			}
 		})
+	}
+}
+
+func TestObserveFilesUnverifiedDuplicates(t *testing.T) {
+	restore := mapsIdentity
+	t.Cleanup(func() { mapsIdentity = restore })
+	const content = "held observation"
+	tests := []struct {
+		name                                          string
+		empty, truncate, replace, missing, otherInode bool
+	}{
+		{name: "mapping refused"},
+		{name: "empty file", empty: true},
+		{name: "truncated file", truncate: true},
+		{name: "replaced file", replace: true},
+		{name: "missing file", missing: true},
+		{name: "different held inodes", otherInode: true},
+	}
+	for _, tt := range tests {
+		for _, differentDevice := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/different-device=%t/reverse=%t", tt.name, differentDevice, reverse), func(t *testing.T) {
+					path := filepath.Join(t.TempDir(), "bundle.bin")
+					body := content
+					if tt.empty {
+						body = ""
+					}
+					if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					dev, ino := fileIdent(t, path)
+					fd := heldFile{path: path, dev: dev, ino: ino}
+					mapping := fd
+					mapping.mapped = true
+					if differentDevice {
+						mapping.dev ^= 1
+					}
+					if tt.otherInode {
+						mapping.ino++
+					}
+					if tt.truncate {
+						if err := os.Truncate(path, 0); err != nil {
+							t.Fatal(err)
+						}
+						body = ""
+					}
+					if tt.replace {
+						replacement := path + ".replacement"
+						if err := os.WriteFile(replacement, []byte("replacement"), 0o600); err != nil {
+							t.Fatal(err)
+						}
+						if err := os.Rename(replacement, path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if tt.missing {
+						if err := os.Remove(path); err != nil {
+							t.Fatal(err)
+						}
+					}
+					// Model the mapping half failing while the descriptor can still verify.
+					mapsIdentity = func(*os.File, int64) (heldFile, bool) { return heldFile{}, false }
+					held := []heldFile{fd, mapping, mapping}
+					if reverse {
+						held = []heldFile{mapping, mapping, fd}
+					}
+					got := observeFiles(held)
+					wantCount := 1
+					if tt.otherInode {
+						wantCount = 2
+					}
+					if len(got) != wantCount {
+						t.Fatalf("observeFiles = %+v, want %d entries", got, wantCount)
+					}
+					verifiedCount := 0
+					for _, file := range got {
+						if file.Path != path {
+							t.Fatalf("path = %q, want %q", file.Path, path)
+						}
+						if file.SHA256 != "" {
+							verifiedCount++
+							if tt.replace || tt.missing || file.Ino != ino || file.Dev != dev || file.SHA256 != sha256Hex([]byte(body)) {
+								t.Fatalf("digest attached to wrong held file: %+v", file)
+							}
+						} else if !tt.replace && !tt.missing && file.Ino == ino {
+							t.Fatalf("verified descriptor lost its digest: %+v", got)
+						}
+					}
+					wantVerified := 1
+					if tt.replace || tt.missing {
+						wantVerified = 0
+					}
+					if verifiedCount != wantVerified {
+						t.Fatalf("verified entries = %d, want %d: %+v", verifiedCount, wantVerified, got)
+					}
+				})
+			}
+		}
 	}
 }

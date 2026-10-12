@@ -110,15 +110,23 @@ func (v *Verifier) controlEnvironmentNames(pid int) ([]string, error) {
 
 type observedFileKey struct {
 	dev, ino uint64
-	// An unverified mapping's device and inode need its path too: btrfs
-	// can report the same maps identity in different subvolumes.
-	unverifiedPath string
+}
+
+// heldObservationKey reconciles descriptor and maps reports even when their
+// devices differ. It only suppresses duplicate observations, never verifies
+// an identity or supplies a digest. Paths separate btrfs subvolumes whose
+// inode numbers can coincide.
+type heldObservationKey struct {
+	ino  uint64
+	path string
 }
 
 // observeFiles reduces the held files to the distinct regular files, hashing
 // each one only through Pipelock's own open of the very same inode.
 func observeFiles(held []heldFile) []ObservedFile {
 	seen := make(map[observedFileKey]bool, len(held))
+	verifiedHeld := make(map[heldObservationKey]bool, len(held))
+	unverified := make(map[heldObservationKey]ObservedFile, len(held))
 	var files []ObservedFile
 	for _, h := range held {
 		if h.special || !filepath.IsAbs(h.path) || hasAnyPrefix(h.path, nonFilePrefixes) {
@@ -129,15 +137,23 @@ func observeFiles(held []heldFile) []ObservedFile {
 		if file.SHA256 == "" && file.Path == "" {
 			continue
 		}
-		k := observedFileKey{dev: file.Dev, ino: file.Ino}
-		if h.mapped && !verified {
-			k.unverifiedPath = file.Path
+		heldKey := heldObservationKey{ino: h.ino, path: file.Path}
+		if !verified {
+			unverified[heldKey] = file
+			continue
 		}
+		verifiedHeld[heldKey] = true
+		k := observedFileKey{dev: file.Dev, ino: file.Ino}
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
 		files = append(files, file)
+	}
+	for k, file := range unverified {
+		if !verifiedHeld[k] {
+			files = append(files, file)
+		}
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files

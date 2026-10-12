@@ -271,7 +271,7 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 		}
 	}
 	seenReconstructed := make(map[string]struct{}, 3)
-	for _, reconstructed := range []string{views.fragmented, views.encoded, views.decoded} {
+	for viewIndex, reconstructed := range []string{views.fragmented, views.encoded, views.decoded} {
 		if reconstructed == "" {
 			continue
 		}
@@ -279,7 +279,13 @@ func (s *Scanner) scanOpaqueResponseText(ctx context.Context, body []byte, suppr
 			continue
 		}
 		seenReconstructed[reconstructed] = struct{}{}
-		reconstructedResult := s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
+		var reconstructedResult ResponseScanResult
+		if viewIndex == 1 {
+			// The encoded chain is decode input only, never reconstructed prose.
+			reconstructedResult = s.scanResponseMatchesWithOptions(ctx, reconstructed, suppressTarget, suppress, responseScanOptions{decodeOnly: true}, nil)
+		} else {
+			reconstructedResult = s.scanResponseWithSuppress(ctx, reconstructed, suppressTarget, suppress, true)
+		}
 		reconstructedResult = requireFragmentBoundaryMatch(reconstructed, reconstructedResult)
 		reconstructedResult.SuppressedMatches = append(result.SuppressedMatches, reconstructedResult.SuppressedMatches...)
 		reconstructedResult.ObservedCoreMatches = append(result.ObservedCoreMatches, reconstructedResult.ObservedCoreMatches...)
@@ -529,7 +535,16 @@ func (s *Scanner) scanResponseWithSuppressMemo(ctx context.Context, content, sup
 	return result
 }
 
+type responseScanOptions struct {
+	forceEncodedDecode bool
+	decodeOnly         bool
+}
+
 func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, forceEncodedDecode bool, memo *responseMatchMemo) (out ResponseScanResult) {
+	return s.scanResponseMatchesWithOptions(ctx, content, suppressTarget, suppress, responseScanOptions{forceEncodedDecode: forceEncodedDecode}, memo)
+}
+
+func (s *Scanner) scanResponseMatchesWithOptions(ctx context.Context, content, suppressTarget string, suppress []config.SuppressEntry, options responseScanOptions, memo *responseMatchMemo) (out ResponseScanResult) {
 	original := content
 	content = exciseVerifiedImageDataURLs(content)
 	var suppressedMatches []ResponseMatch
@@ -611,9 +626,23 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 		}
 	}
 
+	if options.decodeOnly {
+		// Reuse the existing recursive decoders and suppression handling, but
+		// do not pattern-match the stitched encoded alphabet as ordinary text.
+		content = normalize.ForMatching(content)
+		matches := s.matchDecodedCoreResponse(content, filterSuppressed).matches
+		if len(matches) == 0 && s.responseEnabled {
+			matches = filterSuppressed(s.matchDecodedResponse(content).matches)
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return ResponseScanResult{Clean: false, ScanError: ctx.Err().Error()}
+		}
+		return ResponseScanResult{Clean: len(matches) == 0, Matches: matches}
+	}
+
 	// Core response patterns run FIRST - immutable safety floor.
 	// These run regardless of response_scanning.enabled.
-	if coreSet := s.scanCoreResponseWithMemo(content, filterSuppressed, forceEncodedDecode, memo); len(coreSet.matches) > 0 {
+	if coreSet := s.scanCoreResponseWithMemo(content, filterSuppressed, options.forceEncodedDecode, memo); len(coreSet.matches) > 0 {
 		result := ResponseScanResult{
 			Clean:   false,
 			Matches: coreSet.matches,
@@ -695,7 +724,7 @@ func (s *Scanner) scanResponseMatches(ctx context.Context, content, suppressTarg
 	// contiguous run of base64/hex alphabet characters long enough to be
 	// a meaningful encoded payload. Skips expensive decode attempts on
 	// normal text content.
-	if len(matches) == 0 && (forceEncodedDecode || hasEncodedRun(content)) {
+	if len(matches) == 0 && (options.forceEncodedDecode || hasEncodedRun(content)) {
 		decodedSet := s.matchDecodedResponse(content)
 		matches = filterSuppressed(decodedSet.matches)
 	}
@@ -1411,13 +1440,11 @@ type opaqueResponseTextViews struct {
 	decoded    string
 }
 
-// opaqueResponseTextView produces bounded scanner views from an opaque body.
-// Short spans of control or malformed bytes are semantic text boundaries and
-// become a space, so split instructions remain visible. Longer binary spans end
-// the group. Substantive groups retain hard-boundary sentinels, while a second
-// prose-only view reconnects two or more fragments at phrase length so neither
-// binary nor printable punctuation can make attacker-controlled words vanish.
-// A single short accidental token is excluded from both views.
+// opaqueResponseTextView extracts maximal contiguous printable runs, following
+// the technique described by GNU strings (https://sourceware.org/binutils/docs/binutils/strings.html).
+// Binary gaps end a run; they never become whitespace in the retained view.
+// Each retained run and each reconstructed prose fragment must meet the existing
+// phrase-length floor. Encoded fragments retain their separate decode path.
 func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTextViews, error) {
 	var view strings.Builder
 	var proseChain strings.Builder
@@ -1448,7 +1475,7 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			}
 			view.WriteString(fragment)
 		}
-		if isOpaqueResponseProseFragment(fragment) {
+		if printableBytes >= binaryResponseTextRunMinBytes && isOpaqueResponseProseFragment(fragment) {
 			if proseFragments > 0 {
 				proseChain.WriteByte('\n')
 			}
@@ -1486,7 +1513,6 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			continue
 		}
 
-		separatorStart := i
 		for i < len(data) {
 			if err := checkContext(i); err != nil {
 				return opaqueResponseTextViews{}, err
@@ -1496,10 +1522,6 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 				break
 			}
 			i += size
-		}
-		if i-separatorStart <= 8 && group.Len() > 0 {
-			group.WriteByte(' ')
-			continue
 		}
 		flush()
 	}

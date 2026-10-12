@@ -1475,7 +1475,7 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 			}
 			view.WriteString(fragment)
 		}
-		if printableBytes >= binaryResponseTextRunMinBytes && isOpaqueResponseProseFragment(fragment) {
+		if printableBytes >= binaryResponseTextRunMinBytes {
 			if proseFragments > 0 {
 				proseChain.WriteByte('\n')
 			}
@@ -1541,20 +1541,6 @@ func opaqueResponseTextView(ctx context.Context, data []byte) (opaqueResponseTex
 	}
 	decoded := decodeOpaqueResponseFragments(encodedParts)
 	return opaqueResponseTextViews{retained: view.String(), fragmented: fragmented, encoded: encoded, decoded: decoded}, nil
-}
-
-func isOpaqueResponseProseFragment(fragment string) bool {
-	hasLetterOrDigit := false
-	for _, r := range fragment {
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r):
-			hasLetterOrDigit = true
-		case unicode.IsSpace(r), strings.ContainsRune(".,;:!?'-()[]{}\"/", r):
-		default:
-			return false
-		}
-	}
-	return hasLetterOrDigit
 }
 
 func isOpaqueResponseEncodedFragment(fragment string) bool {

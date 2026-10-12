@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -417,20 +418,145 @@ func TestObserveFilesHelpers(t *testing.T) {
 		}
 	}
 	missing := filepath.Join(t.TempDir(), "absent")
-	if sum, path := hashIfSameInode(ObservedFile{Path: missing}, heldFile{}); sum != "" || path != missing {
-		t.Fatalf("hashIfSameInode(missing) = %q, %q", sum, path)
+	if file, verified := hashIfSameInode(ObservedFile{Path: missing}, heldFile{}, nil); verified || file.SHA256 != "" || file.Path != missing {
+		t.Fatalf("hashIfSameInode(missing) = %+v", file)
 	}
 	dir := t.TempDir()
-	if sum, path := hashIfSameInode(ObservedFile{Path: dir}, heldFile{}); sum != "" || path != "" {
-		t.Fatalf("hashIfSameInode(dir) = %q, %q; want both empty", sum, path)
+	if file, verified := hashIfSameInode(ObservedFile{Path: dir}, heldFile{}, nil); verified || file.SHA256 != "" || file.Path != "" {
+		t.Fatalf("hashIfSameInode(dir) = %+v; want an empty observation", file)
 	}
 	unreadable := filepath.Join(t.TempDir(), "locked")
 	if err := os.WriteFile(unreadable, []byte("x"), 0o000); err != nil {
 		t.Fatal(err)
 	}
 	if os.Geteuid() != 0 {
-		if sum, path := hashIfSameInode(ObservedFile{Path: unreadable}, heldFile{}); sum != "" || path != unreadable {
-			t.Fatalf("hashIfSameInode(unreadable) = %q, %q", sum, path)
+		if file, verified := hashIfSameInode(ObservedFile{Path: unreadable}, heldFile{}, nil); verified || file.SHA256 != "" || file.Path != unreadable {
+			t.Fatalf("hashIfSameInode(unreadable) = %+v", file)
 		}
+	}
+}
+
+// The maps-identity seam models filesystem identity reports without requiring
+// a particular filesystem. These cases must run serially while it is replaced.
+func TestObserveFilesIdentityReconciliation(t *testing.T) {
+	restore := mapsIdentity
+	t.Cleanup(func() { mapsIdentity = restore })
+
+	const content = "observed identity"
+	for _, name := range []string{
+		"equal stat and maps devices",
+		"different stat and maps devices",
+		"mapping before descriptor",
+		"same inode number on different devices",
+		"unverified descriptors with same inode number on different devices",
+		"same maps identity at different paths",
+		"unverified maps identity at different paths",
+		"unverified mapping does not hide verified descriptor",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "a.bin")
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dev, ino := fileIdent(t, path)
+			fd := heldFile{dev: dev, ino: ino, path: path}
+			mapping := heldFile{dev: dev, ino: ino, path: path, mapped: true}
+			if name != "equal stat and maps devices" {
+				mapping.dev = dev ^ 1
+			}
+			ids := map[string]heldFile{path: mapping}
+			mapsIdentity = func(f *os.File, _ int64) (heldFile, bool) {
+				id, ok := ids[f.Name()]
+				return id, ok
+			}
+			held := []heldFile{fd, mapping, mapping}
+			want := []ObservedFile{{Path: path, Dev: dev, Ino: ino, SHA256: sha256Hex([]byte(content))}}
+			switch name {
+			case "mapping before descriptor":
+				held = []heldFile{mapping, fd, mapping}
+			case "same inode number on different devices", "unverified descriptors with same inode number on different devices", "same maps identity at different paths", "unverified maps identity at different paths":
+				otherPath := filepath.Join(dir, "b.bin")
+				if err := os.WriteFile(otherPath, []byte(content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				otherDev, otherIno := fileIdent(t, otherPath)
+				if otherDev == dev && otherIno == ino {
+					t.Fatal("test requires two distinct files")
+				}
+				otherMapping := mapping
+				otherMapping.path = otherPath
+				if name == "same inode number on different devices" || name == "unverified descriptors with same inode number on different devices" {
+					otherMapping.dev = mapping.dev ^ 2
+				}
+				ids[otherPath] = otherMapping
+				held = []heldFile{otherMapping, mapping, otherMapping, mapping}
+				want = append(want, ObservedFile{Path: otherPath, Dev: otherDev, Ino: otherIno, SHA256: sha256Hex([]byte(content))})
+				if name == "unverified maps identity at different paths" {
+					clear(ids)
+					want[0] = ObservedFile{Path: path, Dev: mapping.dev, Ino: mapping.ino}
+					want[1] = ObservedFile{Path: otherPath, Dev: otherMapping.dev, Ino: otherMapping.ino}
+				}
+				if name == "unverified descriptors with same inode number on different devices" {
+					mapping.mapped, otherMapping.mapped = false, false
+					held = []heldFile{otherMapping, mapping}
+					want[0] = ObservedFile{Path: path, Dev: mapping.dev, Ino: mapping.ino}
+					want[1] = ObservedFile{Path: otherPath, Dev: otherMapping.dev, Ino: otherMapping.ino}
+				}
+			case "unverified mapping does not hide verified descriptor":
+				mapping.dev = dev
+				clear(ids)
+				held = []heldFile{mapping, fd}
+				want = append([]ObservedFile{{Path: path, Dev: dev, Ino: ino}}, want...)
+			}
+			if got := observeFiles(held); !reflect.DeepEqual(got, want) {
+				t.Fatalf("observeFiles = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
+func TestObserveOpenedFileErrors(t *testing.T) {
+	restore := mapsIdentity
+	t.Cleanup(func() { mapsIdentity = restore })
+	for _, name := range []string{"stat fails", "hash fails", "seen inode skips hashing"} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "bundle.bin")
+			if err := os.WriteFile(path, []byte(pinnedContent), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			dev, ino := fileIdent(t, path)
+			file := ObservedFile{Path: path, Dev: dev ^ 1, Ino: ino}
+			held := heldFile{path: path, dev: file.Dev, ino: ino, mapped: true}
+			want := file
+			wantVerified := name != "stat fails"
+			seen := map[observedFileKey]bool{}
+			if name == "seen inode skips hashing" {
+				seen[observedFileKey{dev: dev, ino: ino}] = true
+			}
+			opened, err := os.Open(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = opened.Close() })
+			if name == "stat fails" {
+				if err := opened.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				want.Dev = dev
+				mapsIdentity = func(f *os.File, _ int64) (heldFile, bool) {
+					if name == "hash fails" {
+						if err := f.Close(); err != nil {
+							t.Fatal(err)
+						}
+					}
+					return held, true
+				}
+			}
+			if got, verified := hashOpenedIfSameInode(file, held, opened, seen); got != want || verified != wantVerified {
+				t.Fatalf("hashOpenedIfSameInode = %+v, %v; want %+v, %v", got, verified, want, wantVerified)
+			}
+		})
 	}
 }

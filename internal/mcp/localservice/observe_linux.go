@@ -108,26 +108,35 @@ func (v *Verifier) controlEnvironmentNames(pid int) ([]string, error) {
 	return names, nil
 }
 
+type observedFileKey struct {
+	dev, ino uint64
+	// An unverified mapping's device and inode need its path too: btrfs
+	// can report the same maps identity in different subvolumes.
+	unverifiedPath string
+}
+
 // observeFiles reduces the held files to the distinct regular files, hashing
 // each one only through Pipelock's own open of the very same inode.
 func observeFiles(held []heldFile) []ObservedFile {
-	type key struct{ dev, ino uint64 }
-	seen := make(map[key]bool, len(held))
+	seen := make(map[observedFileKey]bool, len(held))
 	var files []ObservedFile
 	for _, h := range held {
 		if h.special || !filepath.IsAbs(h.path) || hasAnyPrefix(h.path, nonFilePrefixes) {
 			continue
 		}
-		k := key{h.dev, h.ino}
+		file := ObservedFile{Path: filepath.Clean(h.path), Dev: h.dev, Ino: h.ino}
+		file, verified := hashIfSameInode(file, h, seen)
+		if file.SHA256 == "" && file.Path == "" {
+			continue
+		}
+		k := observedFileKey{dev: file.Dev, ino: file.Ino}
+		if h.mapped && !verified {
+			k.unverifiedPath = file.Path
+		}
 		if seen[k] {
 			continue
 		}
 		seen[k] = true
-		file := ObservedFile{Path: filepath.Clean(h.path), Dev: h.dev, Ino: h.ino}
-		file.SHA256, file.Path = hashIfSameInode(file, h)
-		if file.SHA256 == "" && file.Path == "" {
-			continue
-		}
 		files = append(files, file)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
@@ -145,37 +154,45 @@ func hasAnyPrefix(s string, prefixes []string) bool {
 
 // hashIfSameInode opens the path without blocking, requires a regular file that
 // is the held one (heldMatches: stat identity for a descriptor, maps identity
-// for a mapping), and hashes that opened descriptor. It returns the digest and
-// the path; an empty digest means the path is not tied to the held file. A path
-// that is no regular file at all returns both empty.
-func hashIfSameInode(file ObservedFile, held heldFile) (sum, path string) {
+// for a mapping), and hashes that opened descriptor. A verified file carries
+// the opened descriptor's stat identity so descriptors and mappings deduplicate
+// even when their held devices differ. The boolean reports whether that identity
+// was verified, independently of hashing success. An unverified file retains its
+// held identity; a non-regular path returns an empty observation.
+func hashIfSameInode(file ObservedFile, held heldFile, seen map[observedFileKey]bool) (ObservedFile, bool) {
 	f, err := os.OpenFile(file.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
-		return "", file.Path
+		return file, false
 	}
 	defer func() { _ = f.Close() }()
+	return hashOpenedIfSameInode(file, held, f, seen)
+}
+
+func hashOpenedIfSameInode(file ObservedFile, held heldFile, f *os.File, seen map[observedFileKey]bool) (ObservedFile, bool) {
 	fi, err := f.Stat()
 	if err != nil {
-		return "", file.Path
+		return file, false
 	}
 	if !fi.Mode().IsRegular() {
-		return "", ""
+		return ObservedFile{}, false
 	}
 	dev, ino, _, ok := fileIdentity(fi)
-	if !ok {
-		return "", file.Path
-	}
 	var mapsID heldFile
 	var mapsOK bool
-	if held.mapped {
+	if held.mapped && ok {
 		mapsID, mapsOK = mapsIdentity(f, fi.Size())
 	}
-	if !heldMatches(held, dev, ino, mapsID, mapsOK) {
-		return "", file.Path
+	if !ok || !heldMatches(held, dev, ino, mapsID, mapsOK) {
+		return file, false
 	}
-	sum, err = hashFile(f)
+	file.Dev, file.Ino = dev, ino
+	if seen[observedFileKey{dev: dev, ino: ino}] {
+		return file, true
+	}
+	sum, err := hashFile(f)
 	if err != nil {
-		return "", file.Path
+		return file, true
 	}
-	return sum, file.Path
+	file.SHA256 = sum
+	return file, true
 }

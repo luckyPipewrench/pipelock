@@ -1346,7 +1346,7 @@ jobs:
       - name: golangci-lint (OSS)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.13.2
+          version: v2.14.0
           skip-cache: true
 
 
@@ -1372,7 +1372,7 @@ jobs:
       - name: golangci-lint (enterprise)
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
-          version: v2.13.2
+          version: v2.14.0
           skip-cache: true
           args: --build-tags enterprise
 

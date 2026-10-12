@@ -19,6 +19,10 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/testwait"
 )
 
+// licenseExpiryTestWindow leaves room for proxy setup and the positive-control
+// WebSocket exchange before the license expires.
+const licenseExpiryTestWindow = 10 * time.Second
+
 func requireLicensedWebSocketTeardown(t *testing.T, mutate func(cfg *config.Config), act func(t *testing.T, p *Proxy)) {
 	t.Helper()
 	backend, stop := wsEchoServer(t)
@@ -72,9 +76,11 @@ func TestLicenseReplacementClosesPreviousGeneration(t *testing.T) {
 func TestLicenseExpiryClosesPreviousGeneration(t *testing.T) {
 	requireLicensedWebSocketTeardown(t, func(cfg *config.Config) {
 		revocationConnectionConfig(cfg)
-		cfg.LicenseExpiresAt = time.Now().Add(2 * time.Second).Unix()
+		// Unix() truncates to whole seconds, so a short window can expire
+		// before proxy setup and the WebSocket dial finish under -race.
+		cfg.LicenseExpiresAt = time.Now().Add(licenseExpiryTestWindow).Unix()
 	}, func(t *testing.T, p *Proxy) {
-		testwait.For(t, 5*time.Second, func() bool {
+		testwait.For(t, licenseExpiryTestWindow+5*time.Second, func() bool {
 			_, ok := p.Edition().LookupProfile("client")
 			return !ok
 		}, "paid profile expiry")

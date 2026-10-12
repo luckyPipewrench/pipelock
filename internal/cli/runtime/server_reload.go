@@ -69,7 +69,9 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 		return errors.New("rejected: invalid config reload: config is nil")
 	}
 	if _, validationErr := newCfg.DestinationGrantSet(); validationErr != nil {
-		return fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
 	}
 	if validationErr := newCfg.ValidateExpiryAuthorizations(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)

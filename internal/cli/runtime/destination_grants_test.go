@@ -4,9 +4,12 @@
 package runtime
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/destination"
 )
@@ -27,7 +30,7 @@ func TestServerDestinationGrantsReloadPreservesAndRevokes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			next := s.proxy.CurrentConfig().Clone()
 			next.DestinationGrants = tc.grants
-			next.ExplainBlocks = new(true)
+			next.ExplainBlocks = new(!s.proxy.CurrentConfig().ExplainBlocksEnabled())
 			if err := s.Reload(next); err != nil {
 				t.Fatal(err)
 			}
@@ -79,5 +82,30 @@ func TestDestinationGrantsReloadTrustExpansionContracts(t *testing.T) {
 				t.Fatalf("grant removal rejected: %s", reason)
 			}
 		})
+	}
+}
+
+func TestServerDestinationGrantsRejectedReloadAudited(t *testing.T) {
+	t.Parallel()
+	logPath := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := audit.New("json", "file", logPath, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(logger.Close)
+	s := &Server{logger: logger, opts: ServerOpts{ConfigFile: "policy.yaml"}}
+	invalid := config.Defaults()
+	invalid.DestinationGrants = []config.DestinationGrant{{Protocol: "tcp", Host: "169.254.169.254", Port: 80}}
+	if err := s.Reload(invalid); err == nil {
+		t.Fatal("invalid reload accepted")
+	}
+	data, err := os.ReadFile(filepath.Clean(logPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{configReloadAuditMethod, "destination_grants", "policy.yaml", "rejected: invalid config reload"} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("audit log missing %q: %s", want, data)
+		}
 	}
 }

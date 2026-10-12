@@ -11,6 +11,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -424,12 +425,23 @@ func driveFragmentedWebSocket(ctx context.Context, h http.Handler) error {
 	if err := writeMaskedFrame(conn, true, ws.OpContinuation, []byte(secret[8:]+`"}`)); err != nil {
 		return fmt.Errorf("write final WebSocket fragment: %w", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-	if _, _, readErr := wsutil.ReadServerData(conn); readErr == nil {
+	// Only the proxy's policy close proves the block. A timeout means the
+	// decision was not observed yet, so it must not count as blocked.
+	_ = conn.SetReadDeadline(time.Now().Add(fragmentedBlockDeadline))
+	_, _, readErr := wsutil.ReadServerData(conn)
+	if readErr == nil {
 		return fmt.Errorf("fragmented secret unexpectedly reached WebSocket backend")
+	}
+	var closed wsutil.ClosedError
+	if !errors.As(readErr, &closed) || closed.Code != ws.StatusPolicyViolation {
+		return fmt.Errorf("fragmented secret: want policy-violation close, got %w", readErr)
 	}
 	return nil
 }
+
+// fragmentedBlockDeadline leaves room for fragment reassembly and scanning
+// under the race detector on a loaded runner.
+const fragmentedBlockDeadline = 15 * time.Second
 
 func writeMaskedFrame(conn net.Conn, fin bool, opcode ws.OpCode, payload []byte) error {
 	mask := ws.NewMask()

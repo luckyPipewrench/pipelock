@@ -53,6 +53,6 @@ Forward, intercepted and reverse HTTP paths strip Range and cache-validator head
 
 JWT Cookie headers follow the configured header DLP action and core floor. Issuer-bound cookies observed through TLS interception retain their scoped allowance. With an unbound `default_agent_identity`, requests with and without a declared agent header share detection state; changing the default identity on reload closes affected intercepted tunnels and WebSocket relays.
 
-Malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol keys refuse despite `on_parse_error: forward`; rejected MCP responses do not update tracking state. All seven presets also gain credential-file write blocks, so review tools that write, move, copy or patch those paths before updating a preset.
+On MCP, malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol keys refuse despite `mcp_input_scanning.on_parse_error: forward`; rejected MCP responses do not update tracking state. All seven presets also gain credential-file write blocks, so review tools that write, move, copy or patch those paths before updating a preset.
 
 Built-in credential audiences change the canonical policy hash. Upgrade conductor and followers together before republishing policy and update consumers that pin the old hash. Generated request IDs now use `req-<UUIDv7>`, replacing the counter format; update log and event parsers that assumed decimal IDs.

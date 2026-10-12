@@ -9,7 +9,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from scripts.release_doc_versions import check
+from scripts.yaml_contracts import WorkflowLoader
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 CURRENT = """\
@@ -29,6 +35,14 @@ def write_tree(root: Path, *, current: str = CURRENT, health: str = '  "version"
 
 
 class ReleaseDocVersionTests(unittest.TestCase):
+    def test_repository_matches_chart_app_version(self) -> None:
+        """Exercise the release gate on the shipped tree, not only fixtures."""
+        chart = yaml.load(
+            (ROOT / "charts/pipelock/Chart.yaml").read_text(encoding="utf-8"),
+            Loader=WorkflowLoader,
+        )
+        self.assertEqual(check(ROOT, f"v{chart['appVersion']}"), [])
+
     def test_known_current_pins_pass(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

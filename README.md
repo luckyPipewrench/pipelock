@@ -231,7 +231,7 @@ Pipelock runs in three modes:
 |------|----------|--------------|----------|
 | **strict** | Allowlist-only | None | Regulated industries, high-security |
 | **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
-| **audit** | Ordinary policy warns; core floors can block | Core destination checks still apply | Evaluate policy with core protection active |
+| **audit** | Ordinary policy warns; core floors can block | Via fetch or forward proxy, with core destination checks | Evaluate policy with core protection active |
 
 For agents running uncensored or abliterated models, the [`hostile-model` preset](configs/hostile-model.yaml) layers defenses on strict mode: aggressive entropy thresholds, blanket network-tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains through dependency signals.
 

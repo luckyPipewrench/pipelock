@@ -204,7 +204,7 @@ asyncio.run(main())
 
 ### LangGraph Docker image with Pipelock
 
-After v3.7.0 is published, download and verify its Linux amd64 archive in the build directory:
+After v3.7.0 is published, download and verify its [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz) in the build directory:
 
 ```bash
 gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz

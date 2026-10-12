@@ -87,6 +87,7 @@ def prepare(vector, directory):
             str(target / "signer-key.hex"),
             "--rotation-endorsement",
             str(endorsement),
+            "--allow-prefix",
             "--json",
         ]
     if artifact == "recorder-line":
@@ -95,7 +96,9 @@ def prepare(vector, directory):
         if variant == "schema-alias":
             text = alias(text, "action_record", vector)
         target.write_text(text)
-        args = ["chain", str(target), "--key", KEY, "--json"]
+        # These fixtures are open chains: they test key handling, not end
+        # proof, so accept a valid prefix. Broken input still exits 1.
+        args = ["chain", str(target), "--key", KEY, "--allow-prefix", "--json"]
         return args
     if artifact == "group":
         archive = ROOT.parent / "verifiers/ts/tests/fixtures/receipt-groups.zip"

@@ -216,7 +216,7 @@ func ClassifyMCPToolCallWithOptions(toolName, argsJSON string, protectedPatterns
 		return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 	}
 
-	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName)) {
+	if looksLikeBrowseTool(name) || (category == "network" && hasMCPNetworkNameEvidence(toolName, argsJSON)) {
 		if hasMutatingNetworkIntent(argsJSON) {
 			return ActionClassification{Class: ActionClassPublish, Sensitivity: SensitivityElevated, ActionRef: targetURL, OverrideRefs: targets.urls, Confident: true}
 		}
@@ -433,15 +433,47 @@ var readOnlyOperationNames = [][]string{
 	{"list", "feature", "requests"},
 	{"list", "postgres", "tables"},
 	{"list", "pending", "requests"},
+	{"pull", "request", "read"},
 }
 
-func readOnlyOperationName(operation []string) bool {
+func readOnlyOperationName(operation []string, argsJSON string) bool {
 	for _, known := range readOnlyOperationNames {
 		if slices.Equal(operation, known) {
+			if slices.Equal(operation, []string{"pull", "request", "read"}) {
+				return hasReadOnlyPullRequestMethod(argsJSON)
+			}
 			return true
 		}
 	}
 	return false
+}
+
+// hasReadOnlyPullRequestMethod follows the method enum and handler in
+// github/github-mcp-server pkg/github/pullrequests.go (PullRequestRead) and
+// the read-method normalizer in consolidated_pull_request_types.go, at tree
+// 07e24668f8708a143bdbec700c20f5e6c4942e28.
+// Only a top-level, case-sensitive published method admits the name exception;
+// missing, malformed, or unknown methods retain conservative name evidence.
+func hasReadOnlyPullRequestMethod(argsJSON string) bool {
+	decoded, ok := decodeJSONValue(argsJSON)
+	if !ok {
+		return false
+	}
+	args, ok := decoded.(map[string]any)
+	if !ok {
+		return false
+	}
+	method, ok := args["method"].(string)
+	if !ok {
+		return false
+	}
+	switch method {
+	case "get", "get_diff", "get_status", "get_files", "get_commits",
+		"get_review_comments", "get_reviews", "get_comments", "get_check_runs":
+		return true
+	default:
+		return false
+	}
 }
 
 func splitArgumentKey(key string) []string {
@@ -706,23 +738,23 @@ func looksLikeBrowseTool(name string) bool {
 // Preserve conservative substring evidence, including concatenated verbs. Only
 // remove known object words behind an explicit read operation.
 func looksLikePublishTool(name, argsJSON string) bool {
-	return containsAny(mcpOperationEvidenceName(name), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
+	return containsAny(mcpOperationEvidenceName(name, argsJSON), "http", "request", "post", "put", "patch", "publish", "send", "webhook") ||
 		hasMutatingNetworkMethod(argsJSON)
 }
 
-func hasMCPNetworkNameEvidence(name string) bool {
-	return containsAny(mcpOperationEvidenceName(name), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
+func hasMCPNetworkNameEvidence(name, argsJSON string) bool {
+	return containsAny(mcpOperationEvidenceName(name, argsJSON), "fetch", "curl", "wget", "http", "request", "post", "put", "send", "upload", "download", "api")
 }
 
 // Only a complete, known read-object shape can remove noun evidence. Any
 // additional token retains the original conservative substring classification.
-func mcpOperationEvidenceName(name string) string {
+func mcpOperationEvidenceName(name, argsJSON string) string {
 	alias, ok := normalize.MCPToolNameAlias(name)
 	if !ok {
 		return strings.ToLower(name)
 	}
 	operation := splitArgumentKey(alias)
-	if readOnlyOperationName(operation) {
+	if readOnlyOperationName(operation, argsJSON) {
 		return strings.ToLower(strings.TrimSuffix(name, alias)) + "read"
 	}
 	if len(operation) < 2 || !slices.Contains([]string{"read", "get", "list", "search", "find", "query", "fetch", "show", "describe", "check"}, operation[0]) {

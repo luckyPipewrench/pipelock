@@ -106,9 +106,11 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ## Quick Start
 
+These examples target v3.7.0 once its release artifacts are published. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
+
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
-git clone --branch v3.6.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
+git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
 # Discover local agent integrations and save a config
@@ -127,7 +129,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # See https://github.com/luckyPipewrench/pipelock/releases
 
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
+docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 
 # Homebrew on macOS
 brew install luckyPipewrench/tap/pipelock
@@ -139,10 +141,10 @@ brew install luckyPipewrench/tap/pipelock
 <summary>Verify release integrity</summary>
 
 ```bash
-gh attestation verify pipelock_3.6.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 # Helm chart, attested from 3.6.0 on:
-gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.6.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
+gh attestation verify oci://ghcr.io/luckypipewrench/charts/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 ```
 
 Release workflows publish SLSA provenance, CycloneDX SBOMs, checksums, and signed container images, and (from 3.6.0) an attested Helm chart. Source builds made with `make build` or `make install` produce a Community-only binary; pre-built release artifacts include paid-tier code that activates with a valid license key.
@@ -348,6 +350,8 @@ pipelock contain run -- claude-code
 `pipelock contain` (`install`, `run`, `verify`, `doctor`, `rollback`, `add-tool`, workspace grants, `ca-refresh`, `reload-nft-rules`, and more) manages a 3-UID operator / proxy / agent model: the agent runs in a private network namespace with no route off-host, reaching only the Pipelock proxy through a doorway socket, with nftables owner-match rules as the fallback backstop, plus systemd service setup, wrapper commands, workspace ACLs, CA refresh, and posture evidence. See [`docs/contain-cli.md`](docs/contain-cli.md).
 
 ### Evidence And Receipts
+
+A development build completed **1,000,000 requests with zero missing receipt records**, and its eight-chain signed group verified `GROUP_VALID`. It sustained 414 requests/s with required receipts on a 6-core/12-thread i7-10750H under an 8-CPU quota. Request and record counts differ because each action can produce several evidence records. See the [measured workload and detection limits](docs/benchmarks.md#million-request-receipt-run); this is a workload result, not a capacity guarantee or a final-release artifact identity.
 
 - **Flight recorder:** per-writer hash-chained JSONL evidence with Ed25519-signed checkpoints and DLP redaction. `pipelock init` provisions a recorder directory and signing key for stock installs. Recording needs a directory, and because checkpoint signing is on by default it also needs a signing key; set `sign_checkpoints: false` for an explicitly unsigned hash-chained recorder. Use `pipelock evidence doctor DIR` to detect structural damage in an evidence directory. See [Flight Recorder](docs/guides/flight-recorder.md).
 - **Action receipts:** signed records emitted for mediated actions, carrying verdict, policy hash, transport, and scanner layer. Blocks produce receipts; allow-path receipt enforcement requires `flight_recorder.require_receipts`. Verify with `pipelock verify-receipt --key <signer.pub>`. Unpinned runs are structural-only and exit non-zero unless `--allow-unpinned` is passed.
@@ -558,9 +562,9 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 
 ```bash
 # Docker
-docker pull ghcr.io/luckypipewrench/pipelock:3.6.0
+docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
-  ghcr.io/luckypipewrench/pipelock:3.6.0 \
+  ghcr.io/luckypipewrench/pipelock:3.7.0 \
   run --config /config/pipelock.yaml --listen 0.0.0.0:8888
 
 # Network-isolated agent with Docker Compose
@@ -568,7 +572,7 @@ pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
 # Kubernetes with Helm (published chart, Helm 3.8+)
-helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.6.0
+helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.0
 ```
 
 Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptables/nftables, and macOS PF: **[docs/guides/deployment-recipes.md](docs/guides/deployment-recipes.md)**
@@ -579,7 +583,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ```yaml
 # .github/workflows/pipelock.yaml
-- uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
+- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
     scan-diff: 'true'
     fail-on-findings: 'true'
@@ -640,6 +644,7 @@ Full docs directory: [docs/](docs/)
 
 | Document | What's In It |
 |----------|-------------|
+| [Upgrading to 3.7](docs/guides/upgrading-to-3.7.md) | Receipt completion, containment restart, verifier compatibility, detection tradeoffs and new policy fields |
 | [Configuration Reference](docs/configuration.md) | All config fields, defaults, hot-reload behavior, presets |
 | [Request Policy](docs/guides/request-policy.md) | Allow-by-default deny/warn rails on outbound API operations (GraphQL / discriminator / batch), fail-closed (v2.6) |
 | [Request Redaction](docs/guides/redaction.md) | JSON request rewriting across HTTP, WebSocket, and MCP transports |
@@ -725,6 +730,8 @@ internal/
   media/               Image metadata stripping (JPEG/PNG byte-level surgery)
   normalize/           Text-normalization transforms (NFKC, invisible chars, leetspeak, whitespace, vowel-fold) for the scanner cascade
   receipt/             Action receipt signing + hash-chained evidence
+  receiptcontent/      Typed receipt content projections and exact clean-text caching
+  recorder/            Durable append tickets, run history and parallel group lifecycle
   posture/             Posture capsule schema, signing, scoring, verify policy
   session/             Session state, taint classification, task boundaries, trust overrides
   rules/               Bundle loader, tier taxonomy, RequiredFeatures enforcement
@@ -751,7 +758,7 @@ Pipelock is tested like a security product. The open-source core has unit, integ
 | Go tests (with `-race`) | Unit, integration, and end-to-end paths |
 | Coverage gate (codecov) | 91% Apache-2.0 core project, 95% patch on new code |
 | Evasion coverage | Public bypass-resistance matrix + private adversarial corpus |
-| Scanner hot-path overhead | ~40us per URL scan (hot-path benchmark; see [docs/performance.md](docs/performance.md)) |
+| Scanner hot-path overhead | Historical scanner measurements and current receipt workload results: [docs/performance.md](docs/performance.md) |
 | CI matrix | Go 1.26 + 1.27, CodeQL, golangci-lint |
 | Supply chain | SLSA provenance, CycloneDX SBOM, cosign signatures |
 

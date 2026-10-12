@@ -111,7 +111,7 @@ Path patterns use the same matching rules as config suppress entries (exact, dir
 Use the `exclude-paths` input (one pattern per line):
 
 ```yaml
-- uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
+- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
     exclude-paths: |
       vendor/
@@ -136,7 +136,7 @@ Write a Pipelock config file, then pass its path with the `config` input:
         reason: "Test tokens"
     EOF
 
-- uses: luckyPipewrench/pipelock@3e868ac5d5b62d3a2790958542171143af8a0e38 # v3.6.0
+- uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
     config: pipelock-ci.yaml
 ```

@@ -99,7 +99,7 @@ Every receipt contains these fields:
 | `target` | URL | Target URL |
 | `layer` | Scanner layer name | Which scanning layer triggered |
 | `pattern` | Reason string | What was matched |
-| `request_id` | Per-request UUID | Request correlation |
+| `request_id` | Proxy-minted `req-` UUIDv7 or caller value | Request correlation; only a process-proven generated ID is excluded from receipt content scanning |
 | `redaction` | Request redaction summary | Present only when request-side redaction replaced one or more values; includes `profile`, `provider`, `parser`, `total_redactions`, and `by_class` |
 | `agent` | Agent identity | Which agent made the request |
 | `chain_prev_hash` | SHA-256 of previous receipt | Hash chain linkage |
@@ -125,11 +125,13 @@ When request-side redaction succeeds, the receipt keeps the underlying transport
 
 ## Chain Integrity
 
-All receipts from a single proxy instance share a hash chain. The first receipt has `chain_prev_hash: "genesis"`. Each subsequent receipt's `chain_prev_hash` is the SHA-256 of the previous receipt's canonical JSON. `chain_seq` increments by 1 for each receipt.
+Each writer chain has its own receipt sequence and previous-hash links. The default is one chain per process run; `flight_recorder.receipt_chains` can select multiple chains bound by signed group openings and closes. A request stays on its admitted chain. Current run-bound genesis values and legacy `genesis` values have different formats; use the verifier rather than testing a string shape. A single-shard verdict cannot establish group completeness.
 
 Verify a single run file with `pipelock verify-receipt evidence-proxy.run.<id>-0.jsonl --key <signer.pub>`, substituting the full filename on disk. Verification is safe by default: an unpinned run (no `--key`) is structural-only and exits non-zero unless you pass `--allow-unpinned`. Verify all run chains and their links with `pipelock verify-receipt --chain <evidence-dir> --key <signer.pub>`; for a chain whose signing key rotated, pass `--key` once per trusted segment key. See the [receipt verification guide](receipt-verification.md) for the full flow.
 
 ## Emit Failure Behavior
+
+With required receipts, each configured receipt family must confirm its durable write before the covered effect. This includes covered response rewrites, warned SSE events and permitted A2A findings, as well as outbound requests, MCP redirects and legacy HTTP methods. Failure refuses the effect through the transport's denial path: buffered HTTP returns 403, MCP reports a JSON-RPC refusal, WebSocket closes and SSE stops before the affected event. One family's success cannot stand in for another. A post-header upstream truncation aborts the connection and records an incomplete outcome, so it cannot look like a complete response.
 
 Receipt emission failures are logged and do not fail requests by default. Set `flight_recorder.require_receipts: true` to require allow-path receipts before forwarding traffic; if signing fails or the recorder is unavailable, Pipelock blocks the action with `receipt_emission_failed` instead of sending it upstream. This includes TLS-intercepted CONNECT inner HTTP requests: their durable `intent` receipt is emitted before the upstream request is attempted. Block-path receipts remain best-effort because the underlying action has already been denied.
 

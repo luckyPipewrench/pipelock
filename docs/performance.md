@@ -7,6 +7,10 @@ measurable CPU at high throughput (see tables below).
 
 The scanner and MCP latency tables use medians from three runs on an AMD Ryzen 7 7800X3D (8 cores / 16 threads), Linux/amd64, at released v3.6.0 commit `3e868ac5d` with Go 1.26.8 and `GOMAXPROCS=4`. The standard `make bench` run used Go's default one-second benchmark target and `-count=3`. A few heavy cases still have high variance: the 256KiB uniform-filler clean case completed only three iterations per sample, and the 20-query URL case completed five or six. Fixture-backed browser and saved JavaScript bundle benchmarks were skipped because they need generated input directories. Response scanning evaluates patterns in parallel, so its figures depend on the CPUs available. This refresh covers scanner and MCP Go benchmarks only. Unicode normalization, the multi-core scaling curves, concurrent scaling, HTTP proxy overhead, CPU-at-scale estimates, and deployment sizing below remain historical or guidance and weren't recalculated for v3.6.0. Run `make bench` to measure your hardware. See [benchmarks.md](benchmarks.md) for the raw ns/op data and full run details.
 
+## Required-receipt workload
+
+The development-build million-request run sustained 414 requests/s with eight chains and required receipts, with zero missing of 5,808,850 expected receipt records and a valid signed group. It used an 8-CPU quota on a 6-core/12-thread i7-10750H. The [measurement table](benchmarks.md#million-request-receipt-run) includes latency, calibration, source-build label and the narrower receipt detection boundary. It is separate from the historical scanner microbenchmarks below.
+
 ## Scanning Latency (single request)
 
 Throughput in these tables is the reciprocal of latency for requests handled one after another. It is not a one-core capacity figure: the measurements had four CPUs available, and response and MCP scanning evaluate their patterns in parallel. See the concurrent scaling section for multi-request throughput.

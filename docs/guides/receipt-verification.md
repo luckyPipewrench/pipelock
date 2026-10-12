@@ -622,11 +622,7 @@ Receipt 2:  chain_seq=2, chain_prev_hash=sha256(receipt_1)
 ...
 ```
 
-Inserting, removing, or modifying any receipt in that writer stream breaks the
-chain at that point. Current releases do not reject a deployment where multiple
-pipelock processes share one recorder directory; if they race and choose the
-same next sequence, the directory can fork and become structurally
-unverifiable. `pipelock evidence doctor DIR` reports duplicate sequence values,
+Inserting, removing, or modifying a receipt breaks the affected writer chain. Current writers use separate process-run sessions, with restart links between runs; parallel chains within one process use signed group lifecycle records. Historical shared-session forks remain damaged evidence and are not repaired by upgrading. `pipelock evidence doctor DIR` reports duplicate sequence values,
 conflicting `prev_hash` values, receipt-chain collisions, missing genesis, and
 gaps without modifying the directory.
 

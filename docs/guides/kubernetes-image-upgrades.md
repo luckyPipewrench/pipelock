@@ -15,13 +15,13 @@ updates your cluster.
 
 ## Get the exact image set
 
-This downloads the immutable image set for v3.6.0 into the current directory.
+After v3.7.0 is published, this downloads its immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
-mkdir -p pipelock-v3.6.0
-gh release download v3.6.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.6.0
-cat pipelock-v3.6.0/release-images.json
+mkdir -p pipelock-v3.7.0
+gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern release-images.json --dir pipelock-v3.7.0
+cat pipelock-v3.7.0/release-images.json
 ```
 
 Verify the bundle before you use an image from it. This checks the selected
@@ -30,7 +30,7 @@ then verifies the main Pipelock image named in the bundle. It requires a current
 GitHub CLI login and registry access when the image is not public:
 
 ```bash
-PIPELOCK_RELEASE=v3.6.0
+PIPELOCK_RELEASE=v3.7.0
 PIPELOCK_BUNDLE="pipelock-${PIPELOCK_RELEASE}/release-images.json"
 PIPELOCK_COMMIT="$(git ls-remote https://github.com/luckyPipewrench/pipelock.git \
   "refs/tags/${PIPELOCK_RELEASE}" "refs/tags/${PIPELOCK_RELEASE}^{}" \
@@ -65,7 +65,7 @@ The file has this shape:
 ```json
 {
   "schema": "pipelock-release-images-v1",
-  "tag": "v3.6.0",
+  "tag": "v3.7.0",
   "commit": "the release commit",
   "images": [
     {
@@ -77,7 +77,7 @@ The file has this shape:
 }
 ```
 
-Use a `repository@digest` reference. A tag such as `:3.6.0` can be moved; a
+Use a `repository@digest` reference. A tag such as `:3.7.0` can be moved; a
 manifest digest cannot.
 
 ## Helm chart
@@ -133,7 +133,7 @@ image:
   digest: "sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47"
 ```
 
-That is the v3.6.0 digest. For another release, replace it with the `pipelock`
+That is a historical v3.6.0 digest, not a v3.7.0 install pin. For another release, replace it with the `pipelock`
 digest from that release's verified bundle.
 
 Render the exact values before applying them:
@@ -165,7 +165,7 @@ containers:
     image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:809246b5ee83d5cc9ec103c57abb42fe035b59f8d07b556e9ffef03afa5242ab
 ```
 
-Those are the v3.6.0 digests. For another release, replace each with its
+Those are historical v3.6.0 digests, not v3.7.0 install pins. For another release, replace each with its
 matching entry from that release's verified bundle.
 
 ## Prove the cluster changed

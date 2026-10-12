@@ -61,7 +61,7 @@ check_pipelock_workflow_version() {
 		in_pipelock_step && in_with && /^[[:space:]]{8}[[:alnum:]_-]+:[[:space:]]*/ {
 			in_with = 0
 		}
-		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.6\.0'\''[[:space:]]*$/ {
+		in_pipelock_step && in_with && /^[[:space:]]{10}version:[[:space:]]*'\''3\.7\.0'\''[[:space:]]*$/ {
 			has_expected_version = 1
 		}
 		END {
@@ -71,7 +71,7 @@ check_pipelock_workflow_version() {
 			}
 		}
 	' "$workflow"; then
-		echo "docs-check: failed: $workflow does not pin version 3.6.0 in the Pipelock action with block" >&2
+		echo "docs-check: failed: $workflow does not pin version 3.7.0 in the Pipelock action with block" >&2
 		exit 1
 	fi
 }

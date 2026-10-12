@@ -6,8 +6,8 @@ type: application
 # gate enforces that both equal the release tag. The chart publishes to an
 # OCI registry under this version as the tag, so a version that did not move
 # every release would overwrite the previously published chart in place.
-version: 3.6.0
-appVersion: "3.6.0"
+version: 3.7.0
+appVersion: "3.7.0"
 home: https://pipelab.org
 sources:
   - https://github.com/luckyPipewrench/pipelock
@@ -41,18 +41,14 @@ annotations:
       url: https://github.com/luckyPipewrench/pipelock-verify-python
   artifacthub.io/changes: |
     - kind: changed
-      description: Pipelock appVersion 3.6.0. Contained agents run in their own network namespace with declared loopback services, a VNC display viewer, browser CA trust and signed workspace change statements.
+      description: Pipelock appVersion 3.7.0. Parallel signed receipt chains use group openings, closes and complete-history verification; exact clean-text caching reduces receipt scanning cost within its documented detection bounds.
     - kind: added
-      description: Credential audiences let provider, Slack, Google, GitHub, GitLab and AWS SigV4 credentials reach their own issuer while every other destination still blocks.
+      description: Exact destination grants authorize host-and-port pairs while retaining content and protected-address checks.
     - kind: added
-      description: Issuer-bound session cookies, issued paging tokens, scoped JSON exceptions, core observe exceptions and path entropy exclusions reduce false blocks without host-wide exemptions.
-    - kind: added
-      description: pipelock explain response, verify-receipt --whole-recorder, the X-Pipelock-Receipt header and a build-provenance attestation on the published chart.
+      description: Cooperative pipelock exec launch, filesystem grants for host containment, kernel-observed local MCP service identities and per-tool credential-request acknowledgments.
     - kind: changed
-      description: Browser Shield reads HTML and CSS the way a browser does, response bodies are classified from their bytes, and compressed responses are decoded and scanned.
-    - kind: changed
-      description: A config file that omits fetch_proxy.monitoring.blocklist now gets the shipped blocklist, and each Pipelock process writes its own receipt chain.
+      description: A valid receipt prefix without a proven end exits 3; clean reports use schema version 2, and compatible verifiers are required for parallel groups and recovery seals.
     - kind: security
-      description: Tool policy protected-path rules cover move, copy, rename, delete, permission and link operations, and the core DLP floor covers MCP input.
+      description: Schema-bound JSON key validation, preserved replay and revocation state, runtime socket isolation and required durable receipts before covered effects.
     - kind: fixed
-      description: MCP, A2A, cross-request, partial-response and WebSocket paths scan content they previously skipped, and conductor rollback authorizations bind to their target stream.
+      description: Stream truncation, receipt rotation and per-chain evidence health, browser-visible media inspection, and MCP protocol negotiation and clean upstream refusals.

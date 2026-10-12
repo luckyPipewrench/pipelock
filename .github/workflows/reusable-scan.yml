@@ -4,7 +4,7 @@
 #
 #   jobs:
 #     security:
-#       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v3.4.0
+#       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v3.7.0
 #
 # All inputs have sensible defaults. Override what you need.
 
@@ -76,7 +76,7 @@ jobs:
         id: pipelock
         # Keep wrapper behavior aligned with the installed release. In particular,
         # scan-diff exit code 2 means no verified result was produced.
-        uses: luckyPipewrench/pipelock@ca05ed06f360f5aac5518ab6ea2b11d729b70bee # v3.5.0
+        uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
         env:
           PIPELOCK_VERSION: ${{ inputs.pipelock-version }}
           PIPELOCK_CONFIG: ${{ inputs.config-path }}

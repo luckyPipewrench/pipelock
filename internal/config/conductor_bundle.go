@@ -85,6 +85,7 @@ func PreserveConductorBundleLocalRuntimeState(newCfg, oldCfg *Config, bundleYAML
 
 	newCfg.Internal = append([]string(nil), oldCfg.Internal...)
 	newCfg.TrustedDomains = append([]string(nil), oldCfg.TrustedDomains...)
+	newCfg.DestinationGrants = append([]DestinationGrant(nil), oldCfg.DestinationGrants...)
 	newCfg.SSRF = oldCfg.SSRF
 	newCfg.DNS = oldCfg.DNS
 	newCfg.Suppress = append([]SuppressEntry(nil), oldCfg.Suppress...)

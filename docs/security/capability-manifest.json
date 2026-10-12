@@ -227,6 +227,10 @@
         {
           "kind": "config_section",
           "value": "websocket_proxy"
+        },
+        {
+          "kind": "config_section",
+          "value": "destination_grants"
         }
       ],
       "implementation": {

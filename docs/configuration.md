@@ -2696,7 +2696,26 @@ trusted_domains:
 |-------|---------|-------------|
 | `dns.host_overrides` | `{}` | Map of exact hostnames to one or more IP addresses. Hostname keys are normalized case-insensitively with a single trailing DNS dot stripped; a key carrying an empty label (`host.example..`, a leading dot) is refused, because it could never match a lookup. URL, wildcard, host:port, and IP-literal keys are rejected. |
 
-Host overrides do not exempt a destination from SSRF blocking by themselves. If an override resolves to an internal IP, the hostname must also be present in `trusted_domains` or the target IP must be covered by `ssrf.ip_allowlist`. Raw IP targets never use `dns.host_overrides`.
+Host overrides do not exempt a destination from SSRF blocking by themselves. If an override resolves to an internal IP, authorize the exact host and port with `destination_grants`, add the hostname to `trusted_domains`, or cover the target IP with `ssrf.ip_allowlist`. Raw IP targets never use `dns.host_overrides`.
+
+### Exact Destination Grants
+
+Use `destination_grants` to let the ordinary proxy reach one operator-approved private preview or internal service without trusting every port on its hostname.
+
+```yaml
+destination_grants:
+  - protocol: tcp
+    host: preview.vendor.example
+    port: 8443
+```
+
+Each entry requires `protocol: tcp`, an exact hostname or IP literal, and a port from 1 to 65535. Wildcards, CIDRs, URLs, and port ranges are refused. Hostnames are normalized for case and a single trailing dot; duplicate destinations have the same effect as one entry. Omitted, null, or empty lists grant nothing. Existing `api_allowlist`, `trusted_domains`, and `ssrf.ip_allowlist` behavior stays unchanged for destinations without an exact grant.
+
+An exact grant satisfies strict-mode destination admission and exempts that host and port from ordinary private-IP checks. It does not grant sibling ports, subdomains, aliases, or direct requests to a hostname's resolved IP. Domain blocklists, DLP, entropy, request and response scanning, kill switches, and other controls still apply where the transport exposes traffic to them. Cloud metadata, link-local, multicast, unspecified addresses, and the proxy's own configured metrics endpoint remain blocked. DNS answers are checked during scanning and again before dialing; a hostname grant's private-address exception requires an admitted scan snapshot for the same host, port, and private address. A newly returned private address is refused until a new request scans it, unless a separate `trusted_domains` or `ssrf.ip_allowlist` rule already permits it.
+
+Grants apply to mediated fetch, forward HTTP, HTTPS CONNECT, and WebSocket destinations through the shared scanner and dialer. A TCP grant does not create a raw TCP listener or support UDP. CONNECT without TLS interception carries encrypted application traffic: Pipelock checks the destination and the configured TLS/SNI controls, but cannot inspect the encrypted HTTP paths, headers, request bodies, or responses. A grant does not change that visibility. TLS interception requires a configured local CA trusted by the client.
+
+Removing a grant on reload revokes it for new requests and connections; unrelated reloads preserve it. Already established CONNECT tunnels and WebSocket sessions are not terminated, and requests already admitted may finish under their captured policy. In balanced or audit mode, adding a grant on reload emits a trust-expansion warning. Strict mode and required security contracts refuse this widening on reload; restart with the validated config to apply it. Invalid grant declarations reject the config or reload as a whole, leaving the previous runtime active. Conductor policy bundles preserve follower-local grants. Guard launches use only `guard.services`, so ordinary proxy grants do not widen Guard's declared service access.
 
 ### SSRF IP Allowlist
 

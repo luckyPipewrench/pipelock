@@ -530,6 +530,14 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	if err := cfg.ValidateHostPatterns(); err != nil {
 		return nil, fmt.Errorf("invalid host pattern: %w", err)
 	}
+	grants, err := cfg.DestinationGrantSet()
+	if err != nil {
+		return nil, err
+	}
+	grants, err = grants.Union(opts.DestinationGrants)
+	if err != nil {
+		return nil, fmt.Errorf("compile destination grants: %w", err)
+	}
 
 	// Only enforce the allowlist in strict mode. In balanced/audit modes,
 	// the allowlist is a config field but not enforced at the scanner level.
@@ -558,7 +566,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 		scanNestedURLs:            cfg.FetchProxy.Monitoring.ScanNestedURLsEnabled(),
 		nestedURLResolveBudget:    defaultNestedURLResolveBudget,
 		pathEntropyExempt:         buildPathEntropyExempt(cfg),
-		destinationGrants:         opts.DestinationGrants,
+		destinationGrants:         grants,
 	}
 
 	// Initialize rate limiter if enabled
@@ -847,7 +855,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 	return s, nil
 }
 
-// IsDestinationGranted reports whether Guard authorized this exact
+// IsDestinationGranted reports whether config or a runtime grant authorized this exact
 // network/host/port tuple. Malformed destinations fail closed as no match.
 func (s *Scanner) IsDestinationGranted(network destination.Network, host string, port uint16) bool {
 	dest, err := destination.New(network, host, port)
@@ -1412,7 +1420,10 @@ func (s *Scanner) checkSSRF(ctx context.Context, dest destination.Destination) R
 			Score:   1.0,
 		}
 	}
-	if len(s.internalCIDRs) == 0 && s.destinationGrants.Len() == 0 {
+	// A grant resolves its own destination so the dial snapshot exists, but it
+	// must not switch SSRF on for destinations that carry no grant when the
+	// operator disabled it with an empty internal list.
+	if len(s.internalCIDRs) == 0 && !s.destinationGrants.Contains(dest) {
 		return Result{Allowed: true}
 	}
 

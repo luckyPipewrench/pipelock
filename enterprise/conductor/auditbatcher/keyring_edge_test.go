@@ -8,6 +8,7 @@ package auditbatcher
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -287,6 +288,9 @@ func TestEncryptedRecordEnvelopeValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce := make([]byte, aead.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
 	invalidPlaintext, err := json.Marshal(encryptedDiskRecord{
 		Version: encryptedRecordVersion, KeyID: id, Nonce: nonce,
 		Ciphertext: aead.Seal(nil, nonce, []byte("{bad"), recordAAD(id)),

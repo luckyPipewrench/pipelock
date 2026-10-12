@@ -262,6 +262,7 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	clone := *c
+	clone.DestinationGrants = append([]DestinationGrant(nil), c.DestinationGrants...)
 
 	// The field is a *canonicalHashCacheHolder so the struct copy above
 	// duplicated the pointer, not the atomic.Value (atomic.Value forbids

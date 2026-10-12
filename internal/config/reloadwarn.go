@@ -512,6 +512,13 @@ func ValidateReload(old, updated *Config) []ReloadWarning {
 		})
 	}
 
+	// Exact grants widen destination admission and private-address access.
+	if destinationGrantsAdded(old.DestinationGrants, updated.DestinationGrants) {
+		warnings = append(warnings, ReloadWarning{
+			Field:   "destination_grants",
+			Message: "exact destination grants added: strict admission and ordinary private-IP checks are bypassed for these destinations",
+		})
+	}
 	// Trusted domains expanded (SSRF protection scope reduced)
 	if added := passthroughDomainsAdded(old.TrustedDomains, updated.TrustedDomains); len(added) > 0 {
 		warnings = append(warnings, ReloadWarning{

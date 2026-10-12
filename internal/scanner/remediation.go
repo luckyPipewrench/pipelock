@@ -114,7 +114,7 @@ const (
 	decidePolicyOperatorKnob     = "Tool policy denied the action. Edit the matching `mcp_tool_policy.rules` entry, or narrow/add a rule for the intended tool call."
 	decideStructuralOperatorKnob = "The action could not be evaluated safely (unknown event, malformed tool input, or uninspectable input). There is no allow-path knob for the structural failure; correct the action shape and retry."
 
-	ssrfOperatorKnob = "If the destination is a trusted internal service, add the hostname to top-level `trusted_domains` (hostname-based) or the resolved range to `ssrf.ip_allowlist` (IP-based). " +
+	ssrfOperatorKnob = "For an approved internal service, use `destination_grants` for its exact TCP host and port. Broader alternatives are top-level `trusted_domains` (hostname-based) or `ssrf.ip_allowlist` (IP-based). " +
 		"Cloud-metadata, link-local, and multicast addresses are a non-overridable deny — neither knob exempts them (config validation rejects such entries). " +
 		"This verdict depends on DNS resolution at runtime; explain reports it without resolving."
 	ssrfOperatorBroader = "Disabling SSRF entirely (`internal: []`) removes private-range protection for ALL destinations — never do this to fix one host."

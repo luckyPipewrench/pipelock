@@ -68,6 +68,11 @@ func (s *Server) reloadLockedWithPolicyRestore(newCfg *config.Config, restoringP
 	if newCfg == nil {
 		return errors.New("rejected: invalid config reload: config is nil")
 	}
+	if _, validationErr := newCfg.DestinationGrantSet(); validationErr != nil {
+		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
+		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
+		return rejectErr
+	}
 	if validationErr := newCfg.ValidateExpiryAuthorizations(); validationErr != nil {
 		rejectErr := fmt.Errorf("rejected: invalid config reload: %w", validationErr)
 		s.logger.LogError(audit.NewResourceLogContext(configReloadAuditMethod, s.opts.ConfigFile), rejectErr)
@@ -1230,7 +1235,7 @@ func rejectableDowngradeReloadWarningFields(warnings []config.ReloadWarning) []s
 func trustExpansionReloadFields(warnings []config.ReloadWarning) []string {
 	fields := make([]string, 0, len(warnings))
 	for _, w := range warnings {
-		if w.Field == "trusted_domains" || w.Field == "ssrf.ip_allowlist" ||
+		if w.Field == "trusted_domains" || w.Field == "ssrf.ip_allowlist" || w.Field == "destination_grants" ||
 			(strings.HasPrefix(w.Field, "agents.") && strings.HasSuffix(w.Field, ".trusted_domains")) {
 			fields = append(fields, w.Field)
 		}

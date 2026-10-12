@@ -8,6 +8,7 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 	"html"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +41,19 @@ func TestExemptions_NoConfigLoaded(t *testing.T) {
 	nilInventory := nilModel.Exemptions()
 	if nilInventory.ConfigLoaded || nilInventory.ConfiguredCount != 0 {
 		t.Fatalf("nil model inventory = %+v, want unloaded empty inventory", nilInventory)
+	}
+}
+
+func TestExemptionsDestinationGrant(t *testing.T) {
+	t.Parallel()
+	cfg := &config.Config{DestinationGrants: []config.DestinationGrant{{Protocol: "tcp", Host: "preview.vendor.example", Port: 8443}}}
+	inv := NewReadModel(Options{Config: cfg}).Exemptions()
+	if len(inv.Entries) != 1 || inv.Entries[0].Scope != "tcp://preview.vendor.example:8443" {
+		t.Fatalf("grant inventory = %+v", inv.Entries)
+	}
+	redacted := redactExemptions(inv)
+	if strings.Contains(fmt.Sprint(redacted.Entries), "preview.vendor.example") {
+		t.Fatal("metadata inventory exposes grant destination")
 	}
 }
 

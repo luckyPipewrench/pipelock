@@ -122,6 +122,9 @@ func launchGuard(opts GuardLaunchOptions, launchStandalone func(sandbox.Standalo
 	}
 
 	runtimeCfg := opts.Config.Clone()
+	// Guard authorizes only its service declarations, independently of grants
+	// configured for the ordinary proxy.
+	runtimeCfg.DestinationGrants = nil
 	runtimeCfg.ForwardProxy.Enabled = true
 	grants, err := guardDestinationGrants(runtimeCfg.Guard.Services)
 	if err != nil {

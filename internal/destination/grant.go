@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// Grant is a runtime-only authorization for a single exact destination: one
+// Grant is an authorization for a single exact destination: one
 // network, one normalized host (or canonical IP literal), one port. No
 // wildcards, no CIDRs, no port ranges. The zero value is not valid.
 //
@@ -81,6 +81,19 @@ func NewGrantSet(grants ...Grant) (GrantSet, error) {
 
 // Len returns the number of grants in the set.
 func (gs GrantSet) Len() int { return len(gs.byKey) }
+
+// Union returns an immutable set containing both validated grant sets.
+// It never mutates either input, including when one input is empty.
+func (gs GrantSet) Union(other GrantSet) (GrantSet, error) {
+	grants := make([]Grant, 0, gs.Len()+other.Len())
+	for _, g := range gs.byKey {
+		grants = append(grants, g)
+	}
+	for _, g := range other.byKey {
+		grants = append(grants, g)
+	}
+	return NewGrantSet(grants...)
+}
 
 // Contains reports whether the exact destination is authorized: an exact
 // grant exists and the destination is not on the immutable SSRF floor. Like

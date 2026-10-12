@@ -204,7 +204,15 @@ asyncio.run(main())
 
 ### LangGraph Docker image with Pipelock
 
-Use `dockerfile_lines` in `langgraph.json` to install Pipelock into the image:
+After v3.7.0 is published, download and verify its Linux amd64 archive in the build directory:
+
+```bash
+gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
+gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --owner luckyPipewrench
+tar xzf pipelock_3.7.0_linux_amd64.tar.gz pipelock
+```
+
+Then use `dockerfile_lines` in `langgraph.json` to copy the verified binary into the image:
 
 ```json
 {
@@ -214,8 +222,7 @@ Use `dockerfile_lines` in `langgraph.json` to install Pipelock into the image:
     },
     "env": ".env",
     "dockerfile_lines": [
-        "RUN apt-get update && apt-get install -y curl",
-        "RUN curl -fsSL -o /tmp/pipelock.tar.gz https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz && echo '2f5ed499ae715c33f38ef7794f71c7c2df9cc475475c54eee0bee67d783a67d4  /tmp/pipelock.tar.gz' | sha256sum -c - && tar xzf /tmp/pipelock.tar.gz -C /usr/local/bin/ && rm /tmp/pipelock.tar.gz",
+        "COPY pipelock /usr/local/bin/pipelock",
         "COPY pipelock-config.yaml /etc/pipelock/config.yaml"
     ]
 }

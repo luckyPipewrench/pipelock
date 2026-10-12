@@ -23,10 +23,10 @@ Pipelock blocks the post-compromise steps of this chain: tool policy blocks dang
 git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
-# Or download the v3.6.0 Linux amd64 archive
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.6.0_linux_amd64.tar.gz
-gh attestation verify pipelock_3.6.0_linux_amd64.tar.gz --owner luckyPipewrench
-tar xzf pipelock_3.6.0_linux_amd64.tar.gz
+# Or download the v3.7.0 Linux amd64 archive after publication
+gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
+gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --owner luckyPipewrench
+tar xzf pipelock_3.7.0_linux_amd64.tar.gz
 sudo install -m 0755 pipelock /usr/local/bin/pipelock
 
 # Or Homebrew (macOS)
@@ -195,7 +195,7 @@ spec:
     spec:
       initContainers:
         - name: pipelock-init
-          image: ghcr.io/luckypipewrench/pipelock-init:3.6.0
+          image: ghcr.io/luckypipewrench/pipelock-init:3.7.0
           command: ["cp", "/pipelock", "/shared-bin/pipelock"]
           volumeMounts:
             - name: shared-bin

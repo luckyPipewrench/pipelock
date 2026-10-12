@@ -39,7 +39,7 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "Docker image tag",
         re.compile(
-            r"ghcr\.io/luckypipewrench/pipelock:(?P<version>[0-9A-Za-z._+-]+)"
+            r"ghcr\.io/luckypipewrench/pipelock(?:-init)?:(?P<version>[0-9A-Za-z._+-]+)"
         ),
     ),
     (
@@ -61,6 +61,10 @@ SURFACE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
             r"(?P<tag>[^/\s`\"']+)/pipelock_(?P<version>[^/_\s`\"']+)"
             r"_(?:linux|darwin|windows)_"
         ),
+    ),
+    (
+        "release archive filename",
+        re.compile(r"\bpipelock_(?P<version>[^/_\s`\"']+)_(?:linux|darwin|windows)_"),
     ),
     (
         "GitHub Action version comment",

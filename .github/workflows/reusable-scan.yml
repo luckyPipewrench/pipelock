@@ -5,6 +5,8 @@
 #   jobs:
 #     security:
 #       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v3.7.0
+#       with:
+#         pipelock-version: '3.7.0'  # Available after release publication
 #
 # All inputs have sensible defaults. Override what you need.
 

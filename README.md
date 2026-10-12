@@ -128,7 +128,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # Download a binary
 # See https://github.com/luckyPipewrench/pipelock/releases
 
-# Docker
+# Docker (after v3.7.0 image publication)
 docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 
 # Homebrew on macOS
@@ -231,7 +231,7 @@ Pipelock runs in three modes:
 |------|----------|--------------|----------|
 | **strict** | Allowlist-only | None | Regulated industries, high-security |
 | **balanced** | Blocks naive + detects sophisticated | Via fetch or forward proxy | Most developers (default) |
-| **audit** | Logging only | Unrestricted | Evaluation before enforcement |
+| **audit** | Ordinary policy warns; core floors can block | Core destination checks still apply | Evaluate policy with core protection active |
 
 For agents running uncensored or abliterated models, the [`hostile-model` preset](configs/hostile-model.yaml) layers defenses on strict mode: aggressive entropy thresholds, blanket network-tool blocking, session binding, cross-request exfiltration detection, and a pre-configured kill switch. `pipelock audit` recommends this preset when it detects known guardrail-removal toolchains through dependency signals.
 
@@ -522,7 +522,7 @@ pipelock audit ./my-project -o pipelock.yaml
 |------------|------|--------|----------|
 | `balanced` | balanced | warn | General purpose (default) |
 | `strict` | strict | block | High-security, regulated industries |
-| `audit` | audit | warn | Log-only evaluation |
+| `audit` | audit | warn | Evaluate ordinary policy; core floors can block |
 | `claude-code` | balanced | block | Claude Code unattended |
 | `cursor` | balanced | block | Cursor IDE |
 | `generic-agent` | balanced | warn | New agents during tuning |
@@ -561,7 +561,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 ## Deployment
 
 ```bash
-# Docker
+# Docker (after v3.7.0 image publication)
 docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
   ghcr.io/luckypipewrench/pipelock:3.7.0 \
@@ -571,7 +571,7 @@ docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
-# Kubernetes with Helm (published chart, Helm 3.8+)
+# Kubernetes with Helm (after v3.7.0 chart publication, Helm 3.8+)
 helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.0
 ```
 
@@ -581,10 +581,13 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ## CI Integration
 
+The source commit below pins the action implementation, not a release tag. Its explicit `version` selects the v3.7.0 binary once that release is published.
+
 ```yaml
 # .github/workflows/pipelock.yaml
 - uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
+    version: '3.7.0'
     scan-diff: 'true'
     fail-on-findings: 'true'
 ```

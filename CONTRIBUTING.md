@@ -76,7 +76,7 @@ approval.
 
 ### Requirements
 
-- All tests run with `-race -count=1`
+- Local race tests use `-race -count=1`; pull-request CI uses the fast suite, while main and release CI run the race suites.
 - Target **95%+ coverage** on new code (`make test-cover` for local report)
 - Table-driven tests where there are 3+ cases
 
@@ -86,7 +86,7 @@ Disable SSRF in unit tests to avoid DNS lookups:
 
 ```go
 cfg := config.Defaults()
-cfg.Internal = nil // disables SSRF checks
+cfg.Internal = nil // disables configured DNS SSRF checks; the literal-IP core floor stays active
 ```
 
 CLI tests capture output via `SetOut`, never `os.Pipe`:
@@ -201,6 +201,8 @@ internal/
   gitprotect/          Git diff scanning for secrets
   projectscan/         Project directory scanner for audit command
   receipt/             Action receipt signing + hash-chained evidence
+  receiptcontent/      Typed receipt content projections and exact clean-text caching
+  recorder/            Durable append tickets, run history and parallel group lifecycle
   addressprotect/      Blockchain address validation and poisoning detection
   seedprotect/         BIP-39 seed phrase detection (dictionary, checksum)
   shield/              Airlock, browser shield, posture capsule

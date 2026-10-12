@@ -201,6 +201,22 @@ class ReleaseDocVersionTests(unittest.TestCase):
                 write_tree(root, current=CURRENT.replace(before, after))
                 self.assertTrue(any("release archive URL" in item for item in check(root, "v3.6.0")))
 
+    def test_archive_consumers_and_init_image_stay_on_the_release(self) -> None:
+        commands = (
+            "gh release download v3.6.0 --pattern pipelock_3.5.0_linux_amd64.tar.gz",
+            "gh release download --pattern=pipelock_3.5.0_linux_amd64.tar.gz v3.6.0",
+            "gh attestation verify pipelock_3.5.0_linux_amd64.tar.gz --owner luckyPipewrench",
+            "tar xzf pipelock_3.5.0_linux_amd64.tar.gz",
+            "image: ghcr.io/luckypipewrench/pipelock-init:3.5.0",
+        )
+        for source in commands:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                write_tree(root, current=CURRENT + source + "\n")
+                self.assertTrue(any("3.5.0" in issue for issue in check(root, "v3.6.0")))
+                write_tree(root, current=CURRENT + source.replace("3.5.0", "3.6.0") + "\n")
+                self.assertEqual(check(root, "v3.6.0"), [])
+
     def test_missing_required_surface_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

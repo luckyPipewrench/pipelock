@@ -237,7 +237,8 @@ As with a single receipt, an unpinned chain run (no `--key`) prints
 the key is what proves the chain came from a signer you trust.
 
 If any check fails, the output reports which sequence number broke the chain.
-In a directory shared by concurrent writer processes, a `chain_prev_hash`
+Current writers use separate per-run sessions, even in a shared directory.
+In older evidence from writers sharing one session, a `chain_prev_hash`
 mismatch can be caused by a recorder fork rather than by after-the-fact
 tampering. Run `pipelock evidence doctor DIR` to surface the structural damage
 for investigation. The doctor reports symptoms such as duplicate sequence

@@ -1,6 +1,6 @@
 # Pipelock Benchmarks
 
-Raw benchmark data from Go's testing framework. For interpretation and deployment sizing, see [performance.md](performance.md).
+Receipt-load measurements and raw scanner benchmarks from Go's testing framework. For interpretation and deployment sizing, see [performance.md](performance.md).
 
 ## Million-request receipt run
 
@@ -26,7 +26,7 @@ A separate 20,000-request calibration on the same binary measured these configur
 | 4 | 131 | 237 |
 | 8 | 137 | 403 |
 
-The faster build narrows the receipt fragment search. Complete secrets in scanned fields remain checked before signing, and an exact clean-text cache never stores a finding. Splits involving multiple fixed values, dropped enum labels or nonadjacent formatted decision text can fall outside the search. Read the [receipt content boundary](guides/receipt-verification.md#receipt-content-boundary) for every bound. The result doesn't prove arbitrary payload detection, every disk-failure mode, unmediated traffic, external anchoring, published verifier availability or the identity of a later rebuilt release binary. The earlier prototype that omitted content scanning is excluded from these results.
+The measured build uses a bounded receipt fragment search. Complete secrets in scanned fields remain checked before signing, and an exact clean-text cache never stores a finding. Splits involving multiple fixed values, dropped enum labels or nonadjacent formatted decision text can fall outside the search. The search also excludes splits into five or more pieces, four pieces outside forward/reverse order, and three pieces on receipts too wide for that search. Process-proven generated IDs are excluded even when their text could complete a secret. Read the [receipt content boundary](guides/receipt-verification.md#receipt-content-boundary) for every bound. The result doesn't prove arbitrary payload detection, every disk-failure mode, unmediated traffic, external anchoring, published verifier availability or the identity of a later rebuilt release binary. The earlier prototype that omitted content scanning is excluded from these results.
 
 ## Methodology
 

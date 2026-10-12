@@ -106,6 +106,8 @@ Path patterns use the same matching rules as config suppress entries (exact, dir
 
 ## GitHub Action
 
+These examples target the published v3.7.0 binary. The commit pin selects action source; the `version` input selects the binary.
+
 ### Exclude paths
 
 Use the `exclude-paths` input (one pattern per line):
@@ -113,6 +115,7 @@ Use the `exclude-paths` input (one pattern per line):
 ```yaml
 - uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
+    version: '3.7.0'
     exclude-paths: |
       vendor/
       *.generated.go
@@ -138,6 +141,7 @@ Write a Pipelock config file, then pass its path with the `config` input:
 
 - uses: luckyPipewrench/pipelock@a3b09a55a798b823b0f0b1c5e3ae86777b06ddd3 # v3.7.0 action source
   with:
+    version: '3.7.0'
     config: pipelock-ci.yaml
 ```
 

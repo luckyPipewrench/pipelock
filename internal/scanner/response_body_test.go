@@ -9,6 +9,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -17,7 +18,6 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
-	"math/rand"
 	"strings"
 	"testing"
 	"time"
@@ -1159,16 +1159,24 @@ func jpegWithComment(t *testing.T, comment []byte) []byte {
 	return result
 }
 
+// fillSeededBinary fills buf with deterministic, uniformly distributed bytes
+// from SHA-256 in counter mode, so fixtures are reproducible without math/rand.
+func fillSeededBinary(buf []byte, seed uint64) {
+	var block [16]byte
+	binary.LittleEndian.PutUint64(block[:8], seed)
+	for off, counter := 0, uint64(0); off < len(buf); counter++ {
+		binary.LittleEndian.PutUint64(block[8:], counter)
+		sum := sha256.Sum256(block[:])
+		off += copy(buf[off:], sum[:])
+	}
+}
+
 func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
 	s := MustNew(config.Defaults())
 	body := make([]byte, 8<<20)
-	for seed := int64(0); seed < 24; seed++ {
+	for seed := uint64(0); seed < 24; seed++ {
 		t.Run(fmt.Sprintf("seed-%d", seed), func(t *testing.T) {
-			// Deterministic synthetic binary, not security-sensitive randomness.
-			rng := rand.New(rand.NewSource(seed)) //nolint:gosec // reproducible fixture
-			if _, err := rng.Read(body); err != nil {
-				t.Fatal(err)
-			}
+			fillSeededBinary(body, seed)
 			if result := s.ScanResponseBodyWithSuppress(t.Context(), body, "", nil); !result.Clean {
 				t.Fatalf("random binary blocked: patterns=%d scan_error=%q", len(result.Matches), result.ScanError)
 			}
@@ -1178,10 +1186,7 @@ func TestScanResponseBody_SeededRandomBinaryIsClean(t *testing.T) {
 
 func TestScanResponseBody_RandomTarGzipIsClean(t *testing.T) {
 	body := make([]byte, 8<<20)
-	rng := rand.New(rand.NewSource(0)) //nolint:gosec // reproducible fixture
-	if _, err := rng.Read(body); err != nil {
-		t.Fatal(err)
-	}
+	fillSeededBinary(body, 0)
 	var archive bytes.Buffer
 	gz := gzip.NewWriter(&archive)
 	tw := tar.NewWriter(gz)

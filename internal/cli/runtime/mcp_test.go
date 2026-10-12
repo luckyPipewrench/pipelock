@@ -234,6 +234,10 @@ func TestMcpProxyCmd_FileSentryBestEffortRejectsInitializationFailure(t *testing
 	}
 }
 
+// mcpChildProcessDeadline covers launching and tearing down the re-executed,
+// race-instrumented test binary that serves as the MCP child on a loaded runner.
+const mcpChildProcessDeadline = 30 * time.Second
+
 func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 	wantErr := errors.New("watch backend failed")
 	watcher := newGatedFileSentryWatcher(wantErr)
@@ -264,7 +268,7 @@ func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 
 	select {
 	case <-watcher.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(mcpChildProcessDeadline):
 		t.Fatal("file sentry watcher did not start after MCP child launch")
 	}
 	close(watcher.release)
@@ -277,7 +281,7 @@ func TestMcpProxyCmd_ReturnsFileSentryRuntimeFailure(t *testing.T) {
 		if !errors.Is(err, wantErr) {
 			t.Fatalf("mcp proxy error = %v, want file sentry runtime failure wrapping %v\nstderr:\n%s", err, wantErr, stderr.String())
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(mcpChildProcessDeadline):
 		t.Fatal("mcp proxy did not return after file sentry runtime failure")
 	}
 }
@@ -310,7 +314,7 @@ func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 
 	select {
 	case <-watcher.started:
-	case <-time.After(5 * time.Second):
+	case <-time.After(mcpChildProcessDeadline):
 		t.Fatal("file sentry watcher did not start after MCP child launch")
 	}
 	cancel()
@@ -323,7 +327,7 @@ func TestMcpProxyCmd_KeepsCleanCancellationNilWithFileSentry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("mcp proxy error after clean cancellation = %v, want nil\nstderr:\n%s", err, stderr.String())
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(mcpChildProcessDeadline):
 		t.Fatal("mcp proxy did not return after clean cancellation")
 	}
 }

@@ -140,6 +140,8 @@ brew install luckyPipewrench/tap/pipelock
 <details>
 <summary>Verify release integrity</summary>
 
+Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+
 ```bash
 gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 gh attestation verify oci://ghcr.io/luckypipewrench/pipelock:3.7.0 --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml

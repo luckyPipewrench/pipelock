@@ -18,6 +18,8 @@ Pipelock blocks the post-compromise steps of this chain: tool policy blocks dang
 
 **1. Install pipelock:**
 
+Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+
 ```bash
 # From source (Go 1.26+)
 git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
@@ -25,7 +27,7 @@ make -C pipelock install
 
 # Or download the v3.7.0 Linux amd64 archive after publication
 gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --owner luckyPipewrench
+gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 tar xzf pipelock_3.7.0_linux_amd64.tar.gz
 sudo install -m 0755 pipelock /usr/local/bin/pipelock
 

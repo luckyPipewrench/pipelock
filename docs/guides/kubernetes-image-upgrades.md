@@ -27,7 +27,9 @@ cat pipelock-v3.7.0/release-images.json
 Verify the bundle before you use an image from it. This checks the selected
 release tag against the remote repository, verifies the bundle attestation, and
 then verifies the main Pipelock image named in the bundle. It requires a current
-GitHub CLI login and registry access when the image is not public:
+GitHub CLI login and registry access when the image is not public.
+
+Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
 ```bash
 PIPELOCK_RELEASE=v3.7.0

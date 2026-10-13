@@ -251,7 +251,7 @@ Because the recorder is on by default, two footguns are bounded by the defaults 
 
 ### Completeness anchor (transcript root)
 
-On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
+On a **clean shutdown** the recorder writes a `transcript_root` entry naming the final receipt sequence number and receipt-chain root hash. `pipelock verify-receipt --whole-recorder --chain` verifies that commitment, along with every recorder entry present. Without `--whole-recorder`, `verify-receipt --chain` verifies only the receipt subsequence. In that mode a run that recorded EvidenceReceipt v2 receipts, for example by blocking a request, reports `VALID PREFIX, END UNPROVEN` and exits 3 even after a clean shutdown, because the v2 chain carries no end marker of its own. Use `--whole-recorder` to prove that a recorder run ended. After a signing-key rotation, the root commits the final signing segment; verification still checks the trusted receipt chain and rotation continuity across every preceding segment.
 
 Scope and limits:
 

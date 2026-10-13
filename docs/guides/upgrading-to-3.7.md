@@ -13,6 +13,8 @@ Installation examples target v3.7.0 after its artifacts are published. Action co
 
 An intact prefix proves the included signatures and links. It doesn't prove the writer finished. Chain commands now report `VALID PREFIX, END UNPROVEN` and exit 3 when the end is unproven. If checking a running writer is intentional, `--allow-prefix` accepts that case with exit 0 while keeping the prefix label. Don't use it to claim a complete run.
 
+This includes a cleanly stopped recorder run that recorded EvidenceReceipt v2 receipts, for example by blocking a request: in receipt-chain mode its v2 chain has no end marker, so `verify-receipt --chain` exits 3. Verify recorder directories with `--whole-recorder`, which proves the end from the transcript root, or pin the end with `--expect-head` or `--expect-seq` in verifiers without that mode.
+
 Use the end proof appropriate to the evidence: a verified transcript seal for a recorder, an independently retained expected head where supported, or a signed close for a receipt group. A restart link or recovery seal doesn't establish a clean end for the damaged predecessor. Older strict verifiers reject the recovery-seal claim format. Keep the full directory, trusted public keys and any independently retained head or opening digest. A shard's success isn't a group verdict.
 
 `verify-receipt --clean-report` writes schema `pipelock.clean_report.v2`, including end-proof status. Dispatch JSON consumers by `schema_version` and reject unknown schemas instead of assuming the old shape. Offline Go, TypeScript, Rust and Python implementations share replay profile v5; historical profiles v1 through v4 retain their meanings. Typed receipt decoding now rejects noncanonical-case keys. Free-form maps remain case-sensitive data.

@@ -183,18 +183,23 @@ type Recorder struct {
 	groupOwner      *os.File
 	legacyStarted   bool
 	groupFinalizing bool
-	seq             uint64
-	prevHash        string
-	writer          *bufio.Writer
-	file            *os.File
-	runPresence     *os.File
-	ceremonyLock    *os.File
-	ceremonyDir     os.FileInfo
-	evidenceDir     os.FileInfo
-	fileEntryCount  int
-	fileSeqStart    uint64
-	fileGeneration  uint64
-	sessionID       string
+	// groupFileVerifier registers flushed segments before releasing their
+	// handles. The drain joins background verification under group ownership.
+	// Neither callback may call back into Recorder.
+	groupFileVerifier  func(session, path string, info os.FileInfo) error
+	groupVerifierDrain func() error
+	seq                uint64
+	prevHash           string
+	writer             *bufio.Writer
+	file               *os.File
+	runPresence        *os.File
+	ceremonyLock       *os.File
+	ceremonyDir        os.FileInfo
+	evidenceDir        os.FileInfo
+	fileEntryCount     int
+	fileSeqStart       uint64
+	fileGeneration     uint64
+	sessionID          string
 	// recoveryPredecessor survives reload staging failures until publication.
 	recoveryPredecessor string
 
@@ -1793,14 +1798,23 @@ func (r *Recorder) closeFile() error {
 		r.writer = nil
 		return err
 	}
+	var verifyErr error
+	if r.groupFileVerifier != nil {
+		info, statErr := r.file.Stat()
+		if statErr != nil {
+			verifyErr = statErr
+		} else {
+			verifyErr = r.groupFileVerifier(r.sessionID, r.file.Name(), info)
+		}
+	}
 	unlockErr := unlockEvidenceFile(r.file)
 	err := r.file.Close()
 	r.file = nil
 	r.writer = nil
 	if unlockErr != nil {
-		return fmt.Errorf("unlocking evidence file: %w", unlockErr)
+		return errors.Join(verifyErr, fmt.Errorf("unlocking evidence file: %w", unlockErr), err)
 	}
-	return err
+	return errors.Join(verifyErr, err)
 }
 
 // rotateFile closes the current file so the next write opens a new one.

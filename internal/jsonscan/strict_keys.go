@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 // DecodeStrict validates keys before binding one JSON value to a schema.
@@ -53,7 +54,7 @@ func RejectStructAliases(data []byte, typ reflect.Type) error {
 	if fields == nil {
 		return nil // Let the caller's strict decoder report the schema error.
 	}
-	schema := structFields(typ, make(map[reflect.Type]bool))
+	schema := cachedStructFields(typ)
 	for key, value := range fields {
 		// An exact field wins before folded lookup, just as in encoding/json.
 		if field, ok := schema[key]; ok && !field.ambiguous {
@@ -115,6 +116,19 @@ type schemaField struct {
 	depth     int
 	tagged    bool
 	ambiguous bool
+}
+
+var structFieldCache sync.Map // map[reflect.Type]map[string]schemaField
+
+func cachedStructFields(typ reflect.Type) map[string]schemaField {
+	if fields, ok := structFieldCache.Load(typ); ok {
+		return fields.(map[string]schemaField)
+	}
+	// Cache only a complete top-level schema. Recursive embedded traversal
+	// stays in structFields so ancestor-dependent cycle handling is preserved.
+	fields := structFields(typ, make(map[reflect.Type]bool))
+	actual, _ := structFieldCache.LoadOrStore(typ, fields)
+	return actual.(map[string]schemaField)
 }
 
 func structFields(typ reflect.Type, ancestors map[reflect.Type]bool) map[string]schemaField {

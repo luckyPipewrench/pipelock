@@ -4,6 +4,7 @@
 package receipt
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -25,15 +26,17 @@ import (
 // ReceiptShardSet owns the fixed v1 emitters of one signed group. It is
 // constructed before traffic and never grows a shard after publication.
 type ReceiptShardSet struct {
-	open     ReceiptGroupOpen
-	openHash string
-	emitters []*Emitter
-	metrics  MetricsSink
-	recorder *recorder.Recorder
-	signer   ed25519.PrivateKey
-	next     atomic.Uint64
-	ready    atomic.Bool
-	previous *receiptGroupPredecessor
+	open         ReceiptGroupOpen
+	openHash     string
+	emitters     []*Emitter
+	metrics      MetricsSink
+	recorder     *recorder.Recorder
+	signer       ed25519.PrivateKey
+	next         atomic.Uint64
+	ready        atomic.Bool
+	previous     *receiptGroupPredecessor
+	verifiers    map[string]*groupCloseVerifier
+	verification *groupSegmentWorker
 }
 
 // OpenInitialReceiptShardSet publishes an initial group's signed membership,
@@ -255,6 +258,19 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 		return nil, fmt.Errorf("publish receipt group opening: %w", err)
 	}
 	set := &ReceiptShardSet{open: open, openHash: openHash, emitters: make([]*Emitter, count), metrics: template.Metrics, recorder: rec, signer: slices.Clone(template.PrivKey), previous: previous}
+	set.verifiers = make(map[string]*groupCloseVerifier, count)
+	for i, session := range sessions {
+		chain, err := newGroupShardVerifier(open, openHash, i)
+		if err != nil {
+			return nil, err
+		}
+		set.verifiers[session] = &groupCloseVerifier{chain: chain, files: make(map[string]verifiedGroupFile)}
+	}
+	set.verification = newGroupSegmentWorker(context.Background(), rec.Dir(), set.verifiers, template.Notices)
+	if err := rec.SetGroupFileVerifier(set.verification.register, set.verification.finish); err != nil {
+		_ = set.verification.finish()
+		return nil, fmt.Errorf("install receipt group segment verification: %w", err)
+	}
 	for i, session := range sessions {
 		binding := ptrGroupBinding(open, openHash, i)
 		gateJSON, err := json.Marshal(binding)
@@ -302,6 +318,9 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 			return nil, err
 		}
 	}
+	if !deferOpen {
+		set.verification.activate()
+	}
 	return set, nil
 }
 
@@ -329,7 +348,11 @@ func (s *ReceiptShardSet) Activate(configHash string) error {
 			return fmt.Errorf("open receipt group shard %d: %w", i, err)
 		}
 	}
-	return s.publishTransition()
+	if err := s.publishTransition(); err != nil {
+		return err
+	}
+	s.verification.activate()
+	return nil
 }
 
 // publishTransition runs only after every successor opening is durable. No
@@ -420,12 +443,38 @@ func (s *ReceiptShardSet) PublishClose() (string, error) {
 	if s == nil || s.recorder == nil {
 		return "", errors.New("receipt group has no owned recorder")
 	}
+	fresh := make(map[string]ReceiptGroupShardHead)
+	s.verification.prepareClose(func(session string) error {
+		for i, shard := range s.open.Shards {
+			if shard.SessionID != session {
+				continue
+			}
+			head, err := VerifyGroupShardHead(s.recorder.Dir(), s.open, s.openHash, i)
+			if err == nil {
+				err = s.verification.checkInventory(session)
+			}
+			if err != nil {
+				return fmt.Errorf("close receipt group shard %d: %w", i, err)
+			}
+			fresh[session] = head
+			return nil
+		}
+		return errors.New("receipt group verifier has no matching shard")
+	})
 	if err := s.recorder.FinalizeGroupSessions(); err != nil {
 		return "", fmt.Errorf("finalize receipt group: %w", err)
 	}
 	heads := make([]ReceiptGroupShardHead, len(s.open.Shards))
 	for i := range heads {
-		head, err := VerifyGroupShardHead(s.recorder.Dir(), s.open, s.openHash, i)
+		if head, ok := fresh[s.open.Shards[i].SessionID]; ok {
+			heads[i] = head
+			continue
+		}
+		v := s.verifiers[s.open.Shards[i].SessionID]
+		if v == nil {
+			return "", errors.New("receipt group has no verified shard state")
+		}
+		head, err := v.head(s.recorder.Dir())
 		if err != nil {
 			return "", fmt.Errorf("close receipt group shard %d: %w", i, err)
 		}

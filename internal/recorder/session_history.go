@@ -140,6 +140,9 @@ type SessionHistoryShard struct {
 	// Final reports that no later shard of the session was listed when this
 	// shard was delivered.
 	Final bool
+	// Info binds the reader supplied by WalkSessionHistoryFiles to the
+	// identity of its securely opened file.
+	Info os.FileInfo
 }
 
 // WalkSessionHistory resolves dir and walks one session's complete history.
@@ -252,6 +255,7 @@ func readHistoryShard(location EvidenceLocation, shard SessionHistoryShard, cons
 	if err != nil {
 		return err
 	}
+	shard.Info = before
 	err = consume(shard, io.NewSectionReader(file, 0, before.Size()))
 	return finishHistoryRead(file, before, identity, err)
 }

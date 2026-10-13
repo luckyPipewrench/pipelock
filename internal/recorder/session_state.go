@@ -43,6 +43,38 @@ type SessionState struct {
 // GroupGateEntryType marks the first entry of each grouped run session.
 const GroupGateEntryType = "receipt_group_v1"
 
+// SetGroupFileVerifier installs segment registration and a verification drain
+// before any group entry is written. Registration runs under the write lock
+// after flush. The drain runs after all files are sealed, before ownership is
+// released, and must join any background work even when it returns an error.
+func (r *Recorder) SetGroupFileVerifier(verify func(session, path string, info os.FileInfo) error, drain func() error) error {
+	if r == nil || r.nop || verify == nil {
+		return errors.New("recorder: persistent group file verifier is required")
+	}
+	r.groupMu.Lock()
+	defer r.groupMu.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.groupSessions == nil || r.groupClosing || r.closed || r.groupFileVerifier != nil {
+		return errors.New("recorder: group verifier cannot be installed in this state")
+	}
+	for _, state := range r.groupSessions {
+		if state.seq != 0 || state.file != nil {
+			return errors.New("recorder: group verifier must precede all entries")
+		}
+	}
+	r.groupFileVerifier = verify
+	r.groupVerifierDrain = drain
+	return nil
+}
+
+func (r *Recorder) drainGroupVerifier() error {
+	if r.groupVerifierDrain == nil {
+		return nil
+	}
+	return r.groupVerifierDrain()
+}
+
 func (r *Recorder) saveSessionStateLocked(state *SessionState) {
 	state.sessionID = r.sessionID
 	state.seq = r.seq
@@ -330,7 +362,7 @@ func (r *Recorder) FinalizeGroupSessions() error {
 		r.saveSessionStateLocked(state)
 	}
 	r.loadSessionStateLocked(r.groupSessions[r.groupOrder[0]])
-	return finalizeErr
+	return errors.Join(finalizeErr, r.drainGroupVerifier())
 }
 
 // finalizeGroupShardLocked seals the loaded shard: sync, final checkpoint,
@@ -384,6 +416,7 @@ func (r *Recorder) closeGroup() (retErr error) {
 		}
 		r.saveSessionStateLocked(state)
 	}
+	retErr = errors.Join(retErr, r.drainGroupVerifier())
 	r.clearSessionStateLocked()
 	retErr = errors.Join(retErr, r.releaseGroupOwner())
 	retErr = errors.Join(retErr, r.releaseEvidenceWriterCeremonyLock())

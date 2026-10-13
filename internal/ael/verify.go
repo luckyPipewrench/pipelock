@@ -105,50 +105,11 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 		if readErr != nil || len(line) == 0 || line[len(line)-1] != '\n' || len(line) > maxVerifyRecordBytes {
 			return VerifiedHead{}, errors.New("native AEL stream has torn or oversized line")
 		}
-		trimmed := recorder.TrimEntryLine(string(bytes.TrimSuffix(line, []byte{'\n'})))
-		if trimmed == "" {
-			continue
-		}
-		if closed {
-			return VerifiedHead{}, errors.New("native AEL has records after close")
-		}
-		payload, err := verifyAELLine([]byte(trimmed), pub)
+		next, err := verifyRunRecord(line, runRecordState{pub: pub, run: run, keyID: keyID, prev: prev, count: count, closed: closed})
 		if err != nil {
 			return VerifiedHead{}, err
 		}
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(payload, &fields); err != nil {
-			return VerifiedHead{}, err
-		}
-		var record struct {
-			Version  int    `json:"v"`
-			Type     string `json:"type"`
-			Run      string `json:"run"`
-			Recorder string `json:"recorder"`
-			Key      string `json:"key"`
-			Prev     string `json:"prev"`
-			Seq      uint64 `json:"seq"`
-			TS       string `json:"ts"`
-			Count    uint64 `json:"count"`
-			Head     string `json:"head"`
-		}
-		if err := json.Unmarshal(payload, &record); err != nil {
-			return VerifiedHead{}, err
-		}
-		if record.Version != recordVersion || record.Run != run || record.Recorder != recorderID || record.Key != keyID || record.Prev != prev || record.Seq != count || count > maxSafeInt {
-			return VerifiedHead{}, fmt.Errorf("native AEL record %d breaks run binding or chain", count)
-		}
-		stamp, err := time.Parse(time.RFC3339Nano, record.TS)
-		if err != nil || record.TS != stamp.UTC().Format(time.RFC3339Nano) {
-			return VerifiedHead{}, fmt.Errorf("native AEL record %d has invalid timestamp", count)
-		}
-		if err := verifyAELFields(record.Type, count, fields, record.Count, record.Head, prev); err != nil {
-			return VerifiedHead{}, err
-		}
-		h := sha256.Sum256(payload)
-		prev = hex.EncodeToString(h[:])
-		count++
-		closed = record.Type == "close"
+		prev, count, closed = next.prev, next.count, next.closed
 	}
 	if requireClose && (!closed || count < 2) {
 		return VerifiedHead{}, errors.New("native AEL run has no signed close")
@@ -162,6 +123,66 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 		finalSeq = count - 1
 	}
 	return VerifiedHead{FinalSeq: finalSeq, FinalHash: prev, RecordCount: count}, nil
+}
+
+// verifyRunRecord checks one complete physical stream line and advances the
+// authenticated chain head. Both offline and incremental verification use
+// this routine so they enforce the same signed record contract.
+type runRecordState struct {
+	pub    ed25519.PublicKey
+	run    string
+	keyID  string
+	prev   string
+	count  uint64
+	closed bool
+}
+
+func verifyRunRecord(line []byte, state runRecordState) (runRecordState, error) {
+	trimmed := recorder.TrimEntryLine(string(bytes.TrimSuffix(line, []byte{'\n'})))
+	if trimmed == "" {
+		return state, nil
+	}
+	if state.closed {
+		return runRecordState{}, errors.New("native AEL has records after close")
+	}
+	payload, err := verifyAELLine([]byte(trimmed), state.pub)
+	if err != nil {
+		return runRecordState{}, err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return runRecordState{}, err
+	}
+	var record struct {
+		Version  int    `json:"v"`
+		Type     string `json:"type"`
+		Run      string `json:"run"`
+		Recorder string `json:"recorder"`
+		Key      string `json:"key"`
+		Prev     string `json:"prev"`
+		Seq      uint64 `json:"seq"`
+		TS       string `json:"ts"`
+		Count    uint64 `json:"count"`
+		Head     string `json:"head"`
+	}
+	if err := json.Unmarshal(payload, &record); err != nil {
+		return runRecordState{}, err
+	}
+	if record.Version != recordVersion || record.Run != state.run || record.Recorder != recorderID || record.Key != state.keyID || record.Prev != state.prev || record.Seq != state.count || state.count > maxSafeInt {
+		return runRecordState{}, fmt.Errorf("native AEL record %d breaks run binding or chain", state.count)
+	}
+	stamp, err := time.Parse(time.RFC3339Nano, record.TS)
+	if err != nil || record.TS != stamp.UTC().Format(time.RFC3339Nano) {
+		return runRecordState{}, fmt.Errorf("native AEL record %d has invalid timestamp", state.count)
+	}
+	if err := verifyAELFields(record.Type, state.count, fields, record.Count, record.Head, state.prev); err != nil {
+		return runRecordState{}, err
+	}
+	h := sha256.Sum256(payload)
+	state.prev = hex.EncodeToString(h[:])
+	state.count++
+	state.closed = record.Type == "close"
+	return state, nil
 }
 
 func readBoundedAELLine(r *bufio.Reader, total *int64, limit int64) ([]byte, error) {

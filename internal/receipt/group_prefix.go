@@ -22,16 +22,22 @@ type groupPrefixHead struct {
 }
 
 func verifyGroupShardPrefix(dir string, open ReceiptGroupOpen, openHash string, index int) (groupPrefixHead, error) {
+	return verifyGroupShardPrefixWithSession(dir, open, openHash, index, nil)
+}
+
+func verifyGroupShardPrefixWithSession(dir string, open ReceiptGroupOpen, openHash string, index int, shared *startupSessionVerification) (groupPrefixHead, error) {
 	if index < 0 || index >= len(open.Shards) {
 		return groupPrefixHead{}, errors.New("receipt group prefix shard index is outside membership")
 	}
 	session := open.Shards[index].SessionID
-	gone, err := recorder.EvidenceRunWriterGone(dir, session)
-	if err != nil {
-		return groupPrefixHead{}, fmt.Errorf("probe receipt group predecessor writer: %w", err)
-	}
-	if !gone {
-		return groupPrefixHead{}, errors.New("receipt group predecessor writer still present")
+	if shared == nil || !shared.writerGone {
+		gone, err := recorder.EvidenceRunWriterGone(dir, session)
+		if err != nil {
+			return groupPrefixHead{}, fmt.Errorf("probe receipt group predecessor writer: %w", err)
+		}
+		if !gone {
+			return groupPrefixHead{}, errors.New("receipt group predecessor writer still present")
+		}
 	}
 	binding := groupBinding(open, openHash, index)
 	v, err := newRecoveryPrefixVerifier(session, []string{open.SignerKey}, false)
@@ -39,6 +45,26 @@ func verifyGroupShardPrefix(dir string, open ReceiptGroupOpen, openHash string, 
 		return groupPrefixHead{}, err
 	}
 	v.groupBinding = &binding
+	if shared != nil {
+		v.startup = shared
+		shared.prefix = true
+		if err := shared.walkWithInventory(v.add); err != nil {
+			return groupPrefixHead{}, fmt.Errorf("verify receipt group predecessor prefix: %w", err)
+		}
+		if err := v.finish(); err != nil {
+			return groupPrefixHead{}, err
+		}
+		if shared.inventoryErr != nil {
+			return groupPrefixHead{}, shared.inventoryErr
+		}
+		if shared.claim.run == "" || shared.claim.session != session || shared.claim.groupID != open.GroupID || shared.claim.signer != open.SignerKey {
+			return groupPrefixHead{}, errors.New("predecessor native AEL owner differs from signed group opening")
+		}
+		if _, err := shared.verifyAEL(shared.claim.run, open.SignerKey, shared.claim.completed); err != nil {
+			return groupPrefixHead{}, fmt.Errorf("verify receipt group predecessor native AEL: %w", err)
+		}
+		return groupPrefixHead{seq: shared.durableSeq, hash: shared.durableHash, torn: shared.observation != nil}, nil
+	}
 	var head groupPrefixHead
 	if err := recorder.WalkSessionHistory(dir, session, v.add); err == nil {
 		if err := v.finish(); err != nil {

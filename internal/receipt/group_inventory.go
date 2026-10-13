@@ -279,10 +279,18 @@ func validateGroupArtifactFileName(name string) error {
 }
 
 func verifyGroupTransitionInventory(dir, openHash, closeHash string, trusted []string) error {
-	return verifyGroupTransitionInventoryLinks(dir, openHash, closeHash, trusted, true)
+	return verifyGroupTransitionInventoryWithContext(dir, openHash, closeHash, trusted, nil)
+}
+
+func verifyGroupTransitionInventoryWithContext(dir, openHash, closeHash string, trusted []string, ceremony *startupGroupVerification) error {
+	return verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash, trusted, true, ceremony)
 }
 
 func verifyGroupTransitionInventoryLinks(dir, openHash, closeHash string, trusted []string, verifyLink bool) error {
+	return verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash, trusted, verifyLink, nil)
+}
+
+func verifyGroupTransitionInventoryLinksWithContext(dir, openHash, closeHash string, trusted []string, verifyLink bool, ceremony *startupGroupVerification) error {
 	count := 0
 	successorID := ""
 	returnErr := walkInventoryNames(dir, func(name string) error {
@@ -338,7 +346,7 @@ func verifyGroupTransitionInventoryLinks(dir, openHash, closeHash string, truste
 		return err
 	}
 	newDigest := sha256.Sum256(newRaw)
-	return verifyReceiptGroupTransition(dir, newOpen, hex.EncodeToString(newDigest[:]), trusted)
+	return verifyReceiptGroupTransitionWithContext(dir, newOpen, hex.EncodeToString(newDigest[:]), trusted, ceremony)
 }
 
 func groupGateFromFirstEntry(entry recorder.Entry) (ReceiptGroupBinding, bool, error) {
@@ -456,8 +464,18 @@ func indexAELClaimsForSession(dir, session, currentGroupID, predecessorGroupID s
 }
 
 func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, onTorn func(groupBatchTorn)) error {
+	return indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorGroupID, trusted, addClaim, onTorn, nil, nil)
+}
+
+func indexAELClaimsForSessionWithWalk(dir, session, currentGroupID, predecessorGroupID string, trusted []string, addClaim func(run, session, groupID, signer string, completed bool) error, onTorn func(groupBatchTorn), shared *startupSessionVerification, walk func(func(recorder.Entry) error) error) error {
 	var whole *WholeRecorderWalker
 	v1 := NewChainWalker(trusted)
+	if shared != nil {
+		v1 = shared.v1
+	}
+	if walk == nil {
+		walk = func(visit func(recorder.Entry) error) error { return recorder.WalkSessionHistory(dir, session, visit) }
+	}
 	var run, signer string
 	completed := false
 	signedOpenSeen := false
@@ -465,7 +483,7 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 	groupID := ""
 	first := true
 	var err error
-	err = recorder.WalkSessionHistory(dir, session, func(entry recorder.Entry) error {
+	err = walk(func(entry recorder.Entry) error {
 		if entry.Type == transcriptRootEntryType {
 			completed = true
 		}
@@ -486,7 +504,14 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 				whole = new(WholeRecorderWalker)
 			}
 		}
-		r, ok := whole.Add(entry)
+		var r Receipt
+		var ok bool
+		if shared == nil {
+			r, ok = whole.Add(entry)
+		} else {
+			whole = shared.whole
+			r, ok = shared.authenticate(entry)
+		}
 		if err := whole.Err(); err != nil {
 			return err
 		}
@@ -496,7 +521,9 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 		if groupID != "" && r.SignerKey != gate.SignerKey {
 			return errors.New("group receipt signer differs from opening signer")
 		}
-		v1.Add(r)
+		if shared == nil {
+			v1.Add(r)
+		}
 		control := r.ActionRecord.SessionControl
 		if control != nil && control.Kind == SessionControlClose {
 			completed = true
@@ -531,10 +558,18 @@ func indexAELClaimsForSessionBatch(dir, session, currentGroupID, predecessorGrou
 	if err != nil && allowBatchTorn {
 		onTorn(groupBatchTorn{session: session, groupID: groupID, err: fmt.Errorf("inventory receipt session %q: %w", session, err)})
 	}
-	if first || whole.Err() != nil {
+	if first {
 		return fmt.Errorf("inventory receipt session %q is empty or invalid", session)
 	}
-	if result := v1.Result(); !result.Valid {
+	wholeErr := whole.Err()
+	result := v1.Result()
+	if shared != nil && shared.inventoryResult != nil {
+		wholeErr, result = shared.inventoryWholeErr, *shared.inventoryResult
+	}
+	if wholeErr != nil {
+		return fmt.Errorf("inventory receipt session %q is empty or invalid", session)
+	}
+	if !result.Valid {
 		return fmt.Errorf("inventory receipt session %q chain invalid: %s", session, result.Error)
 	}
 	if run != "" {

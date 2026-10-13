@@ -22,18 +22,35 @@ import (
 // VerifyGroupShardHead derives a close head from one complete on-disk shard.
 // The caller must pin the directory ceremony while publishing a close.
 func VerifyGroupShardHead(dir string, open ReceiptGroupOpen, openHash string, index int) (ReceiptGroupShardHead, error) {
+	return verifyGroupShardHeadWithSession(dir, open, openHash, index, nil)
+}
+
+func verifyGroupShardHeadWithSession(dir string, open ReceiptGroupOpen, openHash string, index int, session *startupSessionVerification) (ReceiptGroupShardHead, error) {
 	v, err := newGroupShardVerifier(open, openHash, index)
 	if err != nil {
 		return ReceiptGroupShardHead{}, err
 	}
-	if err := recorder.WalkSessionHistory(dir, v.shard.SessionID, v.add); err != nil {
+	walk := func(visit func(recorder.Entry) error) error {
+		return recorder.WalkSessionHistory(dir, v.shard.SessionID, visit)
+	}
+	if session != nil {
+		v.startup = session
+		v.w, v.v1, v.v2 = session.whole, session.v1, session.v2
+		walk = session.walkWithInventory
+	}
+	if err := walk(v.add); err != nil {
 		return ReceiptGroupShardHead{}, fmt.Errorf("verify receipt group shard %d: %w", index, err)
 	}
 	head, err := v.head()
 	if err != nil {
 		return ReceiptGroupShardHead{}, err
 	}
-	aelHead, err := ael.VerifyRun(dir, v.run, open.SignerKey)
+	var aelHead ael.VerifiedHead
+	if session == nil {
+		aelHead, err = ael.VerifyRun(dir, v.run, open.SignerKey)
+	} else {
+		aelHead, err = session.verifyAEL(v.run, open.SignerKey, true)
+	}
 	if err != nil {
 		return ReceiptGroupShardHead{}, fmt.Errorf("receipt group native AEL shard %d: %w", index, err)
 	}
@@ -42,6 +59,7 @@ func VerifyGroupShardHead(dir string, open ReceiptGroupOpen, openHash string, in
 }
 
 type groupShardVerifier struct {
+	startup                                           *startupSessionVerification
 	open                                              ReceiptGroupOpen
 	openHash                                          string
 	index                                             int
@@ -85,7 +103,13 @@ func (v *groupShardVerifier) add(entry recorder.Entry) error {
 	v.entryIndex++
 	v.lastEntryHash = entry.Hash
 	v.lastCheckpoint = entry.Type == "checkpoint"
-	r, isReceipt := v.w.Add(entry)
+	var r Receipt
+	var isReceipt bool
+	if v.startup == nil {
+		r, isReceipt = v.w.Add(entry)
+	} else {
+		r, isReceipt = v.startup.authenticate(entry)
+	}
 	if err := v.w.Err(); err != nil {
 		return err
 	}
@@ -116,7 +140,9 @@ func (v *groupShardVerifier) add(entry recorder.Entry) error {
 	if v.rooted || v.closed {
 		return errors.New("receipt group has action after signed close")
 	}
-	v.v1.Add(r)
+	if v.startup == nil {
+		v.v1.Add(r)
+	}
 	v.count++
 	v.finalSeq = r.ActionRecord.ChainSeq
 	var err error

@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // ReceiptShardSet owns the fixed v1 emitters of one signed group. It is
@@ -55,11 +56,13 @@ func PrepareInitialReceiptShardSet(template EmitterConfig, base string, count, p
 }
 
 type receiptGroupPredecessor struct {
-	open       ReceiptGroupOpen
-	openHash   string
-	closeHash  string
-	heads      []ReceiptGroupPredecessor
-	incomplete bool
+	ceremony                 *startupGroupVerification
+	incomingTransitionProved bool
+	open                     ReceiptGroupOpen
+	openHash                 string
+	closeHash                string
+	heads                    []ReceiptGroupPredecessor
+	incomplete               bool
 }
 
 // TrustedGroupSignerKeys is the signer set supplied by the running configuration.
@@ -107,7 +110,7 @@ func prepareSuccessorReceiptShardSet(template EmitterConfig, base string, count,
 	if !found || terminal != previousGroupID {
 		return nil, errors.New("receipt group predecessor changed before successor publication")
 	}
-	previous, err := loadClosedGroupPredecessor(template.Recorder.Dir(), previousGroupID, trusted)
+	previous, err := loadClosedGroupPredecessorWithOptions(template.Recorder.Dir(), previousGroupID, trusted, template.StartupVerification)
 	if err != nil {
 		return nil, err
 	}
@@ -115,6 +118,10 @@ func prepareSuccessorReceiptShardSet(template EmitterConfig, base string, count,
 }
 
 func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receiptGroupPredecessor, error) {
+	return loadClosedGroupPredecessorWithOptions(dir, groupID, trusted, verification.Options{})
+}
+
+func loadClosedGroupPredecessorWithOptions(dir, groupID string, trusted []string, options verification.Options) (*receiptGroupPredecessor, error) {
 	name, err := ReceiptGroupFileName(groupID, "open")
 	if err != nil {
 		return nil, err
@@ -137,7 +144,15 @@ func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receipt
 			return nil, err
 		}
 	}
-	verified := VerifyReceiptGroup(dir, groupID, trusted)
+	ceremony, err := newStartupGroupVerification(dir, trusted, options)
+	if err != nil {
+		if recorder.IsEvidenceUnavailable(err) {
+			return nil, fmt.Errorf("receipt group predecessor could not be verified; fix access to the evidence directory and restart: %w", err)
+		}
+		return nil, fmt.Errorf("receipt group predecessor is not complete: %w", err)
+	}
+	ceremony.manifests[name] = raw
+	verified := verifyReceiptGroupWithContext(dir, groupID, trusted, nil, ceremony)
 	if verified.Verdict != GroupValid && verified.Verdict != GroupIncomplete {
 		return nil, fmt.Errorf("receipt group predecessor is not complete: %s", verified.Error)
 	}
@@ -151,7 +166,7 @@ func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receipt
 	// publishing its incoming transition. It cannot become a predecessor until
 	// that signed link exists, even though its own close is legitimately absent.
 	if open.PreviousGroupID != "" {
-		if err := verifyReceiptGroupTransition(dir, open, verified.OpenManifestSHA, trusted); err != nil {
+		if err := verifyReceiptGroupTransitionWithContext(dir, open, verified.OpenManifestSHA, trusted, ceremony); err != nil {
 			return nil, fmt.Errorf("receipt group predecessor transition: %w", err)
 		}
 	}
@@ -164,17 +179,20 @@ func loadClosedGroupPredecessor(dir, groupID string, trusted []string) (*receipt
 	if open.BaseSession == "" {
 		return nil, errors.New("receipt group predecessor has no base session")
 	}
-	prev := &receiptGroupPredecessor{open: open, openHash: verified.OpenManifestSHA, closeHash: verified.CloseManifestSHA, incomplete: verified.Verdict == GroupIncomplete}
+	prev := &receiptGroupPredecessor{ceremony: ceremony, incomingTransitionProved: open.PreviousGroupID == "" || ceremony.transitions[verified.OpenManifestSHA], open: open, openHash: verified.OpenManifestSHA, closeHash: verified.CloseManifestSHA, incomplete: verified.Verdict == GroupIncomplete}
 	prev.heads = make([]ReceiptGroupPredecessor, len(open.Shards))
 	for i := range prev.heads {
 		if prev.incomplete {
 			continue // Verified after successor session opens, before transition.
 		}
-		head, err := VerifyGroupShardHead(dir, open, verified.OpenManifestSHA, i)
+		head, err := verifyGroupShardHeadUsing(dir, open, verified.OpenManifestSHA, i, ceremony)
 		if err != nil {
 			return nil, err
 		}
 		prev.heads[i] = ReceiptGroupPredecessor{ShardIndex: i, SessionID: head.SessionID, FinalChainSeq: head.FinalChainSeq, FinalChainHash: head.FinalChainHash}
+	}
+	if err := ceremony.check(); err != nil {
+		return nil, err
 	}
 	return prev, nil
 }
@@ -253,6 +271,15 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 	if err != nil {
 		return nil, err
 	}
+	if previous != nil && previous.ceremony != nil {
+		previous.ceremony.successor = &ReceiptShardSet{open: open, emitters: make([]*Emitter, len(open.Shards)), previous: previous}
+		if !previous.incomingTransitionProved {
+			return nil, errors.New("receipt group predecessor transition has not been proved")
+		}
+		if err := previous.ceremony.check(); err != nil {
+			return nil, err
+		}
+	}
 	openHash, err := PublishReceiptGroupArtifact(rec.Dir(), name, open)
 	if err != nil {
 		return nil, fmt.Errorf("publish receipt group opening: %w", err)
@@ -313,6 +340,9 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 		}
 		set.emitters[i] = emitter
 	}
+	if previous != nil && previous.ceremony != nil {
+		previous.ceremony.successor = set
+	}
 	if !deferOpen {
 		if err := set.publishTransition(); err != nil {
 			return nil, err
@@ -364,19 +394,32 @@ func (s *ReceiptShardSet) publishTransition() error {
 		return nil
 	}
 	previous := s.previous
+	if previous.ceremony != nil {
+		previous.ceremony.successor = s
+		if err := previous.ceremony.check(); err != nil {
+			return err
+		}
+	}
 	if previous.incomplete {
 		for i, shard := range previous.open.Shards {
-			head, err := verifyGroupShardPrefix(s.recorder.Dir(), previous.open, previous.openHash, i)
+			head, err := verifyGroupShardPrefixUsing(s.recorder.Dir(), previous.open, previous.openHash, i, previous.ceremony)
 			if err != nil {
 				return fmt.Errorf("verify predecessor shard %d: %w", i, err)
 			}
 			claim := ReceiptGroupPredecessor{ShardIndex: i, SessionID: shard.SessionID, FinalChainSeq: head.seq, FinalChainHash: head.hash}
 			if head.torn {
-				seal, err := publishRecoverySeal(linkRequest{dir: s.recorder.Dir(), self: s.open.Shards[i%len(s.open.Shards)].SessionID, privKey: s.signer, now: time.Now().UTC(), signerKeys: []string{previous.open.SignerKey, s.open.SignerKey}}, shard.SessionID)
+				request := linkRequest{dir: s.recorder.Dir(), self: s.open.Shards[i%len(s.open.Shards)].SessionID, privKey: s.signer, now: time.Now().UTC(), signerKeys: []string{previous.open.SignerKey, s.open.SignerKey}}
+				var seal *RecoverySeal
+				var err error
+				if previous.ceremony == nil {
+					seal, err = publishRecoverySeal(request, shard.SessionID)
+				} else {
+					seal, err = previous.ceremony.publishRecovery(request, shard.SessionID)
+				}
 				if err != nil {
 					return fmt.Errorf("seal predecessor shard %d: %w", i, err)
 				}
-				if err := VerifyRecoveryBinding(s.recorder.Dir(), *seal, []string{previous.open.SignerKey, s.open.SignerKey}); err != nil {
+				if err := verifyRecoveryBindingUsing(s.recorder.Dir(), *seal, []string{previous.open.SignerKey, s.open.SignerKey}, previous.ceremony); err != nil {
 					return fmt.Errorf("verify predecessor seal %d: %w", i, err)
 				}
 				raw, err := readClaimBytes(filepath.Join(s.recorder.Dir(), ChainLinkFileName(shard.SessionID)))
@@ -387,6 +430,11 @@ func (s *ReceiptShardSet) publishTransition() error {
 				claim.RecoverySealSHA256 = hex.EncodeToString(digest[:])
 			}
 			previous.heads[i] = claim
+		}
+	}
+	if previous.ceremony != nil {
+		if err := previous.ceremony.check(); err != nil {
+			return err
 		}
 	}
 	transition, err := SignReceiptGroupTransition(ReceiptGroupTransition{
@@ -401,6 +449,9 @@ func (s *ReceiptShardSet) publishTransition() error {
 	name, _ := ReceiptGroupFileName(s.open.GroupID, "transition")
 	if _, err := PublishReceiptGroupArtifact(s.recorder.Dir(), name, transition); err != nil {
 		return fmt.Errorf("publish receipt group transition: %w", err)
+	}
+	if previous.ceremony != nil {
+		previous.ceremony = nil
 	}
 	s.ready.Store(true)
 	return nil

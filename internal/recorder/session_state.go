@@ -218,8 +218,12 @@ func (r *Recorder) AcquireGroupSessions(sessions []string) error {
 	return nil
 }
 
+// GroupOwnerLockFileName is the existing receipt-group ownership lock. Taking
+// ownership changes its permissions but never its inode or contents.
+const GroupOwnerLockFileName = "writer-receipt-group-owner.lock"
+
 func acquireGroupOwner(dir string) (*os.File, error) {
-	path := filepath.Join(filepath.Clean(dir), "writer-receipt-group-owner.lock")
+	path := filepath.Join(filepath.Clean(dir), GroupOwnerLockFileName)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|evidenceReadNoFollowFlag, 0o600)
 	if err != nil {
 		return nil, err

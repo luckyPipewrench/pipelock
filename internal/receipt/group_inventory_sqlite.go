@@ -27,6 +27,10 @@ func verifyGroupAELInventory(dir string, open ReceiptGroupOpen, trusted []string
 }
 
 func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []string, incomplete bool) error {
+	return verifyGroupAELInventoryWithContext(dir, open, trusted, incomplete, nil)
+}
+
+func verifyGroupAELInventoryWithContext(dir string, open ReceiptGroupOpen, trusted []string, incomplete bool, ceremony *startupGroupVerification) error {
 	tmp, err := os.MkdirTemp("", "pipelock-group-inventory-")
 	if err != nil {
 		return err
@@ -82,10 +86,14 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 		if incomplete {
 			currentGroupID = open.GroupID
 		}
-		return indexAELClaimsForSession(dir, session, currentGroupID, open.PreviousGroupID, trusted, func(run, session, groupID, signer string, completed bool) error {
+		add := func(run, session, groupID, signer string, completed bool) error {
 			_, err := db.ExecContext(ctx, `INSERT INTO claims(run, session, group_id, signer, completed) VALUES (?, ?, ?, ?, ?)`, run, session, groupID, signer, completed)
 			return claimInsertError(err, run)
-		})
+		}
+		if ceremony != nil {
+			return ceremony.indexSession(open, incomplete, session, add)
+		}
+		return indexAELClaimsForSession(dir, session, currentGroupID, open.PreviousGroupID, trusted, add)
 	}); err != nil {
 		return err
 	}
@@ -136,7 +144,9 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 			return err
 		}
 		var verifyErr error
-		if completed {
+		if ceremony != nil {
+			_, verifyErr = ceremony.verifyAEL(run, signer, completed)
+		} else if completed {
 			_, verifyErr = ael.VerifyRun(dir, run, signer)
 		} else {
 			_, verifyErr = ael.VerifyPresentRun(dir, run, signer)

@@ -126,3 +126,7 @@ func verifyGroupAELInventoryMode(dir string, open ReceiptGroupOpen, trusted []st
 	}
 	return nil
 }
+
+func verifyGroupAELInventoryWithContext(dir string, open ReceiptGroupOpen, trusted []string, incomplete bool, _ *startupGroupVerification) error {
+	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
+}

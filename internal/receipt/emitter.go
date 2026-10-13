@@ -32,6 +32,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/session"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 // recorderEntryType is the recorder entry type for action receipts.
@@ -217,11 +218,14 @@ type Emitter struct {
 
 // EmitterConfig holds the configuration for creating an Emitter.
 type EmitterConfig struct {
-	Recorder   *recorder.Recorder
-	PrivKey    ed25519.PrivateKey
-	ConfigHash string
-	Principal  string
-	Actor      string
+	// StartupVerification reports and cancels successor history verification.
+	// It is not retained by receipt emission or by a later startup.
+	StartupVerification verification.Options
+	Recorder            *recorder.Recorder
+	PrivKey             ed25519.PrivateKey
+	ConfigHash          string
+	Principal           string
+	Actor               string
 	// Metrics, when non-nil, receives emit-failure observability signals.
 	Metrics MetricsSink
 	// OnReceipt, when non-nil, is invoked with a copy of each signed receipt

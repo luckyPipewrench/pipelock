@@ -75,7 +75,11 @@ func verifyGroupAELWithIndex(dir string, open ReceiptGroupOpen, trusted []string
 	return verifyGroupAELInventoryMode(dir, open, trusted, incomplete)
 }
 
-func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) (result ReceiptGroupResult) {
+func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index groupAELBatchIndex) ReceiptGroupResult {
+	return verifyReceiptGroupWithContext(dir, groupID, trusted, index, nil)
+}
+
+func verifyReceiptGroupWithContext(dir, groupID string, trusted []string, index groupAELBatchIndex, ceremony *startupGroupVerification) (result ReceiptGroupResult) {
 	result = ReceiptGroupResult{GroupID: groupID, Verdict: GroupInvalid}
 	if len(trusted) == 0 {
 		result.Error = "receipt group verification requires a trusted signer key"
@@ -107,7 +111,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		result.setReadError(err)
 		return result
 	}
-	openBytes, err := readBoundedGroupFile(dir, openName)
+	openBytes, err := readBoundedGroupFileUsing(dir, openName, ceremony)
 	if err != nil {
 		result.setReadError(fmt.Errorf("read receipt group opening: %w", err))
 		return result
@@ -122,7 +126,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	result.OpenManifestSHA = hex.EncodeToString(openSum[:])
 	result.ShardCount = len(open.Shards)
 	closeName, _ := ReceiptGroupFileName(groupID, "close")
-	closeBytes, err := readBoundedGroupFile(dir, closeName)
+	closeBytes, err := readBoundedGroupFileUsing(dir, closeName, ceremony)
 	if errors.Is(err, os.ErrNotExist) {
 		// An incomplete predecessor remains incomplete, but any successor
 		// transition already on disk must still validate its frozen heads and
@@ -132,11 +136,14 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 			result.setReadError(err)
 			return result
 		}
-		if err := verifyGroupTransitionInventory(dir, result.OpenManifestSHA, "", trusted); err != nil {
+		if err := verifyGroupTransitionInventoryWithContext(dir, result.OpenManifestSHA, "", trusted, ceremony); err != nil {
 			result.setReadError(err)
 			return result
 		}
-		if err := verifyGroupAELWithIndex(dir, open, trusted, true, index); err != nil && !errors.Is(err, errGroupAELOpenTail) && !errors.Is(err, errGroupAELNeighborOpenTail) {
+		if ceremony != nil {
+			ceremony.prepareIncoming(open)
+		}
+		if err := verifyGroupAELUsing(dir, open, trusted, true, index, ceremony); err != nil && !errors.Is(err, errGroupAELOpenTail) && !errors.Is(err, errGroupAELNeighborOpenTail) {
 			result.setReadError(err)
 			return result
 		}
@@ -165,7 +172,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	closeSum := sha256.Sum256(closeBytes)
 	result.CloseManifestSHA = hex.EncodeToString(closeSum[:])
 	for i, claimed := range closed.Shards {
-		actual, err := VerifyGroupShardHead(dir, open, result.OpenManifestSHA, i)
+		actual, err := verifyGroupShardHeadUsing(dir, open, result.OpenManifestSHA, i, ceremony)
 		if err != nil {
 			result.setReadError(fmt.Errorf("receipt group shard %d: %w", i, err))
 			return result
@@ -178,7 +185,7 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 	// A successor is not valid merely because its own shards are closed. Its
 	// signed predecessor binding and transition must also be present.
 	if open.PreviousGroupID != "" {
-		if err := verifyReceiptGroupTransition(dir, open, result.OpenManifestSHA, trusted); err != nil {
+		if err := verifyReceiptGroupTransitionWithContext(dir, open, result.OpenManifestSHA, trusted, ceremony); err != nil {
 			result.setReadError(err)
 			return result
 		}
@@ -187,11 +194,11 @@ func verifyReceiptGroupWithIndex(dir, groupID string, trusted []string, index gr
 		result.setReadError(err)
 		return result
 	}
-	if err := verifyGroupTransitionInventory(dir, result.OpenManifestSHA, result.CloseManifestSHA, trusted); err != nil {
+	if err := verifyGroupTransitionInventoryWithContext(dir, result.OpenManifestSHA, result.CloseManifestSHA, trusted, ceremony); err != nil {
 		result.setReadError(err)
 		return result
 	}
-	aelErr := verifyGroupAELWithIndex(dir, open, trusted, false, index)
+	aelErr := verifyGroupAELUsing(dir, open, trusted, false, index, ceremony)
 	if aelErr != nil && !errors.Is(aelErr, errGroupAELOpenTail) && !errors.Is(aelErr, errGroupAELNeighborOpenTail) {
 		result.setReadError(aelErr)
 		return result
@@ -403,8 +410,25 @@ func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error)
 }
 
 func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHash string, trusted []string) error {
+	return verifyReceiptGroupTransitionWithContext(dir, successor, newHash, trusted, nil)
+}
+
+func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) (retErr error) {
+	if ceremony != nil {
+		if err := ceremony.check(); err != nil {
+			return err
+		}
+		if ceremony.transitions[newHash] {
+			return nil
+		}
+		defer func() {
+			if retErr == nil {
+				ceremony.transitions[newHash] = true
+			}
+		}()
+	}
 	oldName, _ := ReceiptGroupFileName(successor.PreviousGroupID, "open")
-	oldBytes, err := readBoundedGroupFile(dir, oldName)
+	oldBytes, err := readBoundedGroupFileUsing(dir, oldName, ceremony)
 	if err != nil {
 		return fmt.Errorf("receipt group predecessor opening missing: %w", err)
 	}
@@ -420,7 +444,7 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 	oldCloseName, _ := ReceiptGroupFileName(predecessor.GroupID, "close")
 	oldCloseHash := ""
 	var predecessorClose ReceiptGroupClose
-	if oldCloseBytes, err := readBoundedGroupFile(dir, oldCloseName); err == nil {
+	if oldCloseBytes, err := readBoundedGroupFileUsing(dir, oldCloseName, ceremony); err == nil {
 		predecessorClose, err = UnmarshalReceiptGroupClose(oldCloseBytes, predecessor, oldHash, trusted)
 		if err != nil {
 			return err
@@ -431,7 +455,7 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 		return err
 	}
 	transitionName, _ := ReceiptGroupFileName(successor.GroupID, "transition")
-	transitionBytes, err := readBoundedGroupFile(dir, transitionName)
+	transitionBytes, err := readBoundedGroupFileUsing(dir, transitionName, ceremony)
 	if err != nil {
 		return fmt.Errorf("receipt group transition missing: %w", err)
 	}
@@ -448,13 +472,13 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 			if claim.ShardIndex != signed.ShardIndex || claim.SessionID != signed.SessionID || claim.FinalChainSeq != signed.FinalChainSeq || claim.FinalChainHash != signed.FinalChainHash {
 				return fmt.Errorf("receipt group predecessor shard %d differs from signed close", i)
 			}
-			head, err := VerifyGroupShardHead(dir, predecessor, oldHash, i)
+			head, err := verifyGroupShardHeadUsing(dir, predecessor, oldHash, i, ceremony)
 			if err != nil || claim.ShardIndex != i || claim.SessionID != head.SessionID || claim.FinalChainSeq != head.FinalChainSeq || claim.FinalChainHash != head.FinalChainHash || claim.RecoverySealSHA256 != "" {
 				return fmt.Errorf("receipt group predecessor shard %d differs from transition", i)
 			}
 			continue
 		}
-		head, err := verifyGroupShardPrefix(dir, predecessor, oldHash, i)
+		head, err := verifyGroupShardPrefixUsing(dir, predecessor, oldHash, i, ceremony)
 		if err != nil {
 			return fmt.Errorf("verify receipt group incomplete predecessor shard %d: %w", i, err)
 		}
@@ -485,7 +509,7 @@ func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHas
 		if seal.PredecessorSession != claim.SessionID || seal.SuccessorSession != successor.Shards[i%len(successor.Shards)].SessionID {
 			return fmt.Errorf("receipt group predecessor shard %d recovery seal binding differs", i)
 		}
-		if err := VerifyRecoveryBinding(dir, seal, trusted); err != nil {
+		if err := verifyRecoveryBindingUsing(dir, seal, trusted, ceremony); err != nil {
 			return fmt.Errorf("receipt group predecessor shard %d recovery seal invalid: %w", i, err)
 		}
 	}

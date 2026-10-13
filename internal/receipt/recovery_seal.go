@@ -265,6 +265,7 @@ func observeRecoveryWithOptions(dir, predecessor, observerKey string, opts recov
 // verifiers' walking state. A readable final record without LF advances this
 // state, but never advances the independently captured durable heads.
 type recoveryPrefixVerifier struct {
+	startup         *startupSessionVerification
 	session         string
 	trusted         []string
 	previous        *recorder.Entry
@@ -297,8 +298,18 @@ func newRecoveryPrefixVerifier(session string, trusted []string, signaturesOnly 
 }
 
 func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
-	if err := validateTailEntry(e, v.session, v.trusted); err != nil {
-		return err
+	if v.startup == nil {
+		if err := validateTailEntry(e, v.session, v.trusted); err != nil {
+			return err
+		}
+	} else {
+		v.startup.authenticate(e)
+		if err := v.startup.whole.Err(); err != nil {
+			return err
+		}
+		if v.startup.authErr != nil {
+			return v.startup.authErr
+		}
 	}
 	if err := recorder.ValidateEntrySchema(e); err != nil {
 		return err
@@ -357,8 +368,18 @@ func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
 			v.v1.v.trusted = map[string]struct{}{r.SignerKey: {}}
 			v.v1.integrity.trusted = map[string]struct{}{r.SignerKey: {}}
 		}
-		if err := v.v1.Add(raw); err != nil {
-			return fmt.Errorf("recovery receipt prefix: %w", err)
+		if v.startup == nil {
+			if err := v.v1.Add(raw); err != nil {
+				return fmt.Errorf("recovery receipt prefix: %w", err)
+			}
+		} else {
+			res := v.startup.v1.Result()
+			if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
+				return fmt.Errorf("recovery receipt prefix: %s", res.Error)
+			}
+			r := v.startup.receipt
+			v.v1.last = &r
+			v.v1.count = v.startup.v1.count
 		}
 		if o := sessionOpen(v.v1.last.ActionRecord.SessionControl); o != nil && o.RecorderSession != v.session {
 			return errors.New("recovery receipt session binding mismatch")
@@ -386,6 +407,18 @@ func (v *recoveryPrefixVerifier) add(e recorder.Entry) error {
 		return err
 	}
 	if len(evidence) > 0 {
+		if v.startup != nil {
+			// validateTailEntry pins every v2 signer to the held group key before
+			// the recovery streaming verifier pins its first signer.
+			if !slices.Contains(v.trusted, evidence[0].Signature.SignerKeyID) {
+				return errors.New("tail receipt signer was not held by this process")
+			}
+			v.startup.v2.Add(evidence[0])
+			if res := v.startup.v2.Result(); !res.Valid {
+				return fmt.Errorf("recovery v2 prefix: %s", res.Error)
+			}
+			return nil
+		}
 		if v.v2 == nil {
 			key, err := decodeEd25519Hex(strings.ToLower(strings.TrimSpace(evidence[0].Signature.SignerKeyID)))
 			if err != nil {
@@ -412,9 +445,19 @@ func (v *recoveryPrefixVerifier) finish() error {
 		return errors.New("recovery group prefix lacks durable signed opening")
 	}
 	if v.v1.count > 0 {
-		res := v.v1.Finish()
+		var res ChainResult
+		if v.startup == nil {
+			res = v.v1.Finish()
+		} else {
+			res = v.startup.v1.Result()
+		}
 		if !res.Valid && (res.FailureKind != ChainFailureLifecycleOpen || !res.IntegrityVerified) {
 			return fmt.Errorf("recovery receipt prefix: %s", res.Error)
+		}
+	}
+	if v.startup != nil && v.startup.v2.Count() > 0 {
+		if res := v.startup.v2.Result(); !res.Valid {
+			return fmt.Errorf("recovery v2 prefix: %s", res.Error)
 		}
 	}
 	if v.v2 != nil {
@@ -569,6 +612,11 @@ func publishRecoverySeal(req linkRequest, predecessor string) (*RecoverySeal, er
 	if err := verifyRecoveryPrefixWithOptions(req.self, entries, req.signerKeys, req.signerKeys == nil); err != nil {
 		return nil, err
 	}
+	return publishRecoverySealObserved(req, predecessor, s)
+}
+
+func publishRecoverySealObserved(req linkRequest, predecessor string, s RecoverySeal) (*RecoverySeal, error) {
+	var err error
 	s.SuccessorSession, s.ObservedAt = req.self, req.now.UTC().Format(time.RFC3339Nano)
 	s, err = SignRecoverySeal(s, req.privKey)
 	if err != nil {

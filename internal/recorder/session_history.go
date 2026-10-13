@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"unicode/utf8"
 
+	"github.com/luckyPipewrench/pipelock/internal/verification"
+
 	"github.com/luckyPipewrench/pipelock/internal/evidencename"
 )
 
@@ -155,6 +157,28 @@ func WalkSessionHistory(dir, sessionID string, consume func(Entry) error) error 
 	return WalkSessionHistoryResolved(location, sessionID, consume)
 }
 
+// WalkSessionHistoryWithOptions is the cancellable startup history walk. It
+// preserves the authoritative shard selection and reader checks.
+func WalkSessionHistoryWithOptions(dir, sessionID string, options verification.Options, consume func(Entry) error) error {
+	location, err := ResolveEvidenceLocation(dir, "")
+	if err != nil {
+		return fmt.Errorf("resolve evidence location: %w", err)
+	}
+	if err := options.Check(); err != nil {
+		return err
+	}
+	return walkSessionHistoryShards(location, sessionID, sessionHistoryWindow, func(shard SessionHistoryShard) error {
+		err := walkHistoryShardEntriesWithOptions(location, shard.Name, sessionID, options, consume)
+		if !shard.Final && errors.Is(err, ErrTornTail) {
+			return fmt.Errorf("receipt group session has a torn segment: %s", shard.Name)
+		}
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", shard.Name, err)
+		}
+		return options.Check()
+	})
+}
+
 // WalkHistorySessions visits every session in an evidence directory in name
 // order without a display budget or an unbounded filename slice. Errors
 // invalidate the walk, including a changed evidence inventory.
@@ -263,6 +287,10 @@ func readHistoryShard(location EvidenceLocation, shard SessionHistoryShard, cons
 // walkHistoryShardEntries streams one shard's entries through the pinned
 // location and refuses the shard if it changed while it was read.
 func walkHistoryShardEntries(location EvidenceLocation, name, sessionID string, consume func(Entry) error) error {
+	return walkHistoryShardEntriesWithOptions(location, name, sessionID, verification.Options{}, consume)
+}
+
+func walkHistoryShardEntriesWithOptions(location EvidenceLocation, name, sessionID string, options verification.Options, consume func(Entry) error) error {
 	file, before, err := openEvidenceLocationFile(location, name)
 	if err != nil {
 		return fmt.Errorf("opening evidence file: %w", err)
@@ -272,7 +300,7 @@ func walkHistoryShardEntries(location EvidenceLocation, name, sessionID string, 
 	if err != nil {
 		return err
 	}
-	err = walkHistoryEntries(io.NewSectionReader(file, 0, before.Size()), filepath.Join(location.Dir, name), sessionID, consume)
+	err = walkHistoryEntries(&historyProgressReader{Reader: io.NewSectionReader(file, 0, before.Size()), options: options, session: sessionID}, filepath.Join(location.Dir, name), sessionID, consume)
 	err = finishHistoryRead(file, before, identity, err)
 	if err != nil {
 		if errors.Is(err, ErrEvidenceRefused) {
@@ -707,4 +735,27 @@ func (h *historyMaxHeap) Pop() any {
 	k := old[len(old)-1]
 	*h = old[:len(old)-1]
 	return k
+}
+
+// historyProgressReader reports reads inside a large shard, rather than waiting
+// for a file boundary. It owns no mutable verification state.
+type historyProgressReader struct {
+	io.Reader
+	options   verification.Options
+	session   string
+	readBytes int64
+}
+
+func (r *historyProgressReader) Read(p []byte) (int, error) {
+	if err := r.options.Check(); err != nil {
+		return 0, err
+	}
+	n, err := r.Reader.Read(p)
+	r.readBytes += int64(n)
+	if n > 0 {
+		if progressErr := r.options.Report(verification.Progress{Kind: "recorder_bytes", Session: r.session, Bytes: int64(n)}); progressErr != nil {
+			return n, progressErr
+		}
+	}
+	return n, err
 }

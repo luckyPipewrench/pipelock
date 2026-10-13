@@ -21,6 +21,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/jsonscan"
 	"github.com/luckyPipewrench/pipelock/internal/recorder"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 )
 
 const (
@@ -51,7 +52,20 @@ func VerifyPresentRun(recorderDir, run, signerHex string) (VerifiedHead, error) 
 	return verifyRun(recorderDir, run, signerHex, false)
 }
 
+// VerifyRunWithOptions preserves the complete/present run contracts while
+// reporting authenticated records and checking ceremony cancellation.
+func VerifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool, options verification.Options) (VerifiedHead, error) {
+	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, options)
+}
+
 func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedHead, error) {
+	return verifyRunWithOptions(recorderDir, run, signerHex, requireClose, verification.Options{})
+}
+
+func verifyRunWithOptions(recorderDir, run, signerHex string, requireClose bool, options verification.Options) (VerifiedHead, error) {
+	if err := options.Check(); err != nil {
+		return VerifiedHead{}, err
+	}
 	if !runIDPattern.MatchString(run) {
 		return VerifiedHead{}, errors.New("invalid native AEL run nonce")
 	}
@@ -89,7 +103,15 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 	var streamBytes int64
 	closed := false
 	for {
+		if err := options.Check(); err != nil {
+			return VerifiedHead{}, err
+		}
 		line, readErr := readBoundedAELLine(r, &streamBytes, maxVerifyStreamBytes)
+		if len(line) > 0 {
+			if err := options.Report(verification.Progress{Kind: "native_ael_bytes", Session: run, Bytes: int64(len(line))}); err != nil {
+				return VerifiedHead{}, err
+			}
+		}
 		if errors.Is(readErr, errAELStreamTooLarge) {
 			return VerifiedHead{}, readErr
 		}
@@ -108,6 +130,11 @@ func verifyRun(recorderDir, run, signerHex string, requireClose bool) (VerifiedH
 		next, err := verifyRunRecord(line, runRecordState{pub: pub, run: run, keyID: keyID, prev: prev, count: count, closed: closed})
 		if err != nil {
 			return VerifiedHead{}, err
+		}
+		if next.count > count {
+			if err := options.Report(verification.Progress{Kind: "native_ael", Session: run, Records: 1}); err != nil {
+				return VerifiedHead{}, err
+			}
 		}
 		prev, count, closed = next.prev, next.count, next.closed
 	}

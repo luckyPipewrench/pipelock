@@ -29,6 +29,7 @@ type netnsAssertEnv struct {
 	lookup      lookupUserFunc
 	readFile    func(string) ([]byte, error)
 	readDir     func(string) ([]os.DirEntry, error)
+	lstat       func(string) (os.FileInfo, error)
 	readLink    func(string) (string, error)
 	interfaces  func() ([]net.Interface, error)
 	proxyHealth func(context.Context, int) error
@@ -42,6 +43,7 @@ func defaultNetnsAssertEnv() netnsAssertEnv {
 		lookup:      user.Lookup,
 		readFile:    os.ReadFile,
 		readDir:     os.ReadDir,
+		lstat:       os.Lstat,
 		readLink:    os.Readlink,
 		interfaces:  net.Interfaces,
 		proxyHealth: directContainedProxyHealth,

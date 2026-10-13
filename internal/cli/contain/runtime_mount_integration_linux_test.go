@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -50,9 +51,44 @@ func runtimeMountSystemdFixture(t *testing.T) (context.Context, string, []string
 func TestManagedRuntimeMountIntegration(t *testing.T) {
 	const helper = "PIPELOCK_TEST_RUNTIME_MOUNTS"
 	if os.Getenv(helper) == "1" {
-		if err := assertManagedRuntimeMounts(defaultNetnsAssertEnv()); err != nil {
+		// A newer user manager may retain host submounts beneath the private
+		// /run overmount. Independently enumerate the kernel-produced layout:
+		// clean layouts must pass, and inherited runtime mounts must be refused.
+		data, err := os.ReadFile("/proc/self/mountinfo")
+		if err != nil {
 			t.Fatal(err)
 		}
+		var extras []string
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 5 {
+				continue
+			}
+			path := fields[4]
+			if path == "/run/pipelock-contain/agent-netns.id" || path == "/run/systemd/incoming" {
+				continue
+			}
+			if strings.HasPrefix(path, "/run/") || strings.HasPrefix(path, "/var/run/") || strings.HasPrefix(path, "/dev/shm/") {
+				extras = append(extras, runtimeMountPath(path))
+			}
+		}
+		err = assertManagedRuntimeMounts(defaultNetnsAssertEnv())
+		if len(extras) == 0 {
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
+		if !errors.Is(err, errUnexpectedRuntimeExposure) {
+			t.Fatalf("inherited runtime mount must be refused: %v", err)
+		}
+		for _, path := range extras {
+			if strings.Contains(err.Error(), path) {
+				t.Logf("inherited runtime mount refused: %v", err)
+				return
+			}
+		}
+		t.Fatalf("refusal did not name an inherited mount: %v", err)
 		return
 	}
 	ctx, runtimeDir, env := runtimeMountSystemdFixture(t)

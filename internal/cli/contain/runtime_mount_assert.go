@@ -6,20 +6,28 @@ package contain
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 )
 
-// systemd.exec(5) documents /run/host/incoming; systemd's service launcher
-// also uses /run/systemd/incoming. Both stage mounts from /run/systemd/propagate.
+// systemd service code (v257 exec-invoke.c:3323, also v261:3933) uses
+// /run/systemd/incoming, despite systemd.exec(5) naming /run/host/incoming.
 const (
 	systemdIncomingPath    = "/run/systemd/incoming"
-	hostIncomingPath       = "/run/host/incoming"
 	systemdPropagationRoot = "/systemd/propagate/"
 )
 
-var errRuntimeMountEvidenceUnavailable = errors.New("runtime mount evidence is unavailable")
+var (
+	errRuntimeMountEvidenceUnavailable = errors.New("runtime mount evidence is unavailable")
+	errUnexpectedRuntimeExposure       = errors.New("unexpected runtime exposure")
+)
+
+func unexpectedRuntimeExposure(path, reason string) error {
+	return fmt.Errorf("%w: %q: %s", errUnexpectedRuntimeExposure, path, reason)
+}
 
 type runtimeMount struct {
 	device, root, filesystem string
@@ -40,6 +48,9 @@ func assertManagedRuntimeMounts(env netnsAssertEnv) error {
 func runtimeMountRefusal(err error) error {
 	if errors.Is(err, errRuntimeMountEvidenceUnavailable) {
 		return fmt.Errorf("runtime socket isolation cannot be verified: %w; permit the posture checker to read /proc/self/mountinfo, /proc/1/mountinfo and runtime directories; check procfs hidepid and access permissions", err)
+	}
+	if errors.Is(err, errUnexpectedRuntimeExposure) {
+		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind, unit drop-in or credential setting (for example LoadCredential creates /run/credentials) exposing this path, then restart the agent service", err)
 	}
 	return fmt.Errorf("runtime socket isolation is not applied: %w; add %s to the agent unit; update managed wrappers with `pipelock contain install` and restart the agent service", err, strings.Join(runtimeSocketProperties(), ", "))
 }
@@ -94,30 +105,35 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 	if err != nil {
 		return fmt.Errorf("%w: inspect isolated runtime directory /run: %w", errRuntimeMountEvidenceUnavailable, err)
 	}
+	// Enumerate the whole runtime tree, including mounts hidden by overmounts.
+	// Only the declared private masks, identity bind and propagation bind belong.
+	allowed := map[string]bool{containedNamespaceIdentityPath: true, systemdIncomingPath: true}
+	for _, property := range required {
+		path, _, _ := strings.Cut(property, ":")
+		allowed[path] = true
+	}
+	for _, path := range slices.Sorted(maps.Keys(self)) {
+		if isRuntimeMountPath(path) && !allowed[path] {
+			return unexpectedRuntimeExposure(path, "unexpected mount in isolated runtime tree")
+		}
+	}
 	for _, entry := range entries {
+		path := "/run/" + entry.Name()
 		if !entry.IsDir() {
-			return fmt.Errorf("/run must contain only the managed namespace identity and verified systemd mount propagation")
+			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
 		switch entry.Name() {
 		case "pipelock-contain":
 			// The identity directory is checked below.
-		case "systemd", "host":
-			path := "/run/" + entry.Name()
+		case "systemd":
 			if err := checkRuntimeDirectoryEntry(env, path, "incoming", true); err != nil {
 				return err
 			}
-			mount, ok := self[path+"/incoming"]
-			if !ok {
-				return fmt.Errorf("%s/incoming must have its own systemd propagation mount", path)
-			}
-			if !strings.HasPrefix(mount.root, systemdPropagationRoot) || filepath.Clean(mount.root) != mount.root {
-				return fmt.Errorf("%s/incoming mount root must be under %s", path, systemdPropagationRoot)
-			}
-			if !slices.Contains(mount.options, "ro") {
-				return fmt.Errorf("%s/incoming systemd propagation mount must be read-only", path)
+			if err := checkSystemdPropagation(env, self, host); err != nil {
+				return err
 			}
 		default:
-			return fmt.Errorf("/run must contain only the managed namespace identity and verified systemd mount propagation")
+			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
 	}
 	return checkRuntimeDirectoryEntry(env, "/run/pipelock-contain", "agent-netns.id", false)
@@ -133,9 +149,73 @@ func checkRuntimeDirectoryEntry(env netnsAssertEnv, path, name string, directory
 		if directory {
 			kind = "directory"
 		}
-		return fmt.Errorf("%s must contain only %s as a %s", path, name, kind)
+		for _, entry := range entries {
+			if entry.Name() != name || entry.IsDir() != directory || (!directory && !entry.Type().IsRegular()) {
+				return unexpectedRuntimeExposure(filepath.Join(path, entry.Name()), fmt.Sprintf("%s must contain only %s as a %s", path, name, kind))
+			}
+		}
+		return unexpectedRuntimeExposure(path, fmt.Sprintf("%s must contain only %s as a %s", path, name, kind))
 	}
 	return nil
+}
+
+func checkSystemdPropagation(env netnsAssertEnv, self, host map[string]runtimeMount) error {
+	mount, ok := self[systemdIncomingPath]
+	if !ok {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "must have its own systemd propagation mount")
+	}
+	if !strings.HasPrefix(mount.root, systemdPropagationRoot) || filepath.Clean(mount.root) != mount.root {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "mount root must be under "+systemdPropagationRoot)
+	}
+	// The shared reader identifies the last unified-cgroup component. A legacy
+	// hierarchy or cgroup namespace rooted at / may hide the service identity;
+	// retain the source-directory constraint when no service name is visible.
+	unit := processSystemdUnit(env.readFile, "/proc/self/cgroup")
+	if strings.HasSuffix(unit, ".service") && mount.root != systemdPropagationRoot+unit {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "propagation root does not match this unit "+unit)
+	}
+	if hostRun, ok := host["/run"]; !ok || mount.device != hostRun.device {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "propagation device must match host /run")
+	}
+	if !slices.Contains(mount.options, "ro") {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "systemd propagation mount must be read-only")
+	}
+	if env.lstat == nil {
+		return fmt.Errorf("%w: propagation stat reader is unavailable", errRuntimeMountEvidenceUnavailable)
+	}
+	info, err := env.lstat(systemdIncomingPath)
+	if err != nil {
+		return fmt.Errorf("%w: inspect propagation directory %s: %w", errRuntimeMountEvidenceUnavailable, systemdIncomingPath, err)
+	}
+	uid, known := fileOwnerUID(info)
+	// systemd v257 namespace.c:2807 creates the host propagation source with
+	// mkdir_p(..., 0600). Its read-only bind must remain root-only, not a doorway.
+	if !known || uid != 0 || !info.IsDir() || info.Mode().Perm()&0o077 != 0 {
+		return unexpectedRuntimeExposure(systemdIncomingPath, "must be a root-owned directory with no group or other permissions")
+	}
+	entries, err := env.readDir(systemdIncomingPath)
+	if err != nil && !errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w: inspect propagation contents %s: %w", errRuntimeMountEvidenceUnavailable, systemdIncomingPath, err)
+	}
+	if len(entries) != 0 {
+		return unexpectedRuntimeExposure(filepath.Join(systemdIncomingPath, entries[0].Name()), "systemd propagation directory must be empty when readable")
+	}
+	return nil
+}
+
+func isRuntimeMountPath(path string) bool {
+	for _, root := range []string{"/run", "/var/run", "/dev/shm"} {
+		if path == root || strings.HasPrefix(path, root+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// mountinfo escapes whitespace and backslashes with these octal sequences
+// (Linux fs/proc_namespace.c seq_path_root(..., " \t\n\\")). Decode before comparing paths.
+func runtimeMountPath(path string) string {
+	return strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`).Replace(path)
 }
 
 func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount, error) {
@@ -150,12 +230,13 @@ func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount
 		if separator < 6 || separator+3 >= len(fields) {
 			return nil, fmt.Errorf("malformed runtime mount evidence in %s", path)
 		}
-		// Required paths have no mountinfo escaping. An overmount's parent is
+		// Decode kernel path escaping before classifying the full runtime tree.
+		// An overmount's parent is
 		// the mount it shadows at the same path, not necessarily its directory
 		// parent. Keep that chain to select the visible top without relying on
 		// the order of lines or on mount IDs increasing monotonically.
-		target := fields[4]
-		if target != "/" && target != "/dev" && target != "/var" && target != "/run" && target != "/var/run" && target != "/dev/shm" && target != containedNamespaceIdentityPath && target != systemdIncomingPath && target != hostIncomingPath {
+		target := runtimeMountPath(fields[4])
+		if target != "/" && target != "/dev" && target != "/var" && target != "/run" && target != "/var/run" && !isRuntimeMountPath(target) {
 			continue
 		}
 		if candidates[target] == nil {
@@ -164,7 +245,7 @@ func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount
 		if _, exists := candidates[target][fields[0]]; exists {
 			return nil, fmt.Errorf("duplicate runtime mount identity for %s", target)
 		}
-		candidates[target][fields[0]] = runtimeMount{id: fields[0], parent: fields[1], device: fields[2], root: fields[3], filesystem: fields[separator+1], options: strings.Split(fields[5], ",")}
+		candidates[target][fields[0]] = runtimeMount{id: fields[0], parent: fields[1], device: fields[2], root: runtimeMountPath(fields[3]), filesystem: fields[separator+1], options: strings.Split(fields[5], ",")}
 	}
 	mounts := make(map[string]runtimeMount)
 	for target, stack := range candidates {

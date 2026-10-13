@@ -27,6 +27,7 @@ func TestStartupProgressNotifyEligibility(t *testing.T) {
 	if err := p.reportAt(event, now); err != nil {
 		t.Fatal(err)
 	}
+	p.sendAt(now)
 	if got := receiveNotify(t, messages); got != want {
 		t.Fatalf("first extension=%q", got)
 	}
@@ -34,6 +35,7 @@ func TestStartupProgressNotifyEligibility(t *testing.T) {
 	if err := p.reportAt(event, now); err != nil {
 		t.Fatal(err)
 	}
+	p.sendAt(now)
 	if got := receiveNotify(t, messages); got != want {
 		t.Fatalf("continued extension=%q", got)
 	}
@@ -65,12 +67,46 @@ func TestStartupProgressAbsentSocketAndSendError(t *testing.T) {
 			p := startupProgress{last: time.Now(), stderr: &stderr}
 			err := p.reportAt(verification.Progress{Records: 1}, time.Now())
 			if invalid {
-				if err == nil || !strings.Contains(stderr.String(), "systemd notification failed") {
+				p.sendAt(time.Now())
+				_ = p.reportAt(verification.Progress{Records: 1}, time.Now().Add(startupProgressInterval))
+				p.sendAt(time.Now().Add(startupProgressInterval))
+				if err != nil || !p.expired || strings.Count(stderr.String(), "systemd notification failed") != 1 {
 					t.Fatalf("error=%v stderr=%q", err, stderr.String())
 				}
 			} else if err != nil || stderr.Len() != 0 {
 				t.Fatalf("absent socket error=%v stderr=%q", err, stderr.String())
 			}
 		})
+	}
+}
+
+func TestStartupProgressRequiresFreshWorkEachInterval(t *testing.T) {
+	messages := newNotifySocket(t)
+	now := time.Now()
+	p := startupProgress{last: now, stderr: io.Discard}
+	for i := range 3 {
+		if err := p.reportAt(verification.Progress{Records: 1}, now); err != nil {
+			t.Fatal(err)
+		}
+		p.sendAt(now)
+		if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
+			t.Fatal(got)
+		}
+		// Further work in the same interval must not amplify sends.
+		if i < 2 {
+			_ = p.reportAt(verification.Progress{Records: 1}, now.Add(time.Nanosecond))
+		}
+		p.sendAt(now.Add(time.Nanosecond))
+		sdNotifyOrLog(io.Discard, "barrier")
+		if got := receiveNotify(t, messages); got != "barrier" {
+			t.Fatal(got)
+		}
+		now = now.Add(startupProgressInterval)
+	}
+	// An interval without new work does not send, even before the full-budget stall.
+	p.sendAt(now)
+	sdNotifyOrLog(io.Discard, "barrier")
+	if got := receiveNotify(t, messages); got != "barrier" {
+		t.Fatalf("no new work: %s", got)
 	}
 }

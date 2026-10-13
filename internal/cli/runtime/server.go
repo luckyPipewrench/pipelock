@@ -290,7 +290,8 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		opts.Stderr = io.Discard
 	}
 	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
-	startupVerification := startupVerificationOptions(opts)
+	startupVerification, stopStartupProgress := startupVerificationOptions(opts)
+	defer stopStartupProgress()
 	if opts.Stdout == nil {
 		opts.Stdout = io.Discard
 	}

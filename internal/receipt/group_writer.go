@@ -145,6 +145,9 @@ func loadClosedGroupPredecessorWithOptions(dir, groupID string, trusted []string
 		}
 	}
 	ceremony, err := newStartupGroupVerification(dir, trusted, options)
+	if checkErr := options.Check(); checkErr != nil {
+		return nil, fmt.Errorf("receipt group startup verification canceled: %w", checkErr)
+	}
 	if err != nil {
 		if recorder.IsEvidenceUnavailable(err) {
 			return nil, fmt.Errorf("receipt group predecessor could not be verified; fix access to the evidence directory and restart: %w", err)
@@ -153,6 +156,9 @@ func loadClosedGroupPredecessorWithOptions(dir, groupID string, trusted []string
 	}
 	ceremony.manifests[name] = raw
 	verified := verifyReceiptGroupWithContext(dir, groupID, trusted, nil, ceremony)
+	if checkErr := options.Check(); checkErr != nil {
+		return nil, fmt.Errorf("receipt group startup verification canceled: %w", checkErr)
+	}
 	if verified.Verdict != GroupValid && verified.Verdict != GroupIncomplete {
 		return nil, fmt.Errorf("receipt group predecessor is not complete: %s", verified.Error)
 	}

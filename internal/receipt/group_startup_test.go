@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -300,7 +301,7 @@ func TestStartupCancellationAndConsumedMutationRefuse(t *testing.T) {
 			if _, err = OpenSuccessorReceiptShardSet(cfg, "proxy", 2, 0, open.GroupID); err == nil {
 				t.Fatal("mutation admitted successor")
 			}
-			if mutation == "cancel" && !errors.Is(ctx.Err(), context.Canceled) {
+			if mutation == "cancel" && (!errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "not complete")) {
 				t.Fatal("cancellation missing")
 			}
 			paths, err := filepath.Glob(filepath.Join(dir, "receipt-group-*-open.json"))

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "release_blocked": true,
+  "release_blocked": false,
   "verifiers": [
     {
       "language": "Go",
@@ -21,13 +21,13 @@
       "package": "@pipelock/verifier-ts",
       "version": "0.6.5",
       "install_source": "npm",
-      "artifact_digest": "REPLACE_WITH_NPM_DIST_INTEGRITY",
+      "artifact_digest": "sha512-sG2pNOtFtyx9eCgMnWw+J+9LMRecSrf7YsTUbLYv5pF7lHUori0AjufubvFSgalUdzaJm15Zx7rdKie9NwzPgQ==",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.6.5",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_6_5_TAG_COMMIT"
+        "source_commit": "05179c855c4be2e9f06c305041a2be6b79626afa"
       }
     },
     {
@@ -35,27 +35,27 @@
       "package": "pipelock-verifier-rs",
       "version": "0.6.5",
       "install_source": "crates.io",
-      "artifact_digest": "REPLACE_WITH_CRATES_IO_SHA256",
+      "artifact_digest": "ba1ffae37e86f995cdd5da1822a24d29b1d8e51d97222965cb60abd146e40250",
       "publisher": {
         "repository": "luckyPipewrench/pipelock",
         "workflow": ".github/workflows/publish-verifiers.yaml",
         "environment": "verifier-release",
         "source_ref": "verifier-v0.6.5",
-        "source_commit": "REPLACE_WITH_VERIFIER_V0_6_5_TAG_COMMIT"
+        "source_commit": "05179c855c4be2e9f06c305041a2be6b79626afa"
       }
     },
     {
       "language": "Python",
       "package": "pipelock-verify",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "install_source": "PyPI",
-      "artifact_digest": "sha256:b380cb3f51fadbbb34ddd264b588893c9ac1c676058225915a2679d0e34a47c6",
+      "artifact_digest": "sha256:e00bc0b74a0eb9f4edcd10846e1d56ebb9c95d7ff6218f3012afc2465dfd0707",
       "publisher": {
         "repository": "luckyPipewrench/pipelock-verify-python",
         "workflow": ".github/workflows/release.yml",
         "environment": "pypi",
-        "source_ref": "v0.4.0",
-        "source_commit": "f70bca2222466f1d8ce66a3c4a764ef43e57a5f0"
+        "source_ref": "v0.4.1",
+        "source_commit": "9afc5fb74e46f2a4762f592614f5672bb7f3f204"
       }
     }
   ]

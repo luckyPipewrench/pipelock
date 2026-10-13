@@ -66,7 +66,7 @@ func TestStartupRecoveryPrefixParity(t *testing.T) {
 }
 
 func TestStartupProofBindingAndPublicationGuards(t *testing.T) {
-	for _, guard := range []string{"incoming_transition", "owner_identity", "root_identity", "native_root_identity", "consumed_input", "generated_seal", "cancellation", "role_binding", "native_binding"} {
+	for _, guard := range []string{"incoming_transition", "owner_identity", "root_identity", "native_root_identity", "publication_directory", "consumed_input", "generated_seal", "cancellation", "role_binding", "native_binding"} {
 		t.Run(guard, func(t *testing.T) {
 			_, key := generateTestKey(t)
 			dir := t.TempDir()
@@ -106,6 +106,8 @@ func TestStartupProofBindingAndPublicationGuards(t *testing.T) {
 				c.root = nil
 			case "native_root_identity":
 				c.aelRoot = nil
+			case "publication_directory":
+				c.publicationDirectories = map[string]os.FileInfo{filepath.Join(dir, "ael"): c.root}
 			case "consumed_input":
 				paths, _ := filepath.Glob(filepath.Join(dir, "evidence-"+open.Shards[0].SessionID+"-*.jsonl"))
 				if err = os.Chmod(paths[0], 0o400); err != nil {

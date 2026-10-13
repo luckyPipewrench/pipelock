@@ -286,9 +286,30 @@ func openReceiptShardSet(template EmitterConfig, base string, count, processInde
 			return nil, err
 		}
 	}
+	if previous != nil && previous.ceremony != nil {
+		c := previous.ceremony
+		if err := c.pinPublicationDirectories(previous); err != nil {
+			return nil, err
+		}
+		c.publicationInputs, err = fingerprintPublicationInputs(rec.Dir(), c.successor, false)
+		if err != nil {
+			return nil, err
+		}
+		c.publicationArtifacts, err = fingerprintPublicationInputs(rec.Dir(), c.successor, true)
+		if err != nil {
+			return nil, err
+		}
+		// Full-directory check remains authoritative until the opening is published.
+		if err := c.check(); err != nil {
+			return nil, err
+		}
+	}
 	openHash, err := PublishReceiptGroupArtifact(rec.Dir(), name, open)
 	if err != nil {
 		return nil, fmt.Errorf("publish receipt group opening: %w", err)
+	}
+	if previous != nil && previous.ceremony != nil {
+		previous.ceremony.published = true
 	}
 	set := &ReceiptShardSet{open: open, openHash: openHash, emitters: make([]*Emitter, count), metrics: template.Metrics, recorder: rec, signer: slices.Clone(template.PrivKey), previous: previous}
 	set.verifiers = make(map[string]*groupCloseVerifier, count)
@@ -402,6 +423,9 @@ func (s *ReceiptShardSet) publishTransition() error {
 	previous := s.previous
 	if previous.ceremony != nil {
 		previous.ceremony.successor = s
+		if err := previous.ceremony.refreshIncomplete(previous); err != nil {
+			return err
+		}
 		if err := previous.ceremony.check(); err != nil {
 			return err
 		}

@@ -60,3 +60,65 @@ func TestNativeVerificationProgressAndCancellation(t *testing.T) {
 		t.Fatalf("progress failure became success: %v", err)
 	}
 }
+
+func TestNativeProgressRefusesAtEachBoundary(t *testing.T) {
+	for _, phase := range []string{"before", "next_record", "record_report"} {
+		t.Run(phase, func(t *testing.T) {
+			pub, key, err := ed25519.GenerateKey(rand.Reader)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir()
+			r, err := recorder.New(recorder.Config{Enabled: true, Dir: dir}, nil, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = r.Close() }()
+			const run = "0123456789abcdef0123456789abcdef"
+			emitter := NewEmitter(r, key, run, 30)
+			if emitter == nil {
+				t.Fatal("nil emitter")
+			}
+			if err = emitter.EmitOpen(); err != nil {
+				t.Fatal(err)
+			}
+			if err = emitter.EmitClose(); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			failure := errors.New("authenticated record report failed")
+			records := 0
+			options := verification.Options{Context: ctx, Progress: func(p verification.Progress) error {
+				if p.Kind == "native_ael" {
+					records++
+					if phase == "record_report" {
+						return failure
+					}
+					if phase == "next_record" {
+						cancel()
+					}
+				}
+				return nil
+			}}
+			if phase == "before" {
+				cancel()
+			}
+			head, err := VerifyRunWithOptions(dir, run, hex.EncodeToString(pub), true, options)
+			want := context.Canceled
+			if phase == "record_report" {
+				want = failure
+			}
+			if !errors.Is(err, want) || head != (VerifiedHead{}) {
+				t.Fatalf("head=%+v err=%v want=%v", head, err, want)
+			}
+			wantRecords := 1
+			if phase == "before" {
+				wantRecords = 0
+			}
+			if records != wantRecords {
+				t.Fatalf("records=%d want=%d", records, wantRecords)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -170,5 +171,36 @@ func TestStartupSenderHandlesResumedProgress(t *testing.T) {
 	}
 	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
 		t.Fatal(got)
+	}
+}
+
+func TestStartupProgressPriorFailureAndEmptyWork(t *testing.T) {
+	for _, mode := range []string{"empty", "prior_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			messages := newNotifySocket(t)
+			if mode == "empty" {
+				now := time.Now()
+				p := startupProgress{last: now, stderr: io.Discard, wake: make(chan struct{}, 1)}
+				if err := p.reportAt(verification.Progress{}, now); err != nil {
+					t.Fatal(err)
+				}
+				p.sendAt(now)
+				if p.observed || p.sent || len(p.wake) != 0 {
+					t.Fatal("empty work became startup progress")
+				}
+			} else {
+				failure := errors.New("prior progress callback failed")
+				options, stop := startupVerificationOptions(ServerOpts{Stderr: io.Discard, StartupVerification: verification.Options{Progress: func(verification.Progress) error { return failure }}})
+				if err := options.Report(verification.Progress{Records: 1}); !errors.Is(err, failure) {
+					stop()
+					t.Fatalf("prior failure became %v", err)
+				}
+				stop()
+			}
+			sdNotifyOrLog(io.Discard, "barrier")
+			if got := receiveNotify(t, messages); got != "barrier" {
+				t.Fatalf("failed or empty work sent extension: %q", got)
+			}
+		})
 	}
 }

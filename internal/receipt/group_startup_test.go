@@ -167,6 +167,9 @@ func TestStartupParallelJoinAndBudget(t *testing.T) {
 	for _, budget := range []int{1, 2, 8} {
 		for _, failure := range []string{"corrupt", "unreadable"} {
 			t.Run(fmt.Sprintf("%d/%s", budget, failure), func(t *testing.T) {
+				if failure == "unreadable" && os.Geteuid() == 0 {
+					t.Skip("root reads a mode 0 file, so the shard stays readable")
+				}
 				previous := runtime.GOMAXPROCS(budget)
 				defer runtime.GOMAXPROCS(previous)
 				_, key := generateTestKey(t)

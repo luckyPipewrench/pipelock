@@ -34,22 +34,23 @@ type startupShardProof struct {
 // terminal and required transition memberships have retained shard proofs;
 // historical neighbor claims remain streamed through the existing disk index.
 type startupGroupVerification struct {
-	owner                  os.FileInfo
-	manifests              map[string][]byte
-	newSeals               map[string]string
-	dir                    string
-	trusted                []string
-	options                verification.Options
-	proofs                 map[string]*startupShardProof
-	transitions            map[string]bool
-	before                 groupInventoryFingerprint
-	root, aelRoot          os.FileInfo
-	inputs                 startupInputFingerprint
-	successor              *ReceiptShardSet
-	published              bool
-	publicationInputs      startupInputFingerprint
-	publicationArtifacts   startupInputFingerprint
-	publicationDirectories map[string]os.FileInfo
+	owner                   os.FileInfo
+	manifests               map[string][]byte
+	newSeals                map[string]string
+	dir                     string
+	trusted                 []string
+	options                 verification.Options
+	proofs                  map[string]*startupShardProof
+	transitions             map[string]bool
+	before                  groupInventoryFingerprint
+	root, aelRoot           os.FileInfo
+	inputs                  startupInputFingerprint
+	successor               *ReceiptShardSet
+	published               bool
+	publicationInputs       startupInputFingerprint
+	publicationArtifacts    startupInputFingerprint
+	publicationDirectories  map[string]os.FileInfo
+	afterPublicationRefresh func() // private seam, after joined walks and before the stability check
 }
 
 func newStartupGroupVerification(dir string, trusted []string, options verification.Options) (*startupGroupVerification, error) {
@@ -104,7 +105,7 @@ func (c *startupGroupVerification) checkIdentity() error {
 	}
 	for path, before := range c.publicationDirectories {
 		now, err := os.Lstat(path)
-		if err != nil || !os.SameFile(before, now) || before.Mode() != now.Mode() {
+		if err != nil || !now.IsDir() || now.Mode()&os.ModeSymlink != 0 || !c.published && (!os.SameFile(before, now) || before.Mode() != now.Mode()) {
 			return fmt.Errorf("%w: native AEL directory identity changed before transition", recorder.ErrEvidenceChanged)
 		}
 	}
@@ -137,9 +138,9 @@ func (c *startupGroupVerification) check() error {
 	return nil
 }
 
-// AEL verification consumes these directories by identity and mode, and the
-// manifest, published signer key and pipelock stream by content. Adding an
-// unrelated name changes directory timestamps, but not any consumed byte.
+// Native verification requires real directories. Before publication their
+// identity and mode are pinned; afterward metadata changes invalidate shard
+// proofs and require a stable fresh verification of the consumed content.
 func (c *startupGroupVerification) pinPublicationDirectories(previous *receiptGroupPredecessor) error {
 	c.publicationDirectories = make(map[string]os.FileInfo)
 	for _, shard := range previous.open.Shards {
@@ -312,9 +313,9 @@ func (c *startupGroupVerification) verifyAEL(run, signer string, completed bool)
 
 // Before publication, inventory covers the whole directory except generated
 // successor names. After publication, it covers predecessor session evidence,
-// native manifest/key/stream and group artifacts. File identity, change time,
-// size, mode and modification time retain fingerprintGroupDirectory's contract;
-// consumed directory identities are pinned separately.
+// native manifest/key/stream and bound group artifacts. Artifact bytes are
+// retained; metadata on shard files and consumed native directories triggers
+// fresh verification. Before publication all metadata retains the full guard.
 type startupInputFingerprint struct {
 	sum   [32]byte
 	count uint64
@@ -335,8 +336,25 @@ func fingerprintInputs(dir string, successor *ReceiptShardSet, predecessorOnly, 
 	generated := make(map[string]bool)
 	predecessors := make(map[string]bool)
 	predecessorRuns := make(map[string]bool)
+	boundArtifacts := make(map[string]bool)
 	if predecessorOnly && successor != nil && successor.previous != nil {
 		previous := successor.previous
+		for _, kind := range []string{"open", "close", "transition"} {
+			name, _ := ReceiptGroupFileName(previous.open.GroupID, kind)
+			boundArtifacts[name] = true
+		}
+		if previous.ceremony != nil {
+			// The incoming transition also binds the retained predecessor manifests
+			// and any recovery seals used to prove its heads.
+			for name := range previous.ceremony.manifests {
+				boundArtifacts[name] = true
+			}
+			for session, proof := range previous.ceremony.proofs {
+				if proof.prefixMode && proof.prefix.torn {
+					boundArtifacts[ChainLinkFileName(session)] = true
+				}
+			}
+		}
 		for _, shard := range previous.open.Shards {
 			predecessors[shard.SessionID] = true
 			if previous.ceremony != nil {
@@ -363,7 +381,24 @@ func fingerprintInputs(dir string, successor *ReceiptShardSet, predecessorOnly, 
 		}
 	}
 	add := func(path, name string, info os.FileInfo) error {
-		if predecessorOnly && info.IsDir() {
+		if predecessorOnly && boundArtifacts[name] {
+			// Signed group artifacts and recovery seals bind bytes, not modes,
+			// timestamps or inode numbers. The secured reader rejects redirection.
+			var raw []byte
+			var err error
+			if strings.HasPrefix(name, "chain-link-") {
+				raw, err = readClaimBytes(path)
+			} else {
+				raw, err = readBoundedGroupFile(dir, name)
+			}
+			if err != nil {
+				return err
+			}
+			sum := sha256.Sum256(append([]byte(name+"\x00"), raw...))
+			for i := range out.sum {
+				out.sum[i] ^= sum[i]
+			}
+			out.count++
 			return nil
 		}
 		identity, err := recorder.EvidenceMetadataIdentity(path, info)
@@ -392,7 +427,7 @@ func fingerprintInputs(dir string, successor *ReceiptShardSet, predecessorOnly, 
 				seal = seal || name == ChainLinkFileName(session)
 				own = own || name == recorder.RunWriterLockPrefix+session+recorder.RunWriterLockSuffix || seal
 			}
-			artifact := strings.HasPrefix(name, "receipt-group-") || seal
+			artifact := boundArtifacts[name] || seal
 			if !artifact && (artifactsOnly || !own) {
 				return nil
 			}
@@ -661,9 +696,9 @@ func (c *startupGroupVerification) prepareIncoming(open ReceiptGroupOpen) {
 	}
 }
 
-// refreshIncomplete discards changed prefix proofs, just as the original loader
-// re-walked an unclosed predecessor at activation. Only a stable, newly proved
-// complete prefix (including a torn final suffix) can replace the old proof.
+// refreshIncomplete discards changed shard proofs before activation. Closed
+// shards must reproduce the loader's full heads; incomplete shards retain the
+// original complete-prefix recovery contract. Only a stable refresh is usable.
 func (c *startupGroupVerification) refreshIncomplete(previous *receiptGroupPredecessor) error {
 	if !c.published {
 		return nil
@@ -678,21 +713,27 @@ func (c *startupGroupVerification) refreshIncomplete(previous *receiptGroupPrede
 	if before == c.publicationInputs {
 		return nil
 	}
-	if !previous.incomplete {
-		return c.check()
-	}
 	artifacts, err := fingerprintPublicationInputs(c.dir, c.successor, true)
 	if err != nil || artifacts != c.publicationArtifacts {
 		return fmt.Errorf("%w: receipt group artifacts changed before transition", recorder.ErrEvidenceChanged)
 	}
+	retained := make(map[string]ReceiptGroupShardHead, len(previous.open.Shards))
 	for _, shard := range previous.open.Shards {
+		retained[shard.SessionID] = c.proofs[shard.SessionID].head
 		delete(c.proofs, shard.SessionID)
 	}
-	c.prepareShards(previous.open, previous.openHash, true)
+	c.prepareShards(previous.open, previous.openHash, previous.incomplete)
 	for i, shard := range previous.open.Shards {
-		if err := c.proofs[shard.SessionID].err; err != nil {
+		proof := c.proofs[shard.SessionID]
+		if err := proof.err; err != nil {
 			return fmt.Errorf("verify predecessor shard %d: %w", i, err)
 		}
+		if !previous.incomplete && proof.head != retained[shard.SessionID] {
+			return fmt.Errorf("%w: closed predecessor shard %d head changed", recorder.ErrEvidenceChanged, i)
+		}
+	}
+	if c.afterPublicationRefresh != nil {
+		c.afterPublicationRefresh()
 	}
 	after, err := fingerprintPublicationInputs(c.dir, c.successor, false)
 	if err != nil || after != before {

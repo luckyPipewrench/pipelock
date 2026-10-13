@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Upgrading to 3.7
 
-Upgrade the binary before loading configurations that use new fields. Keep older fleet members on compatible bundles until their binaries are updated. The [3.7.0 changelog](../../CHANGELOG.md#370---2026-10-12) covers the full release; this guide covers changes that need an operator action.
+Upgrade the binary before loading configurations that use new fields. Keep older fleet members on compatible bundles until their binaries are updated. The [3.7.0 changelog](../../CHANGELOG.md#370---2026-10-13) covers the full release; this guide covers changes that need an operator action.
 
 Installation examples target v3.7.0 after its artifacts are published. Action commit pins identify source, not the eventual tag; the binary `version` input selects the release.
 

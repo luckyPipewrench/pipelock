@@ -46,7 +46,7 @@ func (p *startupProgress) reportAt(event verification.Progress, now time.Time) e
 		return nil
 	}
 	p.last, p.observed = now, true
-	if p.wake != nil && !p.sent {
+	if p.wake != nil && (!p.sent || now.Sub(p.sentAt) >= startupProgressInterval) {
 		select {
 		case p.wake <- struct{}{}:
 		default:
@@ -92,23 +92,30 @@ func startupVerificationOptions(opts ServerOpts) (verification.Options, func()) 
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
+		p.run(stop)
+	}()
+	return options, func() { close(stop); <-done }
+}
+
+// run owns the timer and socket writes until its caller stops and joins it.
+func (p *startupProgress) run(stop <-chan struct{}) {
+	select {
+	case <-p.wake:
+		p.sendAt(time.Now())
+	case <-stop:
+		p.sendAt(time.Now())
+		return
+	}
+	ticker := time.NewTicker(startupProgressInterval)
+	defer ticker.Stop()
+	for {
 		select {
+		case <-ticker.C:
+			p.sendAt(time.Now())
 		case <-p.wake:
 			p.sendAt(time.Now())
 		case <-stop:
-			p.sendAt(time.Now())
 			return
 		}
-		ticker := time.NewTicker(startupProgressInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				p.sendAt(time.Now())
-			case <-stop:
-				return
-			}
-		}
-	}()
-	return options, func() { close(stop); <-done }
+	}
 }

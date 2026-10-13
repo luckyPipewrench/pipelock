@@ -110,3 +110,65 @@ func TestStartupProgressRequiresFreshWorkEachInterval(t *testing.T) {
 		t.Fatalf("no new work: %s", got)
 	}
 }
+
+func TestStartupProgressResumesAfterQuietInterval(t *testing.T) {
+	messages := newNotifySocket(t)
+	now := time.Now()
+	p := startupProgress{last: now, stderr: io.Discard, wake: make(chan struct{}, 1)}
+	event := verification.Progress{Records: 1}
+	if err := p.reportAt(event, now); err != nil {
+		t.Fatal(err)
+	}
+	<-p.wake
+	p.sendAt(now)
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
+		t.Fatal(got)
+	}
+	// The empty interval must not extend. Resumed work just before the
+	// advertised deadline must wake the sender rather than await that deadline.
+	p.sendAt(now.Add(startupProgressInterval))
+	resumed := now.Add(cliutil.ServiceStartTimeout - time.Nanosecond)
+	if err := p.reportAt(event, resumed); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-p.wake:
+	default:
+		t.Fatal("resumed progress did not wake sender before extension deadline")
+	}
+	p.sendAt(resumed)
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
+		t.Fatal(got)
+	}
+	sdNotifyOrLog(io.Discard, "barrier")
+	if got := receiveNotify(t, messages); got != "barrier" {
+		t.Fatal(got)
+	}
+}
+
+func TestStartupSenderHandlesResumedProgress(t *testing.T) {
+	messages := newNotifySocket(t)
+	p := startupProgress{last: time.Now(), stderr: io.Discard, wake: make(chan struct{}, 1)}
+	stop, joined := make(chan struct{}), make(chan struct{})
+	go func() { defer close(joined); p.run(stop) }()
+	defer func() { close(stop); <-joined }()
+	event := verification.Progress{Records: 1}
+	if err := p.reportAt(event, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
+		t.Fatal(got)
+	}
+	// Advance the retained send clock past the existing cadence without waiting
+	// for a real interval. The sender's timer has not fired, so only the wake
+	// branch can deliver the newly eligible progress notification.
+	p.mu.Lock()
+	p.sentAt = time.Now().Add(-startupProgressInterval)
+	p.mu.Unlock()
+	if err := p.reportAt(event, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := receiveNotify(t, messages); !strings.HasPrefix(got, "EXTEND_TIMEOUT_USEC=") {
+		t.Fatal(got)
+	}
+}

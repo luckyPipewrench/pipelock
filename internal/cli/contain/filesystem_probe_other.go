@@ -10,3 +10,7 @@ import "context"
 func probeFilesystemConfinementEnforce(context.Context, *probeEnv, filesystemProfile) (string, string) {
 	return statusFail, "filesystem confinement canary requires Linux"
 }
+
+func probeManagedRuntimeMounts(context.Context, *probeEnv, filesystemProfile) (string, string) {
+	return statusFail, "runtime mount canary requires Linux"
+}

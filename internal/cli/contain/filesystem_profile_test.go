@@ -573,6 +573,9 @@ func TestProbeFilesystemConfinement_OmittedModeIsOff(t *testing.T) {
 			return []byte("containment: {}\n"), nil
 		},
 	}
+	env.runtimeMountProbe = func(context.Context, *probeEnv, filesystemProfile) (string, string) {
+		return statusPass, "runtime accepted"
+	}
 	status, detail := probeFilesystemConfinement(context.Background(), env)
 	if status != statusFilesystemOff || detail != "filesystem profile: off" {
 		t.Fatalf("status=%s detail=%s", status, detail)
@@ -581,6 +584,9 @@ func TestProbeFilesystemConfinement_OmittedModeIsOff(t *testing.T) {
 
 func TestProbeFilesystemConfinement_OffIsNotPassOrSkip(t *testing.T) {
 	env := &probeEnv{filesystem: filesystemProfile{Mode: config.ContainmentFilesystemModeOff}}
+	env.runtimeMountProbe = func(context.Context, *probeEnv, filesystemProfile) (string, string) {
+		return statusPass, "runtime accepted"
+	}
 	status, detail := probeFilesystemConfinement(context.Background(), env)
 	if status != statusFilesystemOff || detail != "filesystem profile: off" {
 		t.Fatalf("status=%s detail=%s", status, detail)

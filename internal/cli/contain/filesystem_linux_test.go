@@ -79,6 +79,9 @@ func withFilesystemCanaryRoot(t *testing.T, root string) {
 
 func filesystemCanaryEnv(run func(context.Context, string, ...string) (string, int, error)) *probeEnv {
 	return &probeEnv{
+		runtimeMountProbe: func(context.Context, *probeEnv, filesystemProfile) (string, string) {
+			return statusPass, "runtime accepted"
+		},
 		agentUserName: "pipelock-agent",
 		agentHome:     "/srv/agent-home",
 		lookupUser: func(name string) (*user.User, error) {
@@ -134,7 +137,7 @@ func TestNonRootEnforceFilesystemCanarySkipsAndRefusesLaunch(t *testing.T) {
 		},
 	}
 	status, detail := probeFilesystemConfinement(context.Background(), env)
-	if status != statusSkip || !strings.Contains(detail, "filesystem confinement canary requires root") || started {
+	if status != statusSkip || !strings.Contains(detail, "runtime mount canary requires root") || started {
 		t.Fatalf("verify status=%s detail=%s started=%v", status, detail, started)
 	}
 	if containRunPreflightAllows(env, status) {
@@ -150,11 +153,11 @@ func TestNonRootEnforceFilesystemCanarySkipsAndRefusesLaunch(t *testing.T) {
 		readFile:      read,
 		runCmd:        env.runCmd,
 	})
-	if doctor.status != statusSkip || !strings.Contains(doctor.detail, "filesystem confinement canary requires root") || started {
+	if doctor.status != statusSkip || !strings.Contains(doctor.detail, "runtime mount canary requires root") || started {
 		t.Fatalf("doctor status=%s detail=%s started=%v", doctor.status, doctor.detail, started)
 	}
 	err := writeLaunchProperties(context.Background(), io.Discard, env)
-	if err == nil || !strings.Contains(err.Error(), statusSkip) || !strings.Contains(err.Error(), "filesystem confinement canary requires root") || started {
+	if err == nil || !strings.Contains(err.Error(), statusSkip) || !strings.Contains(err.Error(), "runtime mount canary requires root") || started {
 		t.Fatalf("helper err=%v started=%v", err, started)
 	}
 }

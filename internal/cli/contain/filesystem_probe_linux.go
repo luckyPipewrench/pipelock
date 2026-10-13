@@ -73,6 +73,34 @@ var (
 	filesystemStateCanaryParent = "/var/lib"
 )
 
+// Run the same in-unit assertion as plk-launch, with the selected profile's
+// properties. This closes the gap between a filesystem canary and a launch.
+func probeManagedRuntimeMounts(ctx context.Context, env *probeEnv, profile filesystemProfile) (string, string) {
+	if env == nil || env.runCmd == nil {
+		return statusFail, "runtime mount canary has no command runner"
+	}
+	if !filesystemCanaryRoot() {
+		return statusSkip, "runtime mount canary requires root to start a transient systemd service"
+	}
+	target := env.pipelockTarget
+	if target == "" {
+		target = defaultPipelockTarget
+	}
+	command := []string{target, "contain", "assert-agent-netns", "--agent-user", env.agentUserName, "--proxy-port", strconv.Itoa(env.port)}
+	args, err := privateTmpSystemdRunArgsForAgentProperties(env, command, profile.Properties)
+	if err != nil {
+		return statusFail, fmt.Sprintf("prepare runtime mount canary: %v", err)
+	}
+	out, code, err := env.runCmd(ctx, systemdRunPath, args...)
+	if err != nil {
+		return statusFail, fmt.Sprintf("runtime mount canary could not start: %v", err)
+	}
+	if code != 0 {
+		return statusFail, fmt.Sprintf("managed launch runtime guard refused (exit=%d): %s", code, oneLine(out))
+	}
+	return statusPass, "managed launch runtime guard accepted the selected filesystem profile"
+}
+
 func probeFilesystemConfinementEnforce(ctx context.Context, env *probeEnv, profile filesystemProfile) (status, detail string) {
 	if env == nil || env.runCmd == nil {
 		return statusFail, "filesystem confinement canary has no command runner"

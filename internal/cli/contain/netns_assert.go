@@ -23,30 +23,36 @@ import (
 )
 
 type netnsAssertEnv struct {
-	agentUser   string
-	proxyPort   int
-	euid        func() int
-	lookup      lookupUserFunc
-	readFile    func(string) ([]byte, error)
-	readDir     func(string) ([]os.DirEntry, error)
-	lstat       func(string) (os.FileInfo, error)
-	readLink    func(string) (string, error)
-	interfaces  func() ([]net.Interface, error)
-	proxyHealth func(context.Context, int) error
+	unitProperties []string
+	agentUser      string
+	proxyPort      int
+	euid           func() int
+	lookup         lookupUserFunc
+	readFile       func(string) ([]byte, error)
+	readDir        func(string) ([]os.DirEntry, error)
+	lstat          func(string) (os.FileInfo, error)
+	readLink       func(string) (string, error)
+	interfaces     func() ([]net.Interface, error)
+	proxyHealth    func(context.Context, int) error
 }
 
 func defaultNetnsAssertEnv() netnsAssertEnv {
+	var properties []string
+	if os.Getenv(runtimeProtectHomeEnv) == "tmpfs" {
+		properties = []string{protectHomeTmpfsProperty}
+	}
 	return netnsAssertEnv{
-		agentUser:   defaultAgentUser,
-		proxyPort:   defaultProxyPort,
-		euid:        os.Geteuid,
-		lookup:      user.Lookup,
-		readFile:    os.ReadFile,
-		readDir:     os.ReadDir,
-		lstat:       os.Lstat,
-		readLink:    os.Readlink,
-		interfaces:  net.Interfaces,
-		proxyHealth: directContainedProxyHealth,
+		unitProperties: properties,
+		agentUser:      defaultAgentUser,
+		proxyPort:      defaultProxyPort,
+		euid:           os.Geteuid,
+		lookup:         user.Lookup,
+		readFile:       os.ReadFile,
+		readDir:        os.ReadDir,
+		lstat:          os.Lstat,
+		readLink:       os.Readlink,
+		interfaces:     net.Interfaces,
+		proxyHealth:    directContainedProxyHealth,
 	}
 }
 

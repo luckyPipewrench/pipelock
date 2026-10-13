@@ -9,6 +9,24 @@ import (
 	"strings"
 )
 
+const (
+	protectHomeTmpfsProperty = "ProtectHome=tmpfs"
+	runtimeProtectHomeEnv    = "PIPELOCK_CONTAIN_PROTECT_HOME"
+)
+
+// This private unit setting carries the property producer's intent to the
+// in-unit checker. Every managed producer sets it, including an empty value
+// when off, and plk-launch's env -i drops it before executing the workload.
+func runtimeProtectHomeSetting(properties []string) string {
+	value := ""
+	for _, property := range properties {
+		if property == protectHomeTmpfsProperty {
+			value = "tmpfs"
+		}
+	}
+	return runtimeProtectHomeEnv + "=" + value
+}
+
 // runtimeSocketProperties is independent of the optional filesystem profile.
 // Network namespaces do not isolate pathname Unix sockets. Only the immutable
 // namespace identity is needed inside a tool service; the proxy is reached

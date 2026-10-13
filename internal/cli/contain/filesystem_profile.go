@@ -710,7 +710,8 @@ func absoluteConfiguredPath(configDir, p string) string {
 
 // probeFilesystemConfinement reports the filesystem profile. Mode off is its
 // own status: contain run does not refuse it, and verify does not count it as
-// a pass, a skip, or a failure. Enforce runs the canary and fails closed.
+// a pass, a skip, or a failure once the runtime guard passes. Both modes run
+// that guard; enforce also runs the filesystem canary and fails closed.
 func probeFilesystemConfinement(ctx context.Context, env *probeEnv) (string, string) {
 	// service-posture signs an operator-written unit Pipelock does not render.
 	// A canary of a separate transient unit would not be that unit's filesystem,
@@ -734,6 +735,13 @@ func probeFilesystemConfinement(ctx context.Context, env *probeEnv) (string, str
 			return statusFail, err.Error()
 		}
 		env.filesystem = profile
+	}
+	probe := probeManagedRuntimeMounts
+	if env.runtimeMountProbe != nil {
+		probe = env.runtimeMountProbe
+	}
+	if status, detail := probe(ctx, env, profile); status != statusPass {
+		return status, detail
 	}
 	if profile.Mode != config.ContainmentFilesystemModeEnforce {
 		return statusFilesystemOff, "filesystem profile: off"

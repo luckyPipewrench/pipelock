@@ -113,6 +113,7 @@ func containedAgentPrivateTmpCommand(opts containedAgentCommandOptions) (*exec.C
 	}
 	args := privateTmpSystemdRunArgs(opts.uid, opts.gid, opts.groups, opts.homeDir, display, launchEnv, command, isTerminalReader(opts.stdin), false, unit)
 	args = insertSystemdProperties(args, filesystemProperties)
+	args = insertSystemdRuntimeSetting(args, filesystemProperties)
 	if opts.lifecycleRunID != "" {
 		args = append([]string{
 			"--system", "--no-ask-password",
@@ -232,7 +233,18 @@ func privateTmpSystemdRunArgsForAgentProperties(env *probeEnv, command, properti
 	if err != nil {
 		return nil, err
 	}
-	return insertSystemdProperties(args, properties), nil
+	return insertSystemdRuntimeSetting(insertSystemdProperties(args, properties), properties), nil
+}
+
+func insertSystemdRuntimeSetting(args, properties []string) []string {
+	for i, arg := range args {
+		if arg == "--" {
+			out := append([]string{}, args[:i]...)
+			out = append(out, "--setenv="+runtimeProtectHomeSetting(properties))
+			return append(out, args[i:]...)
+		}
+	}
+	return append(args, "--setenv="+runtimeProtectHomeSetting(properties))
 }
 
 func insertSystemdProperties(args, properties []string) []string {

@@ -22,6 +22,7 @@ const (
 
 var (
 	errRuntimeMountEvidenceUnavailable = errors.New("runtime mount evidence is unavailable")
+	errManagedRuntimeMask              = errors.New("managed runtime mask is not applied")
 	errUnexpectedRuntimeExposure       = errors.New("unexpected runtime exposure")
 )
 
@@ -35,7 +36,7 @@ type runtimeMount struct {
 	options                  []string
 }
 
-// Only mountinfo, rather than unit configuration, proves the restrictions
+// Mountinfo, rather than unit configuration alone, proves the restrictions
 // applied to this caller. PID 1 remains in the host mount namespace for contain
 // launches, so its filesystem identities distinguish a new tmpfs from host shm.
 func assertManagedRuntimeMounts(env netnsAssertEnv) error {
@@ -48,6 +49,9 @@ func assertManagedRuntimeMounts(env netnsAssertEnv) error {
 func runtimeMountRefusal(err error) error {
 	if errors.Is(err, errRuntimeMountEvidenceUnavailable) {
 		return fmt.Errorf("runtime socket isolation cannot be verified: %w; permit the posture checker to read /proc/self/mountinfo, /proc/1/mountinfo and runtime directories; check procfs hidepid and access permissions", err)
+	}
+	if errors.Is(err, errManagedRuntimeMask) {
+		return fmt.Errorf("runtime socket isolation is not applied: %w; retain the managed ProtectHome=tmpfs profile, remove conflicting unit overrides or binds at this path, rerun `pipelock contain install` and restart the agent service", err)
 	}
 	if errors.Is(err, errUnexpectedRuntimeExposure) {
 		return fmt.Errorf("runtime socket isolation is not applied: %w; remove the extra bind, unit drop-in or credential setting (for example LoadCredential creates /run/credentials) exposing this path, then restart the agent service", err)
@@ -108,23 +112,37 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 	// Enumerate the whole runtime tree, including mounts hidden by overmounts.
 	// Only the declared private masks, identity bind and propagation bind belong.
 	allowed := map[string]bool{containedNamespaceIdentityPath: true, systemdIncomingPath: true}
+	protectHome := slices.Contains(env.unitProperties, protectHomeTmpfsProperty)
+	if protectHome {
+		allowed["/run/user"] = true
+	}
 	for _, property := range required {
 		path, _, _ := strings.Cut(property, ":")
 		allowed[path] = true
 	}
 	for _, path := range slices.Sorted(maps.Keys(self)) {
 		if isRuntimeMountPath(path) && !allowed[path] {
+			if protectHome && strings.HasPrefix(path, "/run/user/") {
+				return fmt.Errorf("%w: %q has a mount beneath the managed /run/user mask", errManagedRuntimeMask, path)
+			}
 			return unexpectedRuntimeExposure(path, "unexpected mount in isolated runtime tree")
 		}
 	}
 	for _, entry := range entries {
 		path := "/run/" + entry.Name()
 		if !entry.IsDir() {
+			if protectHome && entry.Name() == "user" {
+				return fmt.Errorf("%w: /run/user must be a directory", errManagedRuntimeMask)
+			}
 			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
 		switch entry.Name() {
 		case "pipelock-contain":
 			// The identity directory is checked below.
+		case "user":
+			if !protectHome {
+				return unexpectedRuntimeExposure(path, "/run must contain only requested runtime masks; /run/user is not requested by this unit's properties")
+			}
 		case "systemd":
 			if err := checkRuntimeDirectoryEntry(env, path, "incoming", true); err != nil {
 				return err
@@ -134,6 +152,11 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 			}
 		default:
 			return unexpectedRuntimeExposure(path, "/run must contain only the managed namespace identity and verified systemd mount propagation")
+		}
+	}
+	if protectHome {
+		if err := checkProtectHomeRuntimeMask(env, self, host); err != nil {
+			return err
 		}
 	}
 	return checkRuntimeDirectoryEntry(env, "/run/pipelock-contain", "agent-netns.id", false)
@@ -155,6 +178,26 @@ func checkRuntimeDirectoryEntry(env netnsAssertEnv, path, name string, directory
 			}
 		}
 		return unexpectedRuntimeExposure(path, fmt.Sprintf("%s must contain only %s as a %s", path, name, kind))
+	}
+	return nil
+}
+
+// systemd v257 namespace.c:193-197 and v261:206-210 map ProtectHome=tmpfs
+// to read-only tmpfs masks at /home, /root and /run/user.
+func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runtimeMount) error {
+	mount, ok := self["/run/user"]
+	if !ok || mount.filesystem != "tmpfs" || mount.root != "/" || !slices.Contains(mount.options, "ro") {
+		return fmt.Errorf("%w: /run/user must be the requested read-only tmpfs mask with root /", errManagedRuntimeMask)
+	}
+	if hostRun, ok := host["/run"]; !ok || mount.device == hostRun.device {
+		return fmt.Errorf("%w: /run/user must have a private filesystem identity distinct from host /run", errManagedRuntimeMask)
+	}
+	entries, err := env.readDir("/run/user")
+	if err != nil && !errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w: inspect /run/user mask: %w", errRuntimeMountEvidenceUnavailable, err)
+	}
+	if len(entries) != 0 {
+		return fmt.Errorf("%w: %q: /run/user mask must be empty when readable", errManagedRuntimeMask, filepath.Join("/run/user", entries[0].Name()))
 	}
 	return nil
 }
@@ -230,13 +273,17 @@ func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount
 		if separator < 6 || separator+3 >= len(fields) {
 			return nil, fmt.Errorf("malformed runtime mount evidence in %s", path)
 		}
-		// Decode kernel path escaping before classifying the full runtime tree.
+		// The host table supplies fixed filesystem identities only. Its unrelated
+		// descendants can be hidden by overmounts and need not form a visible
+		// stack. The caller table still inventories the entire runtime tree.
+		// Decode kernel path escaping before classifying that tree.
 		// An overmount's parent is
 		// the mount it shadows at the same path, not necessarily its directory
 		// parent. Keep that chain to select the visible top without relying on
 		// the order of lines or on mount IDs increasing monotonically.
 		target := runtimeMountPath(fields[4])
-		if target != "/" && target != "/dev" && target != "/var" && target != "/run" && target != "/var/run" && !isRuntimeMountPath(target) {
+		fixedTarget := target == "/" || target == "/dev" || target == "/var" || target == "/run" || target == "/var/run" || target == "/dev/shm"
+		if !fixedTarget && (path == "/proc/1/mountinfo" || !isRuntimeMountPath(target)) {
 			continue
 		}
 		if candidates[target] == nil {

@@ -203,22 +203,23 @@ type probeEnv struct {
 
 	now func() time.Time
 
-	runCmd          runCommand
-	dropCounter     dropCounterFunc
-	dialCtx         dialFunc
-	wait            waitFunc
-	lookupUser      lookupUserFunc
-	groupIDs        groupIDsFunc
-	stat            func(path string) (os.FileInfo, error)
-	lstat           func(path string) (os.FileInfo, error)
-	readFile        func(path string) ([]byte, error)
-	readDir         func(path string) ([]os.DirEntry, error)
-	readLink        func(path string) (string, error)
-	selfPath        func() (string, error)
-	hashFile        func(path string) (string, error)
-	privateTmpProbe func(context.Context, *probeEnv) (string, string)
-	filesystemProbe func(context.Context, *probeEnv) (string, string)
-	filesystem      filesystemProfile
+	runCmd            runCommand
+	dropCounter       dropCounterFunc
+	dialCtx           dialFunc
+	wait              waitFunc
+	lookupUser        lookupUserFunc
+	groupIDs          groupIDsFunc
+	stat              func(path string) (os.FileInfo, error)
+	lstat             func(path string) (os.FileInfo, error)
+	readFile          func(path string) ([]byte, error)
+	readDir           func(path string) ([]os.DirEntry, error)
+	readLink          func(path string) (string, error)
+	selfPath          func() (string, error)
+	hashFile          func(path string) (string, error)
+	privateTmpProbe   func(context.Context, *probeEnv) (string, string)
+	filesystemProbe   func(context.Context, *probeEnv) (string, string)
+	runtimeMountProbe func(context.Context, *probeEnv, filesystemProfile) (string, string)
+	filesystem        filesystemProfile
 	// filesystemCanaryOmitProperties is a test seam. The confined canary unit
 	// is started without the filesystem profile, so a real probe must fail.
 	// Production leaves it false.

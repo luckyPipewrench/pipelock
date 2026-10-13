@@ -75,6 +75,14 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 	if err != nil {
 		return err
 	}
+	// A bind of some other host tmpfs root has root / and a device distinct from
+	// the host mount at the same path, yet stays shared with the host after this
+	// check. systemd creates the private masks inside the unit's namespace only,
+	// so their devices are absent from PID 1's whole table, hidden entries included.
+	hostDevices, err := hostMountDevices(env)
+	if err != nil {
+		return err
+	}
 	for _, property := range required {
 		path, _, _ := strings.Cut(property, ":")
 		mount, ok := self[path]
@@ -87,6 +95,11 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 			if parent == "/" {
 				break
 			}
+		}
+		if ok && mount.device != hostMount.device && hostDevices[mount.device] {
+			// The requested property is present, but something binds a host
+			// filesystem over it; adding the property again cannot help.
+			return unexpectedRuntimeExposure(path, path+" does not have a verified private filesystem identity: it is shared with a host mount")
 		}
 		if !ok || mount.device == hostMount.device {
 			return fmt.Errorf("%s does not have a verified private filesystem identity", path)
@@ -141,7 +154,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 			// The identity directory is checked below.
 		case "user":
 			if !protectHome {
-				return unexpectedRuntimeExposure(path, "/run must contain only requested runtime masks; /run/user is not requested by this unit's properties")
+				return unexpectedRuntimeExposure(path, "/run must contain only requested runtime masks; /run/user is allowed only for a Pipelock-rendered launch profile that requests ProtectHome=tmpfs")
 			}
 		case "systemd":
 			if err := checkRuntimeDirectoryEntry(env, path, "incoming", true); err != nil {
@@ -155,7 +168,7 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 		}
 	}
 	if protectHome {
-		if err := checkProtectHomeRuntimeMask(env, self, host); err != nil {
+		if err := checkProtectHomeRuntimeMask(env, self, host, hostDevices); err != nil {
 			return err
 		}
 	}
@@ -184,7 +197,7 @@ func checkRuntimeDirectoryEntry(env netnsAssertEnv, path, name string, directory
 
 // systemd v257 namespace.c:193-197 and v261:206-210 map ProtectHome=tmpfs
 // to read-only tmpfs masks at /home, /root and /run/user.
-func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runtimeMount) error {
+func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runtimeMount, hostDevices map[string]bool) error {
 	mount, ok := self["/run/user"]
 	if !ok || mount.filesystem != "tmpfs" || mount.root != "/" || !slices.Contains(mount.options, "ro") {
 		return fmt.Errorf("%w: /run/user must be the requested read-only tmpfs mask with root /", errManagedRuntimeMask)
@@ -192,14 +205,40 @@ func checkProtectHomeRuntimeMask(env netnsAssertEnv, self, host map[string]runti
 	if hostRun, ok := host["/run"]; !ok || mount.device == hostRun.device {
 		return fmt.Errorf("%w: /run/user must have a private filesystem identity distinct from host /run", errManagedRuntimeMask)
 	}
+	if hostDevices[mount.device] {
+		return fmt.Errorf("%w: /run/user is shared with a host mount, not a private mask", errManagedRuntimeMask)
+	}
+	// The table above mounts the mask with mode=0755, so every caller can list
+	// it. An unlistable directory may still be traversable to a known socket.
 	entries, err := env.readDir("/run/user")
-	if err != nil && !errors.Is(err, os.ErrPermission) {
+	if errors.Is(err, os.ErrPermission) {
+		return fmt.Errorf("%w: /run/user mask must be listable; systemd mounts it with mode=0755", errManagedRuntimeMask)
+	}
+	if err != nil {
 		return fmt.Errorf("%w: inspect /run/user mask: %w", errRuntimeMountEvidenceUnavailable, err)
 	}
 	if len(entries) != 0 {
-		return fmt.Errorf("%w: %q: /run/user mask must be empty when readable", errManagedRuntimeMask, filepath.Join("/run/user", entries[0].Name()))
+		return fmt.Errorf("%w: %q: /run/user mask must be empty", errManagedRuntimeMask, filepath.Join("/run/user", entries[0].Name()))
 	}
 	return nil
+}
+
+// hostMountDevices collects every device in PID 1's mount table. Only the
+// device field is read, so overmounted and hidden host entries still count.
+func hostMountDevices(env netnsAssertEnv) (map[string]bool, error) {
+	data, err := env.readFile("/proc/1/mountinfo")
+	if err != nil {
+		return nil, fmt.Errorf("%w: read runtime mount evidence /proc/1/mountinfo: %w", errRuntimeMountEvidenceUnavailable, err)
+	}
+	devices := make(map[string]bool)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			return nil, fmt.Errorf("malformed runtime mount evidence in /proc/1/mountinfo")
+		}
+		devices[fields[2]] = true
+	}
+	return devices, nil
 }
 
 func checkSystemdPropagation(env netnsAssertEnv, self, host map[string]runtimeMount) error {

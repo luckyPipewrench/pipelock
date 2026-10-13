@@ -40,6 +40,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 	plsentry "github.com/luckyPipewrench/pipelock/internal/sentry"
 	"github.com/luckyPipewrench/pipelock/internal/signing"
+	"github.com/luckyPipewrench/pipelock/internal/verification"
 	"golang.org/x/time/rate"
 )
 
@@ -48,6 +49,9 @@ import (
 // config default", matching the cobra.Flag.Changed semantics RunCmd relied on
 // before the extraction.
 type ServerOpts struct {
+	// StartupVerification supplies cancellation and observed verification work
+	// during construction, before Start owns the listener lifecycle.
+	StartupVerification     verification.Options
 	ConfigFile              string
 	Mode                    string
 	Listen                  string
@@ -286,6 +290,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		opts.Stderr = io.Discard
 	}
 	opts.Stderr = &stderrSyncWriter{w: opts.Stderr}
+	startupVerification := startupVerificationOptions(opts)
 	if opts.Stdout == nil {
 		opts.Stdout = io.Discard
 	}
@@ -630,7 +635,8 @@ func NewServer(opts ServerOpts) (*Server, error) {
 				return nil, errors.New("multiple receipt chains require a signing key")
 			}
 			shards, groupOpts, groupErr := buildServerReceiptShardGroup(receipt.EmitterConfig{
-				Recorder: rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
+				StartupVerification: startupVerification,
+				Recorder:            rec, PrivKey: recPrivKey, ConfigHash: cfg.Hash(),
 				Principal: "local", Actor: "pipelock", Metrics: m,
 				PriorSignerKeys:     cfg.FlightRecorder.ReceiptGroupPriorSignerKeys,
 				PostureBinding:      postureResult.Binding,

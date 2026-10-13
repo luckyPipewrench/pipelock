@@ -180,11 +180,6 @@ Examples:
 
 			opts.AgentArgs = agentArgsAfterDash(args, cmd.ArgsLenAtDash())
 
-			srv, err := NewServer(opts)
-			if err != nil {
-				return err
-			}
-
 			// Context with signal handling for graceful shutdown. Uses
 			// cmd.Context() as parent so tests can inject a cancellable
 			// context.
@@ -194,6 +189,11 @@ Examples:
 				syscall.SIGTERM,
 			)
 			defer cancel()
+			opts.StartupVerification.Context = ctx
+			srv, err := NewServer(opts)
+			if err != nil {
+				return err
+			}
 
 			return srv.Start(ctx)
 		},

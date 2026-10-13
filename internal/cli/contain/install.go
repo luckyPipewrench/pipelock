@@ -2215,7 +2215,7 @@ func renderSystemUnit(env *installEnv) string {
 		// overrides DefaultTimeoutStartSec to infinity would otherwise turn a
 		// stuck start into a hung boot dependency. 90 s is systemd's stock
 		// default, so ordinary hosts see no change.
-		"TimeoutStartSec=90",
+		fmt.Sprintf("TimeoutStartSec=%d", int64(cliutil.ServiceStartTimeout/time.Second)),
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",

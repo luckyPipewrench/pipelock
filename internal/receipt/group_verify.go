@@ -409,10 +409,6 @@ func receiptGroupDirectoryIdentity(dir string) (os.FileInfo, os.FileInfo, error)
 	return root, ael, nil
 }
 
-func verifyReceiptGroupTransition(dir string, successor ReceiptGroupOpen, newHash string, trusted []string) error {
-	return verifyReceiptGroupTransitionWithContext(dir, successor, newHash, trusted, nil)
-}
-
 func verifyReceiptGroupTransitionWithContext(dir string, successor ReceiptGroupOpen, newHash string, trusted []string, ceremony *startupGroupVerification) (retErr error) {
 	if ceremony != nil {
 		if err := ceremony.check(); err != nil {

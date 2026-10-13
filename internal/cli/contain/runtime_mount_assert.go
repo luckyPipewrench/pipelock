@@ -11,6 +11,14 @@ import (
 	"strings"
 )
 
+// systemd.exec(5) documents /run/host/incoming; systemd's service launcher
+// also uses /run/systemd/incoming. Both stage mounts from /run/systemd/propagate.
+const (
+	systemdIncomingPath    = "/run/systemd/incoming"
+	hostIncomingPath       = "/run/host/incoming"
+	systemdPropagationRoot = "/systemd/propagate/"
+)
+
 var errRuntimeMountEvidenceUnavailable = errors.New("runtime mount evidence is unavailable")
 
 type runtimeMount struct {
@@ -82,18 +90,50 @@ func checkRuntimeMountsForProperties(env netnsAssertEnv, required []string) erro
 	if !ok || !slices.Contains(identity.options, "ro") {
 		return fmt.Errorf("namespace identity must have its own read-only bind mount")
 	}
-	for _, path := range []string{"/run", "/run/pipelock-contain"} {
-		entries, err := env.readDir(path)
-		if err != nil {
-			return fmt.Errorf("%w: inspect isolated runtime directory %s: %w", errRuntimeMountEvidenceUnavailable, path, err)
+	entries, err := env.readDir("/run")
+	if err != nil {
+		return fmt.Errorf("%w: inspect isolated runtime directory /run: %w", errRuntimeMountEvidenceUnavailable, err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			return fmt.Errorf("/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
-		name := "pipelock-contain"
-		if path != "/run" {
-			name = "agent-netns.id"
+		switch entry.Name() {
+		case "pipelock-contain":
+			// The identity directory is checked below.
+		case "systemd", "host":
+			path := "/run/" + entry.Name()
+			if err := checkRuntimeDirectoryEntry(env, path, "incoming", true); err != nil {
+				return err
+			}
+			mount, ok := self[path+"/incoming"]
+			if !ok {
+				return fmt.Errorf("%s/incoming must have its own systemd propagation mount", path)
+			}
+			if !strings.HasPrefix(mount.root, systemdPropagationRoot) || filepath.Clean(mount.root) != mount.root {
+				return fmt.Errorf("%s/incoming mount root must be under %s", path, systemdPropagationRoot)
+			}
+			if !slices.Contains(mount.options, "ro") {
+				return fmt.Errorf("%s/incoming systemd propagation mount must be read-only", path)
+			}
+		default:
+			return fmt.Errorf("/run must contain only the managed namespace identity and verified systemd mount propagation")
 		}
-		if len(entries) != 1 || entries[0].Name() != name || entries[0].IsDir() != (path == "/run") || (path != "/run" && !entries[0].Type().IsRegular()) {
-			return fmt.Errorf("%s must contain only the managed namespace identity", path)
+	}
+	return checkRuntimeDirectoryEntry(env, "/run/pipelock-contain", "agent-netns.id", false)
+}
+
+func checkRuntimeDirectoryEntry(env netnsAssertEnv, path, name string, directory bool) error {
+	entries, err := env.readDir(path)
+	if err != nil {
+		return fmt.Errorf("%w: inspect isolated runtime directory %s: %w", errRuntimeMountEvidenceUnavailable, path, err)
+	}
+	if len(entries) != 1 || entries[0].Name() != name || entries[0].IsDir() != directory || (!directory && !entries[0].Type().IsRegular()) {
+		kind := "regular file"
+		if directory {
+			kind = "directory"
 		}
+		return fmt.Errorf("%s must contain only %s as a %s", path, name, kind)
 	}
 	return nil
 }
@@ -115,7 +155,7 @@ func readRuntimeMounts(env netnsAssertEnv, path string) (map[string]runtimeMount
 		// parent. Keep that chain to select the visible top without relying on
 		// the order of lines or on mount IDs increasing monotonically.
 		target := fields[4]
-		if target != "/" && target != "/dev" && target != "/var" && target != "/run" && target != "/var/run" && target != "/dev/shm" && target != containedNamespaceIdentityPath {
+		if target != "/" && target != "/dev" && target != "/var" && target != "/run" && target != "/var/run" && target != "/dev/shm" && target != containedNamespaceIdentityPath && target != systemdIncomingPath && target != hostIncomingPath {
 			continue
 		}
 		if candidates[target] == nil {

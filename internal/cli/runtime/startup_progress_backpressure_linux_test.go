@@ -56,6 +56,13 @@ func TestStartupProgressDatagramsBoundedByBudget(t *testing.T) {
 	}
 }
 
+// maxNotifyQueueWorkload bounds the host-derived workload of these tests. Both
+// drive twice the kernel queue length, so an unusually large sysctl would turn
+// into an unbounded run of durable receipts and could overflow the interval
+// arithmetic. The value is a resource limit for the tests, not product
+// behavior.
+const maxNotifyQueueWorkload = 4096
+
 func notifyQueueLength(t *testing.T) int {
 	t.Helper()
 	raw, err := os.ReadFile("/proc/sys/net/unix/max_dgram_qlen")
@@ -65,6 +72,9 @@ func notifyQueueLength(t *testing.T) int {
 	n, err := strconv.Atoi(strings.TrimSpace(string(raw)))
 	if err != nil || n <= 0 {
 		t.Fatalf("unix datagram queue: %q %v", raw, err)
+	}
+	if n > maxNotifyQueueWorkload {
+		t.Skipf("unix datagram queue length %d exceeds the test workload bound %d", n, maxNotifyQueueWorkload)
 	}
 	return n
 }

@@ -279,12 +279,15 @@ func TestStartupCachedReadsRespectCancellation(t *testing.T) {
 }
 
 func TestStartupIncomingDefersDamagedArtifacts(t *testing.T) {
-	for _, mode := range []string{"missing_open", "bad_open", "redirected_close", "bad_close"} {
+	for _, mode := range []string{"control", "missing_open", "bad_open", "redirected_close", "bad_close"} {
 		t.Run(mode, func(t *testing.T) {
 			c, open, _, _ := startupCoverageGroup(t, true)
 			name, _ := ReceiptGroupFileName(open.GroupID, "open")
 			closeName, _ := ReceiptGroupFileName(open.GroupID, "close")
 			switch mode {
+			case "control":
+				// An intact incoming group must produce one reusable proof per shard,
+				// so the refusals below cannot pass by doing nothing.
 			case "missing_open":
 				if err := os.Rename(filepath.Join(c.dir, name), filepath.Join(t.TempDir(), name)); err != nil {
 					t.Fatal(err)
@@ -326,6 +329,12 @@ func TestStartupIncomingDefersDamagedArtifacts(t *testing.T) {
 				}
 			}
 			c.prepareIncoming(ReceiptGroupOpen{PreviousGroupID: open.GroupID})
+			if mode == "control" {
+				if len(c.proofs) != len(open.Shards) {
+					t.Fatalf("intact incoming group produced %d shard proofs, want %d", len(c.proofs), len(open.Shards))
+				}
+				return
+			}
 			if len(c.proofs) != 0 {
 				t.Fatal("damaged incoming artifact created reusable shard proof")
 			}

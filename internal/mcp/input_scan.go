@@ -13,6 +13,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -362,10 +363,11 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 		}
 		strs := extracted.Strings
+		cards := extracted.CardStrings
 		joined := joinStrings(strs)
 
 		// Run DLP on joined strings first (catches raw patterns).
-		dlpResult := sc.ScanTextForDLP(ctx, joined)
+		dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
 
 		// Catch secrets split across multiple JSON fields.
 		dlpResult = scanSplitSecret(ctx, trimmed, joined, sc, dlpResult)
@@ -374,8 +376,8 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// (base64, hex). The joined string is not valid base64/hex as a
 		// unit, so encoding checks only work on individual field values.
 		if dlpResult.Clean {
-			for _, s := range strs {
-				if r := sc.ScanTextForDLP(ctx, s); !r.Clean {
+			for i, s := range strs {
+				if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
 					dlpResult = r
 					break
 				}
@@ -391,7 +393,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		}
 		if dlpResult.Clean {
 			if unescaped := unescapeJSONUnicode(raw); unescaped != raw {
-				dlpResult = sc.ScanTextForDLP(ctx, unescaped)
+				dlpResult = sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(raw, extract.MaxExtractDepth)))
 			}
 		}
 
@@ -459,24 +461,28 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
 	strs := extracted.Strings
+	cards := extracted.CardStrings
 	if len(strs) == 0 {
 		// Fallback: serialize params to string for non-string JSON values.
 		strs = []string{string(rpc.Params)}
+		cards = []string{jsonnumber.CardView(string(rpc.Params), extract.MaxExtractDepth)}
 	}
 
 	// Include method name and ID in DLP scan - agents can exfiltrate
 	// secrets by encoding them into method names or request IDs.
 	if rpc.Method != "" {
 		strs = append(strs, rpc.Method)
+		cards = append(cards, rpc.Method)
 	}
 	if len(rpc.ID) > 0 && string(rpc.ID) != jsonrpc.Null {
 		strs = append(strs, string(rpc.ID))
+		cards = append(cards, jsonnumber.CardView(string(rpc.ID), extract.MaxExtractDepth))
 	}
 
 	joined := joinStrings(strs)
 
 	// Run DLP patterns + env leak checks.
-	dlpResult := sc.ScanTextForDLP(ctx, joined)
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(ctx, trimmed, joined, sc, dlpResult)
@@ -485,8 +491,8 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// hex). The joined string is not valid base64/hex as a unit, so encoding
 	// checks only work on individual field values.
 	if dlpResult.Clean {
-		for _, s := range strs {
-			if r := sc.ScanTextForDLP(ctx, s); !r.Clean {
+		for i, s := range strs {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
 				dlpResult = r
 			}
 		}
@@ -496,7 +502,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	}
 	if dlpResult.Clean {
 		if unescaped := unescapeJSONUnicode(string(trimmed)); unescaped != string(trimmed) {
-			dlpResult = sc.ScanTextForDLP(ctx, unescaped)
+			dlpResult = sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(string(trimmed), extract.MaxExtractDepth)))
 		}
 	}
 
@@ -575,17 +581,18 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 		return InputVerdict{ID: recoveredID, Clean: false, Action: config.ActionBlock, Error: uninspectableJSONDepthReason}
 	}
 	strs := extracted.Strings
+	cards := extracted.CardStrings
 	joined := joinStrings(strs)
 
-	dlpResult := sc.ScanTextForDLP(ctx, joined)
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(ctx, raw, joined, sc, dlpResult)
 
 	// Scan each extracted string individually for encoded secrets.
 	if dlpResult.Clean {
-		for _, s := range strs {
-			if r := sc.ScanTextForDLP(ctx, s); !r.Clean {
+		for i, s := range strs {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
 				dlpResult = r
 			}
 		}
@@ -599,7 +606,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	// patterns match secrets encoded with JSON unicode escapes.
 	if dlpResult.Clean {
 		if unescaped := unescapeJSONUnicode(text); unescaped != text {
-			dlpResult = sc.ScanTextForDLP(ctx, unescaped)
+			dlpResult = sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(string(raw), extract.MaxExtractDepth)))
 		}
 	}
 
@@ -757,7 +764,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
 	if concat != joined {
-		if r := sc.ScanTextForDLP(ctx, concat); !r.Clean {
+		if r := sc.ScanTextForDLPWithCardView(ctx, concat, concat); !r.Clean {
 			return r
 		}
 	}
@@ -781,10 +788,10 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 				continue
 			}
 			// Try both orderings: vals[i]+vals[j] and vals[j]+vals[i].
-			if r := sc.ScanTextForDLP(ctx, vals[i]+vals[j]); !r.Clean {
+			if r := sc.ScanTextForDLPWithCardView(ctx, vals[i]+vals[j], vals[i]+vals[j]); !r.Clean {
 				return r
 			}
-			if r := sc.ScanTextForDLP(ctx, vals[j]+vals[i]); !r.Clean {
+			if r := sc.ScanTextForDLPWithCardView(ctx, vals[j]+vals[i], vals[j]+vals[i]); !r.Clean {
 				return r
 			}
 		}

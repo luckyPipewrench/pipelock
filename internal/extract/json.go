@@ -17,6 +17,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 // maxExtractDepth bounds recursion depth when extracting strings from JSON.
@@ -811,8 +813,10 @@ func appendJSONLeafValuePartial(state *jsonLeafPartialState, path []byte, value 
 // the JSON contains content beyond maxExtractDepth, meaning callers that make
 // allow/block decisions must fail closed instead of trusting partial strings.
 type JSONStringsResult struct {
-	Strings   []string
-	Truncated bool
+	// CardStrings parallels Strings only for type-aware extraction; literal strings are unchanged.
+	CardStrings []string
+	Strings     []string
+	Truncated   bool
 }
 
 // AllStringsFromJSON recursively extracts all string values AND keys from
@@ -827,7 +831,10 @@ func AllStringsFromJSON(raw json.RawMessage) []string {
 // AllStringsFromJSONResult recursively extracts all string values AND keys from
 // arbitrary JSON and reports whether extraction hit the nesting cap.
 func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
-	var result []string
+	if !json.Valid(raw) {
+		return JSONStringsResult{}
+	}
+	var result, cards []string
 	truncated := false
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
@@ -838,10 +845,13 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		switch val := v.(type) {
 		case string:
 			result = append(result, val)
-		case float64:
-			result = append(result, strconv.FormatFloat(val, 'f', -1, 64))
+			cards = append(cards, val)
+		case json.Number:
+			result = append(result, val.String())
+			cards = append(cards, jsonnumber.IntegralView(val))
 		case bool:
 			result = append(result, strconv.FormatBool(val))
+			cards = append(cards, strconv.FormatBool(val))
 		case []interface{}:
 			for _, item := range val {
 				extract(item, depth+1)
@@ -857,15 +867,18 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 			sort.Strings(keys)
 			for _, k := range keys {
 				result = append(result, k)
+				cards = append(cards, k)
 				extract(val[k], depth+1)
 			}
 		}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err == nil {
 		extract(parsed, 0)
 	}
-	return JSONStringsResult{Strings: result, Truncated: truncated}
+	return JSONStringsResult{Strings: result, CardStrings: cards, Truncated: truncated}
 }
 
 // AllStringsFromJSONOrdered extracts string-ish JSON tokens in source order,

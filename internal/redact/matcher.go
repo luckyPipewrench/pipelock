@@ -161,14 +161,20 @@ func (m *Matcher) AddDictionary(d Dictionary) error {
 // Scan returns all redactable matches in s, with overlapping spans resolved
 // by priority (highest wins) then by leftmost-longest. Returned matches are
 // sorted by Start ascending and do not overlap.
-func (m *Matcher) Scan(s string) []Match {
+func (m *Matcher) Scan(s string) []Match { return m.scanViews(s, s) }
+
+func (m *Matcher) scanViews(s, cardView string) []Match {
 	if s == "" || m == nil {
 		return nil
 	}
 
 	var raw []Match
 	for _, cp := range m.patterns {
-		for _, loc := range cp.pattern.FindAllStringIndex(s, -1) {
+		view := s
+		if cp.class == ClassCreditCard {
+			view = cardView
+		}
+		for _, loc := range cp.pattern.FindAllStringIndex(view, -1) {
 			// Reject matches whose surrounding context marks them as a protocol
 			// artifact rather than a leaked secret (e.g. an AWS access key ID
 			// that is the X-Amz-Credential of a SigV4 pre-signed URL). Both the

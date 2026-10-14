@@ -6,6 +6,8 @@ package redact
 import (
 	"bytes"
 	"encoding/json"
+
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 // Report summarises the outcome of a Rewrite call.
@@ -172,7 +174,7 @@ func (w *walker) walk(node interface{}, depth int) (interface{}, error) {
 		// string placeholder would change the JSON type and almost always
 		// break the upstream API. Bodies that legitimately carry secrets
 		// as bare numbers should use string encoding instead.
-		if matches := w.matcher.Scan(string(v)); len(matches) > 0 {
+		if matches := w.matcher.scanViews(string(v), jsonnumber.IntegralView(v)); len(matches) > 0 {
 			return nil, newBlock(ReasonSecretInNumericScalar, w.redactor.Total(),
 				"secret pattern matched a numeric JSON scalar; encode sensitive values as strings")
 		}

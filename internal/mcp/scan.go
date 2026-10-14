@@ -183,6 +183,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		return incompleteMediaVerdict(rpc.ID, textResult.IncompleteReason)
 	}
 	text := textResult.Text
+	cardText := textResult.CardText
 	// Numeric leaves travel on their own channel and are only ever compared
 	// against known values (canaries, configured secrets); they never join
 	// text, which feeds the injection cascade and pattern DLP.
@@ -197,8 +198,10 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
 			if text != "" {
 				text += "\n"
+				cardText += "\n"
 			}
 			text += rpcErr.Message
+			cardText += rpcErr.Message
 			// Also scan error.data if present.
 			errData := extract(rpcErr.Data)
 			if errData.Truncated {
@@ -209,6 +212,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			}
 			if errData.Text != "" {
 				text += "\n" + errData.Text
+				cardText += "\n" + errData.CardText
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
@@ -223,8 +227,10 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			if errText.Text != "" {
 				if text != "" {
 					text += "\n"
+					cardText += "\n"
 				}
 				text += errText.Text
+				cardText += errText.CardText
 			}
 			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
@@ -243,8 +249,10 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		if paramsText.Text != "" {
 			if text != "" {
 				text += "\n"
+				cardText += "\n"
 			}
 			text += paramsText.Text
+			cardText += paramsText.CardText
 		}
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
@@ -272,11 +280,11 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	// coverage on their own view and stay out of inbound DLP.
 	joined := joinResponseText(text, envelopeText)
 	views := []string{joined, resourceURIs}
-	var dlpViews []string
+	var dlpViews []responseDLPView
 	if includeDLP {
-		dlpViews = []string{joined}
+		dlpViews = []responseDLPView{{joined, joinResponseText(cardText, envelopeText)}}
 	}
-	result, dlpMatches, droppedDLP := scanResponseViews(context.Background(), sc, opts, views, dlpViews)
+	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(context.Background(), sc, opts, views, dlpViews)
 	if result.Failed() {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Action: config.ActionBlock, Error: "response scan failed: " + result.ScanError}
 	}
@@ -364,6 +372,16 @@ func uniqueResponseMatches(matches []scanner.ResponseMatch) []scanner.ResponseMa
 // findings, so a string seen by two views is reported once. A failed
 // injection scan returns the failed result; the caller must fail closed.
 func scanResponseViews(ctx context.Context, sc *scanner.Scanner, opts ResponseScanOptions, injectionViews, dlpViews []string) (scanner.ResponseScanResult, []scanner.TextDLPMatch, []scanner.TextDLPMatch) {
+	views := make([]responseDLPView, len(dlpViews))
+	for i, text := range dlpViews {
+		views[i] = responseDLPView{text, text}
+	}
+	return scanResponseViewsWithCards(ctx, sc, opts, injectionViews, views)
+}
+
+type responseDLPView struct{ text, card string }
+
+func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts ResponseScanOptions, injectionViews []string, dlpViews []responseDLPView) (scanner.ResponseScanResult, []scanner.TextDLPMatch, []scanner.TextDLPMatch) {
 	result := scanner.ResponseScanResult{Clean: true}
 	for _, view := range injectionViews {
 		if view == "" {
@@ -386,13 +404,13 @@ func scanResponseViews(ctx context.Context, sc *scanner.Scanner, opts ResponseSc
 	}
 	var dlpMatches, droppedDLP []scanner.TextDLPMatch
 	for _, view := range dlpViews {
-		if view == "" {
+		if view.text == "" {
 			continue
 		}
 		// Deliberately not ctx: TextDLPResult has no incomplete or error state,
 		// so a scan cut short by cancellation would read as clean. The work is
 		// bounded by the response size limit; finishing it is the safe choice.
-		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view, sc.ScanTextForDLPInbound(context.Background(), view).Matches)
+		matches, lowConfidence := scanner.PartitionInboundTextDLPMatches(view.text, sc.ScanTextForDLPInboundWithCardView(context.Background(), view.text, view.card).Matches)
 		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, matches)
 		droppedDLP = appendUniqueA2ADLPFindings(droppedDLP, lowConfidence)
 	}

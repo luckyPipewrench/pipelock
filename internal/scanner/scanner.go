@@ -429,6 +429,7 @@ type compiledPattern struct {
 	providerKeyPrefix   string
 	severity            string
 	validate            func(string) bool // post-match checksum (nil = regex-only)
+	genericCard         bool              // validator provenance, never a display-name exemption
 	// validateAt judges a candidate in the view it was found in, with the view
 	// around it. It is set only in scanners built for tool-command text.
 	validateAt func(view string, start, end int) bool
@@ -642,6 +643,7 @@ func newWithOptionsAndWindowBudget(cfg *config.Config, opts Options, windowBudge
 				return nil, fmt.Errorf("unknown DLP validator %q for pattern %q", p.Validator, p.Name)
 			}
 			cp.validate = fn
+			cp.genericCard = p.Validator == config.ValidatorLuhn
 		}
 		if cp.validate == nil {
 			cp.validate = builtinDLPValidatorForRegex(p.Regex)

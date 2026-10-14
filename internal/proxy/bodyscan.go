@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/textproto"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,6 +30,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -815,7 +817,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			preRedactionDLP = scanBodyTextsForDLPWithAudience(ctx, req.Scanner, extracted.Texts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
+			preRedactionDLP = scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{extracted.Texts, extracted.CardTexts}, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
 			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 		}
 	}
@@ -898,7 +900,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.Texts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
+	matches := scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{dlpExtracted.Texts, dlpExtracted.CardTexts}, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
 	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
@@ -1039,6 +1041,7 @@ type jsonBodyDLPFrame struct {
 }
 
 type bodyDLPTextExtraction struct {
+	CardTexts           []string
 	GenericTexts        []string
 	Texts               []string
 	ProviderOpaqueTexts []string
@@ -1051,21 +1054,21 @@ func extractBodyTextForDLP(body []byte, req BodyScanRequest) bodyDLPTextExtracti
 		texts, errText := extractBodyText(body, req)
 		return bodyDLPTextExtraction{GenericTexts: texts, Texts: texts, Err: errText}
 	}
-	textStrings, providerOpaqueTexts, genericTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
+	textStrings, cardStrings, providerOpaqueTexts, genericTexts, truncated, err := extractJSONBodyDLPStrings(body, req)
 	if err != nil {
 		return bodyDLPTextExtraction{Err: err.Error()}
 	}
 	if truncated {
 		return bodyDLPTextExtraction{Err: "JSON body exceeds maximum inspectable nesting depth"}
 	}
-	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, ProviderOpaqueTexts: providerOpaqueTexts}
+	return bodyDLPTextExtraction{GenericTexts: genericTexts, Texts: textStrings, CardTexts: cardStrings, ProviderOpaqueTexts: providerOpaqueTexts}
 }
 
-func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []string, bool, error) {
+func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []string, []string, []string, bool, error) {
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.UseNumber()
 
-	var result []string
+	var result, cards []string
 	var providerOpaque []string
 	var generic []string
 	var stack []jsonBodyDLPFrame
@@ -1078,18 +1081,18 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 		tok, err := dec.Token()
 		if err == io.EOF {
 			if !rootStarted {
-				return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: empty JSON body")
+				return nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: empty JSON body")
 			}
 			if depth > 0 || len(stack) > 0 || !rootComplete {
-				return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
+				return nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", io.ErrUnexpectedEOF)
 			}
 			break
 		}
 		if err != nil {
-			return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
+			return nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: %w", err)
 		}
 		if rootComplete {
-			return nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: multiple JSON values")
+			return nil, nil, nil, nil, false, fmt.Errorf("decoding JSON body for DLP: multiple JSON values")
 		}
 		rootStarted = true
 
@@ -1119,6 +1122,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
 				if depth <= extractJSONMaxDepth {
 					result = append(result, v)
+					cards = append(cards, v)
 					generic = append(generic, v)
 				}
 				stack[len(stack)-1].currentKey = v
@@ -1131,6 +1135,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 					providerOpaque = append(providerOpaque, v)
 				} else {
 					result = append(result, v)
+					cards = append(cards, v)
 				}
 			}
 			markJSONBodyDLPValueConsumed(stack)
@@ -1138,6 +1143,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			if depth <= extractJSONMaxDepth {
 				text := v.String()
 				result = append(result, text)
+				cards = append(cards, jsonnumber.IntegralView(v))
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
@@ -1145,6 +1151,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			if depth <= extractJSONMaxDepth {
 				text := strconv.FormatBool(v)
 				result = append(result, text)
+				cards = append(cards, text)
 				generic = append(generic, text)
 			}
 			markJSONBodyDLPValueConsumed(stack)
@@ -1155,7 +1162,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			rootComplete = true
 		}
 	}
-	return result, providerOpaque, generic, truncated, nil
+	return result, cards, providerOpaque, generic, truncated, nil
 }
 
 const extractJSONMaxDepth = extract.MaxExtractDepth
@@ -1391,6 +1398,18 @@ func scanBodyTextsForDLP(ctx context.Context, sc *scanner.Scanner, texts []strin
 // rule before operator-owned suppressions. A malformed or absent target leaves
 // every match intact, so text-only and destination-free callers fail closed.
 func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {
+	return scanBodyTextViewsForDLPWithAudience(ctx, sc, bodyDLPViews{texts, texts}, target, suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, onAudienceAllow)
+}
+
+type bodyDLPViews struct{ texts, cards []string }
+
+func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, views bodyDLPViews, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {
+	texts := views.texts
+	cards := views.cards
+	if len(cards) != len(texts) {
+		cards = texts
+	}
+
 	var allMatches []scanner.TextDLPMatch
 	var dropped []droppedBodyDLPMatch
 	collectDropped := func(match scanner.TextDLPMatch, reason string) {
@@ -1402,20 +1421,34 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 		audienceAllows = append(audienceAllows, allows...)
 		return filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 	}
-	for _, text := range texts {
-		result := scanBodyTextForDLP(ctx, sc, text, allowEmbeddedSigV4)
+	for i, text := range texts {
+		var result scanner.TextDLPResult
+		if allowEmbeddedSigV4 {
+			result = sc.ScanRequestBodyTextPartsWithCardViews(ctx, []string{text}, []string{cards[i]}, "")
+		} else {
+			result = sc.ScanTextForDLPWithCardView(ctx, text, cards[i])
+		}
 		if !result.Clean {
 			if matches := filterMatches(result.Matches); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
 			}
 		}
 	}
-	sorted := sortedBodyTexts(texts)
+	indices := make([]int, len(texts))
+	for i := range indices {
+		indices[i] = i
+	}
+	slices.SortStableFunc(indices, func(a, b int) int { return strings.Compare(texts[a], texts[b]) })
+	var sorted, sortedCards []string
+	for _, i := range indices {
+		sorted = append(sorted, texts[i])
+		sortedCards = append(sortedCards, cards[i])
+	}
 	var result scanner.TextDLPResult
 	if allowEmbeddedSigV4 {
-		result = sc.ScanRequestBodyTextPartsForDLP(ctx, sorted, bodyDLPJoinSeparator)
+		result = sc.ScanRequestBodyTextPartsWithCardViews(ctx, sorted, sortedCards, bodyDLPJoinSeparator)
 	} else {
-		result = sc.ScanTextForDLP(ctx, strings.Join(sorted, bodyDLPJoinSeparator))
+		result = sc.ScanTextForDLPWithCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), strings.Join(sortedCards, bodyDLPJoinSeparator))
 	}
 	if !result.Clean {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {
@@ -1500,13 +1533,6 @@ func recordUniqueHeaderDLPDrops(dropped []droppedBodyDLPMatch, onDropped func(sc
 		seen[key] = struct{}{}
 		onDropped(drop.match, drop.reason)
 	}
-}
-
-func scanBodyTextForDLP(ctx context.Context, sc *scanner.Scanner, text string, allowEmbeddedSigV4 bool) scanner.TextDLPResult {
-	if allowEmbeddedSigV4 {
-		return sc.ScanRequestBodyTextForDLP(ctx, text)
-	}
-	return sc.ScanTextForDLP(ctx, text)
 }
 
 func scanProviderOpaqueTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, texts []string, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {

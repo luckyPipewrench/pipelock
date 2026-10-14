@@ -35,6 +35,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/emitformat"
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
 	"github.com/luckyPipewrench/pipelock/internal/identitykey"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/license"
 	"github.com/luckyPipewrench/pipelock/internal/media"
 	"github.com/luckyPipewrench/pipelock/internal/secperm"
@@ -2768,13 +2769,6 @@ func validateToolPolicyStructuralTypeCompatibility(r ToolPolicyRule) error {
 	return nil
 }
 
-const (
-	toolPolicyMaxNumberChars  = 4096
-	toolPolicyMaxNumberExpAbs = 10000
-)
-
-var toolPolicyJSONNumberPattern = regexp.MustCompile(`^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$`)
-
 // ParseBoundedJSONNumber parses a JSON number into an exact big.Rat, rejecting
 // values that are empty, over-long, malformed, or whose exponent magnitude
 // exceeds a safe bound. The exponent is bounded BEFORE any big-number
@@ -2785,49 +2779,7 @@ var toolPolicyJSONNumberPattern = regexp.MustCompile(`^-?(?:0|[1-9]\d*)(?:\.\d+)
 // bound can apply. Shared by config validation and the MCP tool-policy engine
 // so the parse+bounds logic has a single source of truth.
 func ParseBoundedJSONNumber(n json.Number) (*big.Rat, bool) {
-	s := n.String()
-	if len(s) == 0 || len(s) > toolPolicyMaxNumberChars || !toolPolicyJSONNumberPattern.MatchString(s) {
-		return nil, false
-	}
-
-	base, expPart, hasExp := strings.Cut(strings.ToLower(s), "e")
-	exp := 0
-	if hasExp {
-		parsed, err := strconv.Atoi(expPart)
-		if err != nil || parsed > toolPolicyMaxNumberExpAbs || parsed < -toolPolicyMaxNumberExpAbs {
-			return nil, false
-		}
-		exp = parsed
-	}
-
-	negative := strings.HasPrefix(base, "-")
-	base = strings.TrimPrefix(base, "-")
-	intPart, fracPart, hasFrac := strings.Cut(base, ".")
-	digits := intPart
-	scale := 0
-	if hasFrac {
-		digits += fracPart
-		scale = len(fracPart)
-	}
-	digits = strings.TrimLeft(digits, "0")
-	if digits == "" {
-		digits = "0"
-	}
-
-	num := new(big.Int)
-	if _, ok := num.SetString(digits, 10); !ok {
-		return nil, false
-	}
-	if negative {
-		num.Neg(num)
-	}
-	den := new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(scale)), nil)
-	if exp >= 0 {
-		num.Mul(num, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(exp)), nil))
-	} else {
-		den.Mul(den, new(big.Int).Exp(big.NewInt(10), big.NewInt(int64(-exp)), nil))
-	}
-	return new(big.Rat).SetFrac(num, den), true
+	return jsonnumber.Parse(n)
 }
 
 func (c *Config) validateDefer(warnings *[]Warning) error {

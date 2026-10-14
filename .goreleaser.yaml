@@ -191,7 +191,7 @@ brews:
 
 dockers:
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock:{{ .Version }}-staging-amd64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -199,7 +199,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock"
       - "--label=org.opencontainers.image.description=Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -209,7 +209,7 @@ dockers:
     dockerfile: Dockerfile.goreleaser
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock:{{ .Version }}-staging-arm64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -217,7 +217,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock"
       - "--label=org.opencontainers.image.description=Agent firewall for AI agents. Network scanning, process containment, and tool policy enforcement."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -230,7 +230,7 @@ dockers:
   # Init container image for K8s sidecar deployments (MCP stdio wrapping).
   # Alpine-based so `cp` is available for copying the binary to shared volumes.
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-init:{{ .Version }}-staging-amd64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -238,7 +238,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock-init"
       - "--label=org.opencontainers.image.description=Init container that installs the Pipelock binary into a shared volume for sidecar deployments."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -248,7 +248,7 @@ dockers:
     dockerfile: Dockerfile.init
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-init:{{ .Version }}-staging-arm64"
     ids: [pipelock]
     use: buildx
     build_flag_templates:
@@ -256,7 +256,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock-init"
       - "--label=org.opencontainers.image.description=Init container that installs the Pipelock binary into a shared volume for sidecar deployments."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -269,7 +269,7 @@ dockers:
   # License service: webhook handler for Polar subscription events.
   # Alpine-based (needs writable fs for SQLite + audit ledger).
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-license-service:{{ .Version }}-staging-amd64"
     ids: [license-service]
     use: buildx
     build_flag_templates:
@@ -277,7 +277,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock-license-service"
       - "--label=org.opencontainers.image.description=Pipelock license service. Webhook handler for subscription events and license issuance."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -287,7 +287,7 @@ dockers:
     dockerfile: Dockerfile.license-service
 
   - image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-license-service:{{ .Version }}-staging-arm64"
     ids: [license-service]
     use: buildx
     build_flag_templates:
@@ -295,7 +295,7 @@ dockers:
       - "--label=org.opencontainers.image.title=pipelock-license-service"
       - "--label=org.opencontainers.image.description=Pipelock license service. Webhook handler for subscription events and license issuance."
       - "--label=org.opencontainers.image.url=https://pipelab.org"
-      - "--label=org.opencontainers.image.source=https://github.com/luckyPipewrench/pipelock"
+      - "--label=org.opencontainers.image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}"
       - "--label=org.opencontainers.image.documentation=https://pipelab.org/learn/"
       - "--label=org.opencontainers.image.vendor=luckyPipewrench"
       - "--label=org.opencontainers.image.version={{ .Version }}"
@@ -306,17 +306,17 @@ dockers:
     dockerfile: Dockerfile.license-service
 
 docker_manifests:
-  - name_template: "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging"
+  - name_template: "{{ .Env.IMAGE_NAMESPACE }}/pipelock:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-amd64"
-      - "ghcr.io/luckypipewrench/pipelock:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock:{{ .Version }}-staging-arm64"
 
-  - name_template: "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging"
+  - name_template: "{{ .Env.IMAGE_NAMESPACE }}/pipelock-init:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-init:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-init:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-init:{{ .Version }}-staging-arm64"
 
-  - name_template: "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging"
+  - name_template: "{{ .Env.IMAGE_NAMESPACE }}/pipelock-license-service:{{ .Version }}-staging"
     image_templates:
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-amd64"
-      - "ghcr.io/luckypipewrench/pipelock-license-service:{{ .Version }}-staging-arm64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-license-service:{{ .Version }}-staging-amd64"
+      - "{{ .Env.IMAGE_NAMESPACE }}/pipelock-license-service:{{ .Version }}-staging-arm64"

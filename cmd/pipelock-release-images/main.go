@@ -27,10 +27,20 @@ var (
 	digestRE = regexp.MustCompile(`^sha256:[a-f0-9]{64}$`)
 )
 
+// expectedImages maps each release image to its repository name inside the
+// release namespace.
 var expectedImages = map[string]string{
-	"pipelock":                 "ghcr.io/luckypipewrench/pipelock",
-	"pipelock-init":            "ghcr.io/luckypipewrench/pipelock-init",
-	"pipelock-license-service": "ghcr.io/luckypipewrench/pipelock-license-service",
+	"pipelock":                 "pipelock",
+	"pipelock-init":            "pipelock-init",
+	"pipelock-license-service": "pipelock-license-service",
+}
+
+// releaseNamespaces are the registry namespaces of the two repositories a
+// release may run from (scripts/release-image-namespace.sh). One bundle names
+// exactly one of them for every image.
+var releaseNamespaces = []string{
+	"ghcr.io/luckypipewrench",
+	"ghcr.io/pipelab-org",
 }
 
 type imageFlag []string
@@ -112,6 +122,7 @@ func buildManifest(tag, commit string, values []string) (releaseImages, error) {
 
 	seen := make(map[string]struct{}, len(values))
 	images := make([]releaseImage, 0, len(values))
+	namespace := ""
 	for _, value := range values {
 		image, err := parseImage(value)
 		if err != nil {
@@ -121,12 +132,20 @@ func buildManifest(tag, commit string, values []string) (releaseImages, error) {
 			return releaseImages{}, fmt.Errorf("duplicate --image %q", image.Name)
 		}
 		seen[image.Name] = struct{}{}
-		wantRepository, ok := expectedImages[image.Name]
+		repositoryName, ok := expectedImages[image.Name]
 		if !ok {
 			return releaseImages{}, fmt.Errorf("unknown --image name %q", image.Name)
 		}
-		if image.Repository != wantRepository {
-			return releaseImages{}, fmt.Errorf("--image %q repository = %q, want %q", image.Name, image.Repository, wantRepository)
+		imageNamespace, ok := releaseNamespace(image.Repository, repositoryName)
+		if !ok {
+			return releaseImages{}, fmt.Errorf("--image %q repository = %q, want NAMESPACE/%s with NAMESPACE one of %q",
+				image.Name, image.Repository, repositoryName, releaseNamespaces)
+		}
+		if namespace == "" {
+			namespace = imageNamespace
+		} else if imageNamespace != namespace {
+			return releaseImages{}, fmt.Errorf("--image %q repository %q is not in namespace %q used by the other images",
+				image.Name, image.Repository, namespace)
 		}
 		images = append(images, image)
 	}
@@ -137,6 +156,17 @@ func buildManifest(tag, commit string, values []string) (releaseImages, error) {
 	}
 	sort.Slice(images, func(i, j int) bool { return images[i].Name < images[j].Name })
 	return releaseImages{Schema: schema, Tag: tag, Commit: commit, Images: images}, nil
+}
+
+// releaseNamespace reports which release namespace repository belongs to when
+// it is exactly that namespace followed by "/" and repositoryName.
+func releaseNamespace(repository, repositoryName string) (string, bool) {
+	for _, namespace := range releaseNamespaces {
+		if repository == namespace+"/"+repositoryName {
+			return namespace, true
+		}
+	}
+	return "", false
 }
 
 func parseImage(value string) (releaseImage, error) {

@@ -37,10 +37,24 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+    outputs:
+      image_namespace: ${{ steps.release-identity.outputs.image_namespace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      # Images, SBOMs, attestations and the chart publish under the namespace of
+      # the repository running the release, so a repository move needs no edit
+      # here. Only the two repositories installed binaries accept signatures
+      # from may publish; any other repository stops before a build starts.
+      - name: Resolve release image namespace
+        id: release-identity
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          namespace="$(scripts/release-image-namespace.sh "$REPOSITORY")"
+          echo "image_namespace=${namespace}" >> "$GITHUB_OUTPUT"
       - name: Release-readiness gate
         # The gate asserts the release keyring secret is present BEFORE any build runs, so
         # it has to receive that secret. Without this mapping the check reads an empty value
@@ -207,9 +221,12 @@ jobs:
         run: scripts/release-verifier-install-gate.sh --tag "$GITHUB_REF_NAME"
 
   release-build:
-    needs: [release-tests, release-verifier-install]
+    needs: [release-preflight, release-tests, release-verifier-install]
     runs-on: ubuntu-latest
+    env:
+      IMAGE_NAMESPACE: ${{ needs.release-preflight.outputs.image_namespace }}
     outputs:
+      image_namespace: ${{ needs.release-preflight.outputs.image_namespace }}
       pipelock_index: ${{ steps.platform-digests.outputs.pipelock_index }}
       pipelock_init_index: ${{ steps.platform-digests.outputs.pipelock_init_index }}
       license_service_index: ${{ steps.platform-digests.outputs.license_service_index }}
@@ -517,9 +534,9 @@ jobs:
             done
           }
 
-          resolve_image pipelock ghcr.io/luckypipewrench/pipelock
-          resolve_image pipelock_init ghcr.io/luckypipewrench/pipelock-init
-          resolve_image license_service ghcr.io/luckypipewrench/pipelock-license-service
+          resolve_image pipelock "${IMAGE_NAMESPACE}/pipelock"
+          resolve_image pipelock_init "${IMAGE_NAMESPACE}/pipelock-init"
+          resolve_image license_service "${IMAGE_NAMESPACE}/pipelock-license-service"
 
       # Attach a CycloneDX SBOM for every platform-specific image, not a source
       # dependency list that says nothing about the image base or architecture.
@@ -565,12 +582,12 @@ jobs:
             gh release upload "$GITHUB_REF_NAME" "$output" --clobber
           }
 
-          publish_sbom ghcr.io/luckypipewrench/pipelock "$PIPELOCK_AMD64_DIGEST" sbom-pipelock-linux-amd64.cdx.json
-          publish_sbom ghcr.io/luckypipewrench/pipelock "$PIPELOCK_ARM64_DIGEST" sbom-pipelock-linux-arm64.cdx.json
-          publish_sbom ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_AMD64_DIGEST" sbom-pipelock-init-linux-amd64.cdx.json
-          publish_sbom ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_ARM64_DIGEST" sbom-pipelock-init-linux-arm64.cdx.json
-          publish_sbom ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" sbom-pipelock-license-service-linux-amd64.cdx.json
-          publish_sbom ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" sbom-pipelock-license-service-linux-arm64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock" "$PIPELOCK_AMD64_DIGEST" sbom-pipelock-linux-amd64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock" "$PIPELOCK_ARM64_DIGEST" sbom-pipelock-linux-arm64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock-init" "$PIPELOCK_INIT_AMD64_DIGEST" sbom-pipelock-init-linux-amd64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock-init" "$PIPELOCK_INIT_ARM64_DIGEST" sbom-pipelock-init-linux-arm64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock-license-service" "$LICENSE_SERVICE_AMD64_DIGEST" sbom-pipelock-license-service-linux-amd64.cdx.json
+          publish_sbom "${IMAGE_NAMESPACE}/pipelock-license-service" "$LICENSE_SERVICE_ARM64_DIGEST" sbom-pipelock-license-service-linux-arm64.cdx.json
 
       # Attestation steps use continue-on-error so one failure doesn't
       # cascade and kill the rest. The final verification step checks
@@ -611,7 +628,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_index }}
           push-to-registry: true
 
@@ -622,7 +639,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_index }}
           push-to-registry: true
 
@@ -633,7 +650,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_index }}
           push-to-registry: true
 
@@ -644,7 +661,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
           push-to-registry: true
 
@@ -655,7 +672,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
           push-to-registry: true
 
@@ -666,7 +683,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
           push-to-registry: true
 
@@ -677,7 +694,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
           push-to-registry: true
 
@@ -688,7 +705,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_amd64 }}
           push-to-registry: true
 
@@ -699,7 +716,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_arm64 }}
           push-to-registry: true
 
@@ -710,7 +727,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_amd64 }}
           sbom-path: sbom-pipelock-linux-amd64.cdx.json
           push-to-registry: true
@@ -722,7 +739,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_arm64 }}
           sbom-path: sbom-pipelock-linux-arm64.cdx.json
           push-to-registry: true
@@ -734,7 +751,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_amd64 }}
           sbom-path: sbom-pipelock-init-linux-amd64.cdx.json
           push-to-registry: true
@@ -746,7 +763,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-init
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-init
           subject-digest: ${{ steps.platform-digests.outputs.pipelock_init_arm64 }}
           sbom-path: sbom-pipelock-init-linux-arm64.cdx.json
           push-to-registry: true
@@ -758,7 +775,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_amd64 }}
           sbom-path: sbom-pipelock-license-service-linux-amd64.cdx.json
           push-to-registry: true
@@ -770,7 +787,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
-          subject-name: ghcr.io/luckypipewrench/pipelock-license-service
+          subject-name: ${{ needs.release-preflight.outputs.image_namespace }}/pipelock-license-service
           subject-digest: ${{ steps.platform-digests.outputs.license_service_arm64 }}
           sbom-path: sbom-pipelock-license-service-linux-arm64.cdx.json
           push-to-registry: true
@@ -841,9 +858,9 @@ jobs:
             -tag "$GITHUB_REF_NAME" \
             -commit "$release_commit" \
             -out dist/release-images.json \
-            -image "pipelock=ghcr.io/luckypipewrench/pipelock@${PIPELOCK_INDEX_DIGEST}" \
-            -image "pipelock-init=ghcr.io/luckypipewrench/pipelock-init@${PIPELOCK_INIT_INDEX_DIGEST}" \
-            -image "pipelock-license-service=ghcr.io/luckypipewrench/pipelock-license-service@${LICENSE_SERVICE_INDEX_DIGEST}"
+            -image "pipelock=${IMAGE_NAMESPACE}/pipelock@${PIPELOCK_INDEX_DIGEST}" \
+            -image "pipelock-init=${IMAGE_NAMESPACE}/pipelock-init@${PIPELOCK_INIT_INDEX_DIGEST}" \
+            -image "pipelock-license-service=${IMAGE_NAMESPACE}/pipelock-license-service@${LICENSE_SERVICE_INDEX_DIGEST}"
 
       - name: Attest Kubernetes image digest bundle
         id: attest-release-images
@@ -915,7 +932,10 @@ jobs:
     permissions:
       contents: write
       packages: write
+    env:
+      IMAGE_NAMESPACE: ${{ needs.release-build.outputs.image_namespace }}
     outputs:
+      image_namespace: ${{ needs.release-build.outputs.image_namespace }}
       chart_digest: ${{ steps.stage-helm-chart.outputs.chart_digest }}
       chart_version: ${{ steps.stage-helm-chart.outputs.chart_version }}
     steps:
@@ -1108,15 +1128,15 @@ jobs:
             fi
             test "$(crane digest "$target")" = "$digest"
           }
-          promote_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_INDEX_DIGEST"
-          promote_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_INDEX_DIGEST"
-          promote_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_INDEX_DIGEST"
-          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock "$PIPELOCK_ARM64_DIGEST" arm64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-init "$PIPELOCK_INIT_ARM64_DIGEST" arm64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_AMD64_DIGEST" amd64
-          promote_platform_image ghcr.io/luckypipewrench/pipelock-license-service "$LICENSE_SERVICE_ARM64_DIGEST" arm64
+          promote_image "${IMAGE_NAMESPACE}/pipelock" "$PIPELOCK_INDEX_DIGEST"
+          promote_image "${IMAGE_NAMESPACE}/pipelock-init" "$PIPELOCK_INIT_INDEX_DIGEST"
+          promote_image "${IMAGE_NAMESPACE}/pipelock-license-service" "$LICENSE_SERVICE_INDEX_DIGEST"
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock" "$PIPELOCK_AMD64_DIGEST" amd64
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock" "$PIPELOCK_ARM64_DIGEST" arm64
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock-init" "$PIPELOCK_INIT_AMD64_DIGEST" amd64
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock-init" "$PIPELOCK_INIT_ARM64_DIGEST" arm64
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock-license-service" "$LICENSE_SERVICE_AMD64_DIGEST" amd64
+          promote_platform_image "${IMAGE_NAMESPACE}/pipelock-license-service" "$LICENSE_SERVICE_ARM64_DIGEST" arm64
 
       # Build the OCI manifest in a runner-local registry. Its digest is
       # attested before any versioned chart is sent to public GHCR.
@@ -1175,7 +1195,7 @@ jobs:
           existing_dir="$RUNNER_TEMP/published-chart-${chart_version}"
           candidate_dir="$RUNNER_TEMP/candidate-chart-${chart_version}"
           mkdir -p "$existing_dir" "$candidate_dir"
-          if chart_lookup_output="$(helm pull "oci://ghcr.io/luckypipewrench/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
+          if chart_lookup_output="$(helm pull "oci://${IMAGE_NAMESPACE}/charts/pipelock" --version "$chart_version" --destination "$existing_dir" 2>&1)"; then
             cmp -s "$chart_archive" "$existing_dir/pipelock-${chart_version}.tgz" || {
               echo "::error::published chart archive ${chart_version} differs from the staged release archive"
               exit 1
@@ -1205,7 +1225,7 @@ jobs:
           {
             echo "### Helm chart staged for attestation"
             echo
-            echo "\`ghcr.io/luckypipewrench/charts/pipelock:${chart_version}\` (appVersion ${app_version})."
+            echo "\`${IMAGE_NAMESPACE}/charts/pipelock:${chart_version}\` (appVersion ${app_version})."
             echo
             echo "The public chart is published only after attestation succeeds."
           } >>"$GITHUB_STEP_SUMMARY"
@@ -1249,7 +1269,7 @@ jobs:
           NODE_OPTIONS: ''
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: ghcr.io/luckypipewrench/charts/pipelock
+          subject-name: ${{ needs.release-promote.outputs.image_namespace }}/charts/pipelock
           subject-digest: ${{ needs.release-promote.outputs.chart_digest }}
 
       - name: Verify Helm chart attestation
@@ -1271,6 +1291,8 @@ jobs:
       contents: read
       packages: write
       attestations: read
+    env:
+      IMAGE_NAMESPACE: ${{ needs.release-promote.outputs.image_namespace }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1319,7 +1341,7 @@ jobs:
           CHART_VERSION: ${{ needs.release-promote.outputs.chart_version }}
         run: |
           set -euo pipefail
-          repository=ghcr.io/luckypipewrench/charts/pipelock
+          repository=${IMAGE_NAMESPACE}/charts/pipelock
           target="${repository}:${CHART_VERSION}"
           [[ "$CHART_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
           test "$CHART_VERSION" = "${GITHUB_REF_NAME#v}"
@@ -1350,8 +1372,8 @@ jobs:
           cmp -s "$chart_archive" "$RUNNER_TEMP/pulled-chart/pipelock-${CHART_VERSION}.tgz"
           release_commit="$(git rev-parse "${GITHUB_REF_NAME}^{}")"
           verified_digest="$(gh attestation verify "oci://${target}" \
-            --repo luckyPipewrench/pipelock \
-            --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yaml" \
             --source-ref "refs/tags/${GITHUB_REF_NAME}" \
             --source-digest "$release_commit" --deny-self-hosted-runners \
             --format json --jq '.[0].verificationResult.statement.subject[0].digest.sha256')"

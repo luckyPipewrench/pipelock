@@ -42,11 +42,18 @@ CYCLONEDX_GOMOD_LINUX_AMD64_SHA256 = "5cce8ae99a5181be6a610ea5ed9ca9d596937cc04d
 CRANE_VERSION = "v0.21.9"
 CRANE_LINUX_AMD64_SHA256 = "5c16d8ddb971cb1d5e6ed8b1e743da8224414eeba2c2762d8f1a61b2f095699e"
 
+# Repository names inside the release namespace. The namespace itself is
+# resolved per run from the releasing repository; see
+# test_image_namespace_follows_the_releasing_repository.
 PLATFORM_ARTIFACTS = {
-    "pipelock": "ghcr.io/luckypipewrench/pipelock",
-    "pipelock_init": "ghcr.io/luckypipewrench/pipelock-init",
-    "license_service": "ghcr.io/luckypipewrench/pipelock-license-service",
+    "pipelock": "pipelock",
+    "pipelock_init": "pipelock-init",
+    "license_service": "pipelock-license-service",
 }
+GORELEASER_NAMESPACE = "{{ .Env.IMAGE_NAMESPACE }}"
+WORKFLOW_NAMESPACE = "${IMAGE_NAMESPACE}"
+BUILD_NAMESPACE_EXPR = "${{ needs.release-preflight.outputs.image_namespace }}"
+CHART_NAMESPACE_EXPR = "${{ needs.release-promote.outputs.image_namespace }}"
 ATTESTATION_NAMES = {
     "pipelock": "pipelock",
     "pipelock_init": "pipelock-init",
@@ -215,7 +222,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn("run: goreleaser release --clean --draft", self.workflow)
         self.assertNotIn("version: '~> v2'", self.workflow)
 
-        for repository in PLATFORM_ARTIFACTS.values():
+        for repository_name in PLATFORM_ARTIFACTS.values():
+            repository = f"{GORELEASER_NAMESPACE}/{repository_name}"
             self.assertIn(f'"{repository}:{{{{ .Version }}}}-staging-amd64"', self.goreleaser)
             self.assertIn(f'"{repository}:{{{{ .Version }}}}-staging-arm64"', self.goreleaser)
             self.assertIn(f'name_template: "{repository}:{{{{ .Version }}}}-staging"', self.goreleaser)
@@ -260,6 +268,52 @@ class TestReleaseArtifacts(unittest.TestCase):
             ],
         )
 
+    def test_image_namespace_follows_the_releasing_repository(self) -> None:
+        parsed = yaml.load(self.workflow, Loader=WorkflowLoader)
+        jobs = parsed["jobs"]
+        preflight = jobs["release-preflight"]
+        self.assertEqual(
+            preflight["outputs"]["image_namespace"],
+            "${{ steps.release-identity.outputs.image_namespace }}",
+        )
+        resolve = [step for step in preflight["steps"] if step.get("id") == "release-identity"]
+        self.assertEqual(len(resolve), 1)
+        self.assertEqual(resolve[0]["env"], {"REPOSITORY": "${{ github.repository }}"})
+        self.assertIn('scripts/release-image-namespace.sh "$REPOSITORY"', resolve[0]["run"])
+        gate = [i for i, step in enumerate(preflight["steps"]) if step.get("name") == "Release-readiness gate"]
+        self.assertEqual(len(gate), 1)
+        self.assertLess(preflight["steps"].index(resolve[0]), gate[0])
+
+        # Each job reads the namespace from the job before it; none recomputes it.
+        sources = {
+            "release-build": "needs.release-preflight.outputs.image_namespace",
+            "release-promote": "needs.release-build.outputs.image_namespace",
+            "release-publish-chart": "needs.release-promote.outputs.image_namespace",
+        }
+        for job_name, source in sources.items():
+            job = jobs[job_name]
+            self.assertEqual(job["env"]["IMAGE_NAMESPACE"], "${{ " + source + " }}", job_name)
+            self.assertIn(source.split(".")[1], job["needs"], job_name)
+        for job_name in ("release-build", "release-promote"):
+            self.assertEqual(
+                jobs[job_name]["outputs"]["image_namespace"],
+                jobs[job_name]["env"]["IMAGE_NAMESPACE"],
+                job_name,
+            )
+
+        # The chart's provenance check names the repository that ran the release.
+        self.assertIn('--repo "$GITHUB_REPOSITORY"', self.workflow)
+        self.assertIn('--signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yaml"', self.workflow)
+
+        # No image, chart or label still names a fixed account.
+        self.assertNotIn("ghcr.io/luckypipewrench", self.workflow.lower())
+        self.assertNotIn("ghcr.io/luckypipewrench", self.goreleaser.lower())
+        self.assertIn(
+            "image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}",
+            self.goreleaser,
+        )
+        self.assertNotIn("image.source=https://github.com/luckyPipewrench", self.goreleaser)
+
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")
         release_build = self.workflow.index("\n  release-build:\n", gate)
@@ -272,7 +326,7 @@ class TestReleaseArtifacts(unittest.TestCase):
             gate_block,
         )
         self.assertIn(
-            "needs: [release-tests, release-verifier-install]",
+            "needs: [release-preflight, release-tests, release-verifier-install]",
             self.workflow[release_build:],
         )
 
@@ -323,8 +377,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('"$tool_dir/crane" manifest "${repository}:${staging_tag}"', self.workflow)
         self.assertIn('"$tool_dir/crane" digest "${repository}:${staging_tag}-${arch}"', self.workflow)
         self.assertIn('is not the index child', self.workflow)
-        for name, repository in PLATFORM_ARTIFACTS.items():
-            self.assertIn(f"resolve_image {name} {repository}", self.workflow)
+        for name, repository_name in PLATFORM_ARTIFACTS.items():
+            self.assertIn(f'resolve_image {name} "{WORKFLOW_NAMESPACE}/{repository_name}"', self.workflow)
             for arch in ("amd64", "arm64"):
                 self.assertIn(f"{name}_{arch}", self.workflow)
 
@@ -339,8 +393,8 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertIn('"$tool_dir/syft" "registry:${image}@${digest}"', self.workflow)
         self.assertIn('gh release upload "$GITHUB_REF_NAME" "$output" --clobber', self.workflow)
 
-        for name, repository in PLATFORM_ARTIFACTS.items():
-            stem = repository.rsplit("/", maxsplit=1)[-1]
+        for name, stem in PLATFORM_ARTIFACTS.items():
+            repository = f'"{WORKFLOW_NAMESPACE}/{stem}"'
             for arch in ("amd64", "arm64"):
                 digest_var = f"{name.upper()}_{arch.upper()}_DIGEST"
                 self.assertIn(
@@ -457,11 +511,12 @@ class TestReleaseArtifacts(unittest.TestCase):
             "attest-sbom": {"subject-path": "dist/pipelock_*.tar.gz", "sbom-path": "sbom.cdx.json"},
             "attest-release-images": {"subject-path": "dist/release-images.json"},
             "attest-helm-chart": {
-                "subject-name": "ghcr.io/luckypipewrench/charts/pipelock",
+                "subject-name": f"{CHART_NAMESPACE_EXPR}/charts/pipelock",
                 "subject-digest": "${{ needs.release-promote.outputs.chart_digest }}",
             },
         }
-        for name, repository in PLATFORM_ARTIFACTS.items():
+        for name, repository_name in PLATFORM_ARTIFACTS.items():
+            repository = f"{BUILD_NAMESPACE_EXPR}/{repository_name}"
             for suffix, output in [("container", "index"), ("amd64", "amd64"), ("arm64", "arm64")]:
                 identifier = f"attest-{ATTESTATION_NAMES[name]}-{suffix}"
                 inputs = {
@@ -473,7 +528,7 @@ class TestReleaseArtifacts(unittest.TestCase):
                 if suffix != "container":
                     expected[identifier + "-sbom"] = {
                         **inputs,
-                        "sbom-path": f"sbom-{repository.rsplit('/', 1)[-1]}-linux-{suffix}.cdx.json",
+                        "sbom-path": f"sbom-{repository_name}-linux-{suffix}.cdx.json",
                     }
         for identifier, inputs in expected.items():
             # GitHub's steps context belongs to one job; another job may reuse
@@ -922,7 +977,8 @@ class TestReleaseArtifacts(unittest.TestCase):
             "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",
             "license_service": "LICENSE_SERVICE_INDEX_DIGEST",
         }
-        for name, repository in PLATFORM_ARTIFACTS.items():
+        for name, repository_name in PLATFORM_ARTIFACTS.items():
+            repository = f'"{WORKFLOW_NAMESPACE}/{repository_name}"'
             self.assertIn(
                 f'promote_image {repository} "${digest_vars[name]}"',
                 self.workflow,
@@ -1103,8 +1159,11 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertEqual(
             build["outputs"],
             {
-                output: f"${{{{ steps.platform-digests.outputs.{step_output} }}}}"
-                for output, step_output in expected_outputs.items()
+                "image_namespace": "${{ needs.release-preflight.outputs.image_namespace }}",
+                **{
+                    output: f"${{{{ steps.platform-digests.outputs.{step_output} }}}}"
+                    for output, step_output in expected_outputs.items()
+                },
             },
         )
         for output in expected_outputs:
@@ -1236,9 +1295,9 @@ class TestReleaseArtifacts(unittest.TestCase):
             "pipelock_init": "PIPELOCK_INIT_INDEX_DIGEST",
             "license_service": "LICENSE_SERVICE_INDEX_DIGEST",
         }
-        for name, repository in PLATFORM_ARTIFACTS.items():
+        for name, repository_name in PLATFORM_ARTIFACTS.items():
             self.assertIn(
-                f'-image "{BUNDLE_NAMES[name]}={repository}@${{{digest_vars[name]}}}"',
+                f'-image "{BUNDLE_NAMES[name]}={WORKFLOW_NAMESPACE}/{repository_name}@${{{digest_vars[name]}}}"',
                 self.workflow,
             )
         self.assertIn("dist/release-images.json", self.workflow)

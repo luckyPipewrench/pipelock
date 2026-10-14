@@ -656,18 +656,30 @@ type unitAssignment struct {
 }
 
 // unitServiceAssignments returns the [Service] assignments in the order systemd
-// reads them, following systemd.syntax(7): a line ending in a backslash
-// continues onto the next with the backslash replaced by a space, comment lines
-// between continued lines are skipped, whitespace around the key and value is
-// ignored, and only an uncontinued line can start a section. Reading physical
-// lines instead would take the second half of a continued Environment= value
-// for a directive of its own.
+// reads them.
 func unitServiceAssignments(body string) []unitAssignment {
+	assignments, _ := scanServiceSection(body)
+	return assignments
+}
+
+// scanServiceSection reads a unit the way systemd.syntax(7) describes: a line
+// ending in a backslash continues onto the next with the backslash replaced by a
+// space, comment lines between continued lines are skipped, whitespace around the
+// key and value is ignored, and only an uncontinued line can open a section. The
+// section name is taken exactly as written, so "[ Service ]" is an unknown
+// section, as systemd treats it. It returns the [Service] assignments and the
+// index of the first physical line that opens an active [Service] section, or -1.
+//
+// Detection and insertion share this one scan. Reading physical lines instead
+// would take the tail of a continued Environment= value for a directive, or
+// insert after a "[Service]" that systemd reads as part of the previous value.
+func scanServiceSection(body string) ([]unitAssignment, int) {
 	var out []unitAssignment
+	header := -1
 	section := ""
 	logical := ""
 	continuing := false
-	for _, raw := range strings.Split(body, "\n") {
+	for index, raw := range strings.Split(body, "\n") {
 		line := strings.TrimSpace(raw)
 		if line == "" && !continuing {
 			continue
@@ -676,7 +688,10 @@ func unitServiceAssignments(body string) []unitAssignment {
 			continue
 		}
 		if !continuing && strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
+			section = line[1 : len(line)-1]
+			if section == "Service" && header < 0 {
+				header = index
+			}
 			continue
 		}
 		if strings.HasSuffix(line, "\\") {
@@ -690,7 +705,7 @@ func unitServiceAssignments(body string) []unitAssignment {
 		logical = ""
 	}
 	// A continuation still open at the end of the file is applied as read.
-	return appendServiceAssignment(out, section, strings.TrimSpace(logical))
+	return appendServiceAssignment(out, section, strings.TrimSpace(logical)), header
 }
 
 func appendServiceAssignment(out []unitAssignment, section, logical string) []unitAssignment {
@@ -704,20 +719,19 @@ func appendServiceAssignment(out []unitAssignment, section, logical string) []un
 	return append(out, unitAssignment{key: strings.TrimSpace(key), value: strings.TrimSpace(value)})
 }
 
-// insertServiceDirective places line directly after the first [Service] header
-// and reports false when the unit has none.
+// insertServiceDirective places line directly after the first header that
+// systemd reads as opening [Service], and reports false when there is none.
 func insertServiceDirective(body, line string) (string, bool) {
+	_, header := scanServiceSection(body)
+	if header < 0 {
+		return body, false
+	}
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, len(lines)+1)
-	inserted := false
-	for _, current := range lines {
-		out = append(out, current)
-		if !inserted && strings.TrimSpace(current) == "[Service]" {
-			out = append(out, line)
-			inserted = true
-		}
-	}
-	return strings.Join(out, "\n"), inserted
+	out = append(out, lines[:header+1]...)
+	out = append(out, line)
+	out = append(out, lines[header+1:]...)
+	return strings.Join(out, "\n"), true
 }
 
 // preflightUpgradeManagedConfig proves that the managed config remains valid

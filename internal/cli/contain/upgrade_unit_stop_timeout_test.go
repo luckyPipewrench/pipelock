@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
+	"github.com/luckyPipewrench/pipelock/internal/config"
 )
 
 func wantStopTimeoutDirective() string {
@@ -217,4 +218,52 @@ func TestUnitServiceSetsDirectiveFollowsSystemdSyntax(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUnitMigrationsUseTheServiceHeaderSystemdReads covers the writer half of
+// the parser: insertion must land after the header systemd reads as [Service],
+// never after a "[Service]" swallowed by a continuation or one spelled with
+// inner spaces, which systemd treats as an unknown section.
+func TestUnitMigrationsUseTheServiceHeaderSystemdReads(t *testing.T) {
+	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"header swallowed by a continuation", "[Unit]\nDescription=Pipelock \\\n[Service]\nTimeoutStopSec=20min\n\n[Service]\nType=simple\n"},
+		{"inner spaces make an unknown section", "[ Service ]\nTimeoutStopSec=20min\n" + marker + "\n\n[Service]\nType=simple\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			env, unit := unitEnv(t, tt.body)
+			if err := ensureContainmentMarkerInUnit(env); err != nil {
+				t.Fatalf("ensureContainmentMarkerInUnit: %v", err)
+			}
+			if err := ensureStopTimeoutInUnit(env); err != nil {
+				t.Fatalf("ensureStopTimeoutInUnit: %v", err)
+			}
+			updated, err := os.ReadFile(filepath.Clean(unit))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := string(updated)
+			if !unitServiceSetsDirective(body, "TimeoutStopSec") || !unitHasActiveContainmentMarker(body, marker) {
+				t.Fatalf("settings were not placed where systemd reads them:\n%s", body)
+			}
+			// Both must follow the active header, the last "[Service]" line.
+			active := strings.LastIndex(body, "\n[Service]\n")
+			if strings.LastIndex(body, wantStopTimeoutDirective()) < active || strings.LastIndex(body, marker) < active {
+				t.Fatalf("a setting was inserted under an inactive header:\n%s", body)
+			}
+		})
+	}
+
+	t.Run("only an inactive header is refused", func(t *testing.T) {
+		for _, body := range []string{"[ Service ]\nType=simple\n", "[Unit]\nDescription=x \\\n[Service]\nType=simple\n"} {
+			env, _ := unitEnv(t, body)
+			if err := ensureStopTimeoutInUnit(env); err == nil || !strings.Contains(err.Error(), "no [Service] section") {
+				t.Fatalf("err = %v for a unit systemd reads without [Service]:\n%s", err, body)
+			}
+		}
+	})
 }

@@ -125,7 +125,10 @@ helm template pipelock "$chart" --set terminationGracePeriodSeconds=1200 | grep 
 expect_template_error "/terminationGracePeriodSeconds" --set terminationGracePeriodSeconds=-1
 helm template pipelock "$chart" --set terminationGracePeriodSeconds=0 | grep -q -- "terminationGracePeriodSeconds: 0"
 # Null must leave the Kubernetes default, never render a zero-second budget.
-if helm template pipelock "$chart" --set-json terminationGracePeriodSeconds=null | grep -q -- "terminationGracePeriodSeconds"; then
+# Render to a file first so a failed render cannot pass as an absent field.
+helm template pipelock "$chart" --set-json terminationGracePeriodSeconds=null >"$render_dir/null-grace.yaml"
+grep -q -- "kind: Deployment" "$render_dir/null-grace.yaml"
+if grep -q -- "terminationGracePeriodSeconds" "$render_dir/null-grace.yaml"; then
   echo "null terminationGracePeriodSeconds rendered a value instead of leaving the Kubernetes default" >&2
   exit 1
 fi

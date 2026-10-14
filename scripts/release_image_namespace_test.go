@@ -4,6 +4,7 @@
 package main
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -18,6 +19,11 @@ func runReleaseImageNamespace(t *testing.T, args ...string) (string, error) {
 	}
 	script, err := filepath.Abs("release-image-namespace.sh")
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Read the script so the Go test cache records it as an input; bash opening
+	// it is invisible to the cache, and a cached pass would survive an edit.
+	if _, err := os.ReadFile(script); err != nil { // #nosec G304 -- fixed path in this test's source tree.
 		t.Fatal(err)
 	}
 	command := exec.CommandContext(t.Context(), "bash", append([]string{script}, args...)...) // #nosec G204 -- script path is this test's source tree; arguments are test literals.

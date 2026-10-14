@@ -868,10 +868,20 @@ jobs:
             echo "::error::packaged chart does not default to ${IMAGE_NAMESPACE}/pipelock:${app_version}"
             exit 1
           }
-          if grep -o 'ghcr\.io/[a-z0-9-]*/' <<<"$rendered" | grep -vxF "${IMAGE_NAMESPACE}/" | grep -q .; then
-            echo "::error::packaged chart renders an image outside ${IMAGE_NAMESPACE}"
+          # Every rendered image, quoted or not and from any registry, must sit
+          # under the release namespace.
+          images="$(grep -E '^[[:space:]]*(- )?image:' <<<"$rendered" |
+            sed -E 's/^[[:space:]]*(- )?image:[[:space:]]*//; s/^"//; s/"[[:space:]]*$//')"
+          test -n "$images" || {
+            echo "::error::packaged chart renders no image"
             exit 1
-          fi
+          }
+          while IFS= read -r image; do
+            [[ "$image" == "${IMAGE_NAMESPACE}/"* ]] || {
+              echo "::error::packaged chart renders an image outside ${IMAGE_NAMESPACE}: ${image}"
+              exit 1
+            }
+          done <<<"$images"
 
       # Build the operator-facing bundle only after every child image has its
       # own SBOM and provenance proof. The bundle contains index digests because

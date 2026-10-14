@@ -63,6 +63,11 @@ func homebrewPreflightCommand(t *testing.T, statusLine string, exitCode int) *ex
 	if err := os.WriteFile(fake, []byte(body), 0o700); err != nil { // #nosec G306 -- the fake gh must be executable.
 		t.Fatalf("write fake gh: %v", err)
 	}
+	// Read the script so the Go test cache records it as an input; bash opening
+	// it is invisible to the cache, and a cached pass would survive an edit.
+	if _, err := os.ReadFile(script); err != nil { // #nosec G304 -- fixed path in this test's source tree.
+		t.Fatalf("read preflight script: %v", err)
+	}
 	command := exec.CommandContext(t.Context(), "bash", script) // #nosec G204 -- script path is this test's source tree.
 	command.Env = append(withoutCredentialEnv(os.Environ()), "PATH="+binDir+":/usr/bin:/bin")
 	return command

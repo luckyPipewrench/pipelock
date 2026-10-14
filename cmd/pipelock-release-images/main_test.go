@@ -155,7 +155,7 @@ func TestBuildManifestRejectsWrongOrMissingInputs(t *testing.T) {
 		{name: "bad tag", tag: "release-3.4.0", commit: strings.Repeat("a", 40), images: validImages, want: "--tag"},
 		{name: "bad commit", tag: "v3.4.0", commit: "ABC", images: validImages, want: "--commit"},
 		{name: "missing image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: validImages[:2], want: "missing required"},
-		{name: "duplicate image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: append(validImages[:2], validImages[0]), want: "duplicate"},
+		{name: "duplicate image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{validImages[0], validImages[1], validImages[0]}, want: "duplicate"},
 		{name: "too many images", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: append(validImages, validImages[0]), want: "exactly"},
 		{name: "unknown image", tag: "v3.4.0", commit: strings.Repeat("a", 40), images: []string{
 			"other=ghcr.io/luckypipewrench/other@" + testDigest,

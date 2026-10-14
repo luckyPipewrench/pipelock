@@ -8,6 +8,8 @@ import (
 	"io"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // sidecarVerifyResult holds the outcome of the sidecar verify phase.
@@ -44,7 +46,7 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("replicas: %d", proxyReplicaCount)) {
 		failed = append(failed, fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount))
 	}
-	if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds)) {
+	if got, ok := deploymentTerminationGrace(result.DeploymentYAML); !ok || got != proxyTerminationGracePeriodSeconds {
 		failed = append(failed, fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds))
 	}
 	if strings.Contains(result.DeploymentYAML, "subPath:") {
@@ -239,4 +241,28 @@ func podSpecHasVolumeMount(podSpec map[string]interface{}) bool {
 		}
 	}
 	return false
+}
+
+// deploymentTerminationGrace reads spec.template.spec.terminationGracePeriodSeconds
+// from a Deployment manifest. It parses the field rather than matching text, so a
+// different value that contains the expected digits, or the expected line inside
+// a comment, does not pass.
+func deploymentTerminationGrace(manifest string) (int64, bool) {
+	var doc struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					TerminationGracePeriodSeconds *int64 `yaml:"terminationGracePeriodSeconds"`
+				} `yaml:"spec"`
+			} `yaml:"template"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal([]byte(manifest), &doc); err != nil {
+		return 0, false
+	}
+	grace := doc.Spec.Template.Spec.TerminationGracePeriodSeconds
+	if grace == nil {
+		return 0, false
+	}
+	return *grace, true
 }

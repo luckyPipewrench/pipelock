@@ -557,17 +557,9 @@ func upgradePostVerify(ctx context.Context, env *upgradeEnv) error {
 // would skip the insertion and leave the host unguarded while the upgrade
 // reported success, which is the exact failure this migration exists to fix.
 func unitHasActiveContainmentMarker(body, marker string) bool {
-	section := ""
-	for _, raw := range strings.Split(body, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
-			continue
-		}
-		if section == "Service" && line == marker {
+	key, value, _ := strings.Cut(marker, "=")
+	for _, a := range unitServiceAssignments(body) {
+		if a.key == key && a.value == value {
 			return true
 		}
 	}
@@ -643,34 +635,73 @@ func readManagedUnit(env *upgradeEnv) (string, error) {
 	return string(current), nil
 }
 
-// unitServiceSetsDirective reports whether any of keys is assigned on a line
-// systemd will read: inside [Service], not commented out. systemd ignores
-// whitespace around the key, so "TimeoutStopSec = 5min" counts.
+// unitServiceSetsDirective reports whether any of keys has a non-empty
+// assignment systemd would apply. systemd ignores an empty timeout assignment
+// rather than resetting an earlier one (checked with systemctl show on systemd
+// 261), so "TimeoutStopSec=" alone sets nothing and does not undo a prior value.
 func unitServiceSetsDirective(body string, keys ...string) bool {
-	section := ""
-	for _, raw := range strings.Split(body, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
-			section = strings.TrimSpace(line[1 : len(line)-1])
-			continue
-		}
-		if section != "Service" {
-			continue
-		}
-		key, _, found := strings.Cut(line, "=")
-		if !found {
-			continue
-		}
+	for _, a := range unitServiceAssignments(body) {
 		for _, want := range keys {
-			if strings.TrimSpace(key) == want {
+			if a.key == want && a.value != "" {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// unitAssignment is one key=value setting from a unit's [Service] section.
+type unitAssignment struct {
+	key, value string
+}
+
+// unitServiceAssignments returns the [Service] assignments in the order systemd
+// reads them, following systemd.syntax(7): a line ending in a backslash
+// continues onto the next with the backslash replaced by a space, comment lines
+// between continued lines are skipped, whitespace around the key and value is
+// ignored, and only an uncontinued line can start a section. Reading physical
+// lines instead would take the second half of a continued Environment= value
+// for a directive of its own.
+func unitServiceAssignments(body string) []unitAssignment {
+	var out []unitAssignment
+	section := ""
+	logical := ""
+	continuing := false
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" && !continuing {
+			continue
+		}
+		if strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if !continuing && strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		if strings.HasSuffix(line, "\\") {
+			logical += strings.TrimSuffix(line, "\\") + " "
+			continuing = true
+			continue
+		}
+		logical += line
+		continuing = false
+		out = appendServiceAssignment(out, section, logical)
+		logical = ""
+	}
+	// A continuation still open at the end of the file is applied as read.
+	return appendServiceAssignment(out, section, strings.TrimSpace(logical))
+}
+
+func appendServiceAssignment(out []unitAssignment, section, logical string) []unitAssignment {
+	if section != "Service" {
+		return out
+	}
+	key, value, found := strings.Cut(logical, "=")
+	if !found {
+		return out
+	}
+	return append(out, unitAssignment{key: strings.TrimSpace(key), value: strings.TrimSpace(value)})
 }
 
 // insertServiceDirective places line directly after the first [Service] header

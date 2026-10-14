@@ -123,6 +123,12 @@ grep -q -- "- run" "$render_dir/default.yaml"
 grep -q -- "terminationGracePeriodSeconds: 600" "$render_dir/default.yaml"
 helm template pipelock "$chart" --set terminationGracePeriodSeconds=1200 | grep -q -- "terminationGracePeriodSeconds: 1200"
 expect_template_error "/terminationGracePeriodSeconds" --set terminationGracePeriodSeconds=-1
+helm template pipelock "$chart" --set terminationGracePeriodSeconds=0 | grep -q -- "terminationGracePeriodSeconds: 0"
+# Null must leave the Kubernetes default, never render a zero-second budget.
+if helm template pipelock "$chart" --set-json terminationGracePeriodSeconds=null | grep -q -- "terminationGracePeriodSeconds"; then
+  echo "null terminationGracePeriodSeconds rendered a value instead of leaving the Kubernetes default" >&2
+  exit 1
+fi
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-audit-queue" "$render_dir/values-enterprise-follower.yaml"

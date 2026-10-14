@@ -184,7 +184,7 @@ Enterprise modes require `networkPolicy.enabled=true`. Use `networkPolicy.ingres
 | `podDisruptionBudget.minAvailable` | `1` | Minimum replicas available during voluntary disruption |
 | `topologySpreadConstraints` | `[]` | Spread replicas across zones / hosts |
 | `priorityClassName` | `""` | PriorityClass for the pod |
-| `terminationGracePeriodSeconds` | `600` | Seconds between SIGTERM and SIGKILL for the proxy pod; covers the receipt-group close at shutdown (Kubernetes default is 30) |
+| `terminationGracePeriodSeconds` | `600` | Seconds between SIGTERM and SIGKILL for the proxy pod; covers the receipt-group close at shutdown (Kubernetes default is 30; `null` leaves that default) |
 
 ### Pipelock configuration
 

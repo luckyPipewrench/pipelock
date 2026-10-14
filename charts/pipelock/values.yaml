@@ -73,7 +73,7 @@ priorityClassName: ""
 # on two CPUs took 109 s. A kill before the close finishes leaves durable
 # receipts verifiable but the group unsealed (GROUP_INCOMPLETE). 600 is a
 # chosen budget, not a proven bound; raise it for long-lived recorders on small
-# CPU limits.
+# CPU limits. Set null to leave Kubernetes' default.
 terminationGracePeriodSeconds: 600
 
 # PodDisruptionBudget. Strongly recommended when running multiple replicas

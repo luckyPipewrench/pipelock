@@ -270,11 +270,11 @@ Every deployment Pipelock ships states a 10-minute stop budget instead of its ma
 | `pipelock contain install` systemd unit | `TimeoutStopSec=600` | 90 s |
 | Helm chart | `terminationGracePeriodSeconds: 600` (value `terminationGracePeriodSeconds`) | 30 s |
 | `pipelock init sidecar` generated proxy Deployment and Helm values | `terminationGracePeriodSeconds: 600` | 30 s |
-| `pipelock generate docker-compose` and the Compose examples | `stop_grace_period: 10m` | 10 s |
+| `pipelock generate docker-compose`, the Compose examples and the guides' Compose snippets | `stop_grace_period: 10m` | 10 s |
 
-`pipelock contain upgrade` adds `TimeoutStopSec=600` to an existing unit's `[Service]` section unless the unit already sets `TimeoutStopSec` or `TimeoutSec` there; a drop-in under `pipelock.service.d/` still overrides it. For `docker run`, pass `--stop-timeout 600`, or `docker stop --timeout 600` when stopping it by hand. Ten minutes is a chosen budget, not a proven bound. Raise it for a long-lived recorder on a small CPU limit, and size CPU and memory limits for recording separately: a longer grace period doesn't help a container that runs out of memory.
+`pipelock contain upgrade` from 3.7.0 or later adds `TimeoutStopSec=600` to an existing unit's `[Service]` section unless the unit already sets `TimeoutStopSec` or `TimeoutSec` there; a drop-in under `pipelock.service.d/` still overrides it. An upgrade run by an earlier binary doesn't add it, because the old binary performs the upgrade; afterwards, run `pipelock contain install` with the new binary to rewrite the unit. For `docker run`, pass `--stop-timeout 600`, or `docker stop --timeout 600` when stopping it by hand. Ten minutes is a chosen budget, not a proven bound. Raise it for a long-lived recorder on a small CPU limit, and size CPU and memory limits for recording separately: a longer grace period doesn't help a container that runs out of memory.
 
-If the manager kills Pipelock before the close finishes, receipts that were already durable stay on disk and still authenticate, but the group has no signed close. `pipelock verify-receipt --chain DIR --group <group-id>` reports it as `GROUP_INCOMPLETE` and exits nonzero, so a killed run can't pass as complete. A kill earlier in shutdown, while requests are still draining, can also leave a torn final record or, with best-effort receipts, an action without its receipt.
+If the manager kills Pipelock before the close finishes, receipts that were already durable stay on disk and still authenticate, but the group has no signed close. `pipelock verify-receipt --chain DIR --group <group-id> --key <signer-public-key>` reports it as `GROUP_INCOMPLETE` and exits nonzero, so a killed run can't pass as complete. A kill earlier in shutdown, while requests are still draining, can also leave a torn final record or, with best-effort receipts, an action without its receipt.
 
 ### One chain per process run
 

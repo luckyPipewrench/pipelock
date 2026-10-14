@@ -97,6 +97,7 @@ func TestEnsureContainmentMarkerInUnitIgnoresAMarkerSystemdWouldNotApply(t *test
 		{"marker in [Unit]", "[Unit]\nDescription=Pipelock\n" + marker + "\n\n[Service]\nType=simple\n"},
 		{"marker in [Install]", "[Service]\nType=simple\n\n[Install]\n" + marker + "\n"},
 		{"marker only in a comment", "[Service]\nType=simple\n# migrated from " + marker + "\n"},
+		{"marker inside a continued value", "[Service]\nType=simple\nEnvironment=LABEL=foo \\\n" + marker + "\n"},
 	}
 
 	for _, tt := range tests {

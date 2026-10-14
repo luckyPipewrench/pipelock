@@ -279,6 +279,7 @@ services:
       - pipelock-internal
       - pipelock-external
     command: ["run", "--listen", "0.0.0.0:8888", "--config", "/config/pipelock.yaml"]
+    stop_grace_period: 10m   # Receipt-group close at shutdown; Compose default is 10 s
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
     healthcheck:

@@ -91,6 +91,30 @@ func TestRunSidecarVerifyRejectsStaticTopologyDrift(t *testing.T) {
 			wantError: fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds),
 		},
 		{
+			name: "longer termination grace containing the digits",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(
+					result.DeploymentYAML,
+					fmt.Sprintf("terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds),
+					fmt.Sprintf("terminationGracePeriodSeconds: %d0", proxyTerminationGracePeriodSeconds),
+					1,
+				)
+			},
+			wantError: fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds),
+		},
+		{
+			name: "termination grace only in a comment",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(
+					result.DeploymentYAML,
+					fmt.Sprintf("terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds),
+					fmt.Sprintf("terminationGracePeriodSeconds: 0 # terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds),
+					1,
+				)
+			},
+			wantError: fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds),
+		},
+		{
 			name: "subpath config mount",
 			mutate: func(t *testing.T, result *sidecarPatchResult) {
 				result.DeploymentYAML = addConfigMountSubPath(t, result.DeploymentYAML)

@@ -65,7 +65,7 @@ func TestEnsureStopTimeoutInUnitMigratesALegacyUnit(t *testing.T) {
 // would silently replace a budget the operator chose, and TimeoutSec= sets the
 // stop timeout as well.
 func TestEnsureStopTimeoutInUnitKeepsAnOperatorChoice(t *testing.T) {
-	for _, line := range []string{"TimeoutStopSec=30min", "TimeoutStopSec = infinity", "TimeoutSec=45"} {
+	for _, line := range []string{"TimeoutStopSec=30min", "TimeoutStopSec = infinity", "TimeoutSec=45", "TimeoutStopSec=\nTimeoutStopSec=15min", "TimeoutStopSec=30min\nTimeoutStopSec=", "TimeoutStopSec=1h \\\n"} {
 		t.Run(line, func(t *testing.T) {
 			body := strings.Replace(legacyUnitWithoutMarker, "Restart=on-failure\n", "Restart=on-failure\n"+line+"\n", 1)
 			env, unit := unitEnv(t, body)
@@ -95,6 +95,12 @@ func TestEnsureStopTimeoutInUnitIgnoresSettingsSystemdWouldNotApply(t *testing.T
 		{"hash comment", "[Service]\nType=simple\n# TimeoutStopSec=5\n"},
 		{"semicolon comment", "[Service]\nType=simple\n; TimeoutSec=5\n"},
 		{"prefix of another key", "[Service]\nType=simple\nTimeoutStopFailureMode=abort\n"},
+		// systemd joins a backslash-continued line, so this TimeoutStopSec is part
+		// of the Environment= value, not a directive.
+		{"inside a continued value", "[Service]\nType=simple\nEnvironment=LABEL=foo \\\nTimeoutStopSec=20min\n"},
+		{"continued across a comment", "[Service]\nEnvironment=LABEL=foo \\\n# note\nTimeoutSec=45\n"},
+		// systemd ignores an empty timeout assignment.
+		{"empty assignment", "[Service]\nType=simple\nTimeoutStopSec=\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,5 +189,32 @@ func TestUpgradeCarriesTheStopTimeoutOntoALegacyUnit(t *testing.T) {
 	}
 	if !unitServiceSetsDirective(string(updated), "TimeoutStopSec") {
 		t.Fatalf("upgrade left a legacy unit on systemd's default stop budget:\n%s", updated)
+	}
+}
+
+// TestUnitServiceSetsDirectiveFollowsSystemdSyntax pins the parser on the
+// logical-line cases physical-line matching gets wrong.
+func TestUnitServiceSetsDirectiveFollowsSystemdSyntax(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"plain", "[Service]\nTimeoutStopSec=5min\n", true},
+		{"spaced", "[Service]\nTimeoutStopSec = 5min\n", true},
+		{"continued value", "[Service]\nTimeoutStopSec=5 \\\nmin\n", true},
+		{"continuation open at end of file", "[Service]\nTimeoutStopSec=1h \\", true},
+		{"swallowed by a continued Environment", "[Service]\nEnvironment=A=b \\\nTimeoutStopSec=5min\n", false},
+		{"empty assignment alone", "[Service]\nTimeoutStopSec=\n", false},
+		{"empty assignment does not undo a value", "[Service]\nTimeoutStopSec=5min\nTimeoutStopSec=\n", true},
+		{"value after an empty assignment", "[Service]\nTimeoutStopSec=\nTimeoutSec=45\n", true},
+		{"other section", "[Unit]\nTimeoutStopSec=5min\n[Service]\nType=simple\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unitServiceSetsDirective(tt.body, "TimeoutStopSec", "TimeoutSec"); got != tt.want {
+				t.Fatalf("unitServiceSetsDirective = %v, want %v for:\n%s", got, tt.want, tt.body)
+			}
+		})
 	}
 }

@@ -195,6 +195,8 @@ metadata:
 spec:
   template:
     spec:
+      # Room for the receipt-group close at shutdown; Kubernetes defaults to 30 s
+      terminationGracePeriodSeconds: 600
       initContainers:
         - name: pipelock-init
           image: ghcr.io/luckypipewrench/pipelock-init:3.7.0

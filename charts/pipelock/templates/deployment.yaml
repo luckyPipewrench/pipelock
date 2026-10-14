@@ -29,7 +29,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "pipelock.serviceAccountName" . }}
+      {{- /* Null removes the key, which leaves Kubernetes' own default; it must not render as 0. */}}
+      {{- if not (kindIs "invalid" .Values.terminationGracePeriodSeconds) }}
       terminationGracePeriodSeconds: {{ int .Values.terminationGracePeriodSeconds }}
+      {{- end }}
       {{- with .Values.priorityClassName }}
       priorityClassName: {{ . | quote }}
       {{- end }}

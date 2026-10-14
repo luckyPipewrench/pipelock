@@ -301,12 +301,25 @@ class TestReleaseArtifacts(unittest.TestCase):
                 job_name,
             )
 
+        # The packaged chart defaults to the release namespace, proven by a render.
+        package = [step for step in jobs["release-build"]["steps"] if step.get("name") == "Package Helm chart"]
+        self.assertEqual(len(package), 1)
+        package_run = package[0]["run"]
+        self.assertIn('helm package "$chart_src"', package_run)
+        self.assertNotIn("helm package charts/pipelock", package_run)
+        self.assertIn('to="  repository: ${IMAGE_NAMESPACE}/pipelock"', package_run)
+        self.assertIn('image: \\"${IMAGE_NAMESPACE}/pipelock:${app_version}\\"', package_run)
+        self.assertIn("renders an image outside ${IMAGE_NAMESPACE}", package_run)
+
         # The chart's provenance check names the repository that ran the release.
         self.assertIn('--repo "$GITHUB_REPOSITORY"', self.workflow)
         self.assertIn('--signer-workflow "${GITHUB_REPOSITORY}/.github/workflows/release.yaml"', self.workflow)
 
         # No image, chart or label still names a fixed account.
-        self.assertNotIn("ghcr.io/luckypipewrench", self.workflow.lower())
+        # The one permitted mention is the committed chart default the package
+        # step locates and replaces.
+        self.assertEqual(self.workflow.lower().count("ghcr.io/luckypipewrench"), 1)
+        self.assertIn("default_line='  repository: ghcr.io/luckypipewrench/pipelock'", self.workflow)
         self.assertNotIn("ghcr.io/luckypipewrench", self.goreleaser.lower())
         self.assertIn(
             "image.source=https://github.com/{{ .Env.GITHUB_REPOSITORY }}",

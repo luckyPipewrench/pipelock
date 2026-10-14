@@ -842,7 +842,36 @@ jobs:
             echo "::error::could not read chart version from charts/pipelock/Chart.yaml"
             exit 1
           }
-          helm package charts/pipelock --app-version "$app_version" --destination dist-chart
+          # The chart's default image must come from the namespace this release
+          # publishes to, or a chart released after a repository move would
+          # install the previous owner's image. Stamp a scratch copy so the
+          # checkout stays as committed, then prove the packaged default.
+          [[ "$IMAGE_NAMESPACE" =~ ^ghcr\.io/[a-z0-9-]+$ ]] || {
+            echo "::error::IMAGE_NAMESPACE is not a registry namespace: '${IMAGE_NAMESPACE}'"
+            exit 1
+          }
+          chart_src="$RUNNER_TEMP/chart-src"
+          rm -rf "$chart_src"
+          cp -R charts/pipelock "$chart_src"
+          default_line='  repository: ghcr.io/luckypipewrench/pipelock'
+          test "$(grep -cxF "$default_line" "$chart_src/values.yaml")" -eq 1 || {
+            echo "::error::charts/pipelock/values.yaml must set image.repository to exactly one default line: ${default_line}"
+            exit 1
+          }
+          awk -v from="$default_line" -v to="  repository: ${IMAGE_NAMESPACE}/pipelock" \
+            '$0 == from { print to; next } { print }' "$chart_src/values.yaml" > "$chart_src/values.yaml.new"
+          mv "$chart_src/values.yaml.new" "$chart_src/values.yaml"
+          helm package "$chart_src" --app-version "$app_version" --destination dist-chart
+          chart_archive="dist-chart/pipelock-${chart_version}.tgz"
+          rendered="$(helm template pipelock "$chart_archive")"
+          grep -qF "image: \"${IMAGE_NAMESPACE}/pipelock:${app_version}\"" <<<"$rendered" || {
+            echo "::error::packaged chart does not default to ${IMAGE_NAMESPACE}/pipelock:${app_version}"
+            exit 1
+          }
+          if grep -o 'ghcr\.io/[a-z0-9-]*/' <<<"$rendered" | grep -vxF "${IMAGE_NAMESPACE}/" | grep -q .; then
+            echo "::error::packaged chart renders an image outside ${IMAGE_NAMESPACE}"
+            exit 1
+          fi
 
       # Build the operator-facing bundle only after every child image has its
       # own SBOM and provenance proof. The bundle contains index digests because

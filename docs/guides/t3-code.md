@@ -15,8 +15,8 @@ Use a Pipelock build containing the T3 compatibility fixes in
 [#1780](https://github.com/luckyPipewrench/pipelock/pull/1780),
 [#1787](https://github.com/luckyPipewrench/pipelock/pull/1787), and
 [#1792](https://github.com/luckyPipewrench/pipelock/pull/1792).
-These fixes are absent from v3.6.0. Do not assume that installing v3.6.0 is
-equivalent to this setup.
+These fixes ship in v3.7.0 and later. v3.6.0 doesn't contain them, so installing
+v3.6.0 isn't equivalent to this setup.
 
 The Linux setup below was exercised with T3 revision `3fb5ae602c` and a Pipelock
 development binary reporting revision `eb1ed809f`. Claude and Codex both

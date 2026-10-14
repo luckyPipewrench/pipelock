@@ -132,18 +132,18 @@ image.
 image:
   repository: ghcr.io/luckypipewrench/pipelock
   tag: ""
-  digest: "sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47"
+  digest: "sha256:3936eaa3a400e61584d67212d25aa9000c60b0e32850d72b1e459e3559aa159a"
 ```
 
-That is a historical v3.6.0 digest, not a v3.7.0 install pin. For another release, replace it with the `pipelock`
+That is the v3.7.0 `pipelock` digest. For another release, replace it with the `pipelock`
 digest from that release's verified bundle.
 
 Render the exact values before applying them:
 
 ```bash
-helm lint charts/pipelock -f values-pipelock-v3.6.0.yaml
-helm template pipelock charts/pipelock -f values-pipelock-v3.6.0.yaml > rendered-pipelock-v3.6.0.yaml
-grep 'image:' rendered-pipelock-v3.6.0.yaml
+helm lint charts/pipelock -f values-pipelock-v3.7.0.yaml
+helm template pipelock charts/pipelock -f values-pipelock-v3.7.0.yaml > rendered-pipelock-v3.7.0.yaml
+grep 'image:' rendered-pipelock-v3.7.0.yaml
 ```
 
 The output must contain `ghcr.io/luckypipewrench/pipelock@sha256:`. It must not
@@ -159,15 +159,15 @@ separate on purpose and are not configured by the Pipelock Helm chart.
 ```yaml
 initContainers:
   - name: pipelock-init
-    image: ghcr.io/luckypipewrench/pipelock-init@sha256:fe47d7105633c3d56d0f47ab8ed3ed347d9dbc7fa6421441288917985da0e757
+    image: ghcr.io/luckypipewrench/pipelock-init@sha256:64b5e62dd93585ff4a11eae2ef3ba9360375833601d48c27d7b013dae2aa7202
     args: ["cp", "/pipelock", "/shared-bin/pipelock"]
 
 containers:
   - name: license-service
-    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:809246b5ee83d5cc9ec103c57abb42fe035b59f8d07b556e9ffef03afa5242ab
+    image: ghcr.io/luckypipewrench/pipelock-license-service@sha256:460a76f70ee62891643bb5b369aab454045469c787527e1e6382c67e24a7c2cc
 ```
 
-Those are historical v3.6.0 digests, not v3.7.0 install pins. For another release, replace each with its
+Those are the v3.7.0 digests. For another release, replace each with its
 matching entry from that release's verified bundle.
 
 ## Prove the cluster changed

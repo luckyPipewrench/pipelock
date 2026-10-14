@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # Upgrading to 3.7
 
-Upgrade the binary before loading configurations that use new fields. Keep older fleet members on compatible bundles until their binaries are updated. The [3.7.0 changelog](../../CHANGELOG.md#370---2026-10-13) covers the full release; this guide covers changes that need an operator action.
+Upgrade the binary before loading configurations that use new fields. Keep older fleet members on compatible bundles until their binaries are updated. The [3.7.0 changelog](../../CHANGELOG.md#370---2026-10-14) covers the full release; this guide covers changes that need an operator action.
 
 Installation examples target v3.7.0 after its artifacts are published. Action commit pins identify source, not the eventual tag; the binary `version` input selects the release.
 
@@ -55,7 +55,7 @@ Paid live connections close when their entitlement expires, is revoked or is pro
 
 Forward, intercepted and reverse HTTP paths strip Range and cache-validator headers and refuse origin `206` and `304` responses as `response_incomplete`. Browser Shield exemptions do not relax that refusal. Check clients that require ranged or conditional responses.
 
-JWT Cookie headers follow the configured header DLP action and core floor. Issuer-bound cookies observed through TLS interception retain their scoped allowance. With an unbound `default_agent_identity`, requests with and without a declared agent header share detection state; changing the default identity on reload closes affected intercepted tunnels and WebSocket relays.
+JWT Cookie headers follow the configured header DLP action and core floor. Issuer-bound cookies observed through TLS interception retain their scoped allowance. Their evidence is saved under `$XDG_STATE_HOME`; in a read-only container, point it at a writable directory that only Pipelock mounts, as described in [browser session cookies](false-positive-tuning.md#browser-session-cookies-on-intercepted-https). With an unbound `default_agent_identity`, requests with and without a declared agent header share detection state; changing the default identity on reload closes affected intercepted tunnels and WebSocket relays.
 
 On MCP, malformed JSON, invalid UTF-8, duplicate keys and noncanonical protocol keys refuse despite `mcp_input_scanning.on_parse_error: forward`; rejected MCP responses do not update tracking state. All seven presets also gain credential-file write blocks, so review tools that write, move, copy or patch those paths before updating a preset.
 

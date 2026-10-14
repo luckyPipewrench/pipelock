@@ -9,7 +9,7 @@ The scanner and MCP latency tables use medians from three runs on an AMD Ryzen 7
 
 ## Required-receipt workload
 
-The development-build million-request run sustained 414 requests/s with eight chains and required receipts, with zero missing of 5,808,850 expected receipt records and a valid signed group. It used an 8-CPU quota on a 6-core/12-thread i7-10750H. The [measurement table](benchmarks.md#million-request-receipt-run) includes latency, calibration, source-build label and the narrower receipt detection boundary. It is separate from the historical scanner microbenchmarks below.
+The released 3.7.0 binary's million-request run sustained 333 requests/s with eight chains and required receipts, with zero missing of 5,855,850 expected receipt records and a valid signed group. It used an 8-CPU quota on a 6-core/12-thread i7-10750H. The [measurement table](benchmarks.md#million-request-receipt-run) includes latency, calibration, the measured binary's identity and the narrower receipt detection boundary. It is separate from the historical scanner microbenchmarks below.
 
 ## Scanning Latency (single request)
 

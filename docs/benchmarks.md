@@ -4,29 +4,29 @@ Receipt-load measurements and raw scanner benchmarks from Go's testing framework
 
 ## Million-request receipt run
 
-A development build containing the receipt caching and bounded-search changes in [#1897](https://github.com/luckyPipewrench/pipelock/pull/1897) completed 1,000,000 measured requests with required receipts. All 5,808,850 expected receipt records were present. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
+The released 3.7.0 binary, which contains the receipt caching and bounded-search changes in [#1897](https://github.com/luckyPipewrench/pipelock/pull/1897), completed 1,000,000 measured requests with required receipts. All 5,855,850 expected receipt records were present. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
 
 | Measurement | Observed result |
 |---|---:|
 | Measured requests | 1,000,000 |
-| Expected receipt records | 5,808,850 |
+| Expected receipt records | 5,855,850 |
 | Missing receipt records | 0 |
 | Signed group shards | 8, `GROUP_VALID` |
-| Throughput | 414 requests/s |
-| Request latency p50 / p95 / p99 | 297 / 559 / 684 ms |
+| Throughput | 333 requests/s |
+| Request latency p50 / p95 / p99 | 371 / 671 / 825 ms |
 | Concurrent clients | 128 |
 
-The run used Linux on an Intel i7-10750H with 6 physical cores and 12 hardware threads, an 8-CPU quota cap, `GOMAXPROCS=8`, eight receipt chains and `require_receipts: true`. The tested binary reported `3.6.0-123-g0110d7b7c`; it was a development build, not the final v3.7.0 release artifact. CPU labels describe quota caps, not dedicated physical cores. The workload is the repository's synthetic [receipt-load harness](../scripts/receipt-load/), and the measurements were collected on October 12, 2026.
+The run used Linux on an Intel i7-10750H with 6 physical cores and 12 hardware threads, an 8-CPU quota cap, `GOMAXPROCS=8`, eight receipt chains and `require_receipts: true`. The tested binary is the published v3.7.0 linux/amd64 release artifact (`pipelock version 3.7.0`, commit `47c14c59`, SHA-256 `5664762611582b5c95a18194d082b460aa88a2e344b6177b48a37cd6d6be0822`), checked against the release checksums. CPU labels describe quota caps, not dedicated physical cores. Host load was sampled every 15 seconds and the desktop screensaver was held off for the run. The workload is the repository's synthetic [receipt-load harness](../scripts/receipt-load/), and the measurements were collected on October 14, 2026.
 
-A separate 20,000-request calibration on the same binary measured these configurations. Every reported configuration passed integrity with zero missing records. These are calibration results, not confidence intervals or a comparison with another product.
+A separate 20,000-request calibration of the same binary on the same host, under the same conditions, measured these configurations. Every reported configuration passed integrity with zero missing records. These are calibration results, not confidence intervals or a comparison with another product.
 
 | CPU quota cap | One chain, requests/s | Chains equal to cap, requests/s |
 |---:|---:|---:|
-| 2 | 110 | 108 |
-| 4 | 131 | 237 |
-| 8 | 137 | 403 |
+| 2 | 96 | 96 |
+| 4 | 122 | 192 |
+| 8 | 125 | 351 |
 
-The measured build uses a bounded receipt fragment search. Complete secrets in scanned fields remain checked before signing, and an exact clean-text cache never stores a finding. Splits involving multiple fixed values, dropped enum labels or nonadjacent formatted decision text can fall outside the search. The search also excludes splits into five or more pieces, four pieces outside forward/reverse order, and three pieces on receipts too wide for that search. Process-proven generated IDs are excluded even when their text could complete a secret. Read the [receipt content boundary](guides/receipt-verification.md#receipt-content-boundary) for every bound. The result doesn't prove arbitrary payload detection, every disk-failure mode, unmediated traffic, external anchoring, published verifier availability or the identity of a later rebuilt release binary. The earlier prototype that omitted content scanning is excluded from these results.
+The measured build uses a bounded receipt fragment search. Complete secrets in scanned fields remain checked before signing, and an exact clean-text cache never stores a finding. Splits involving multiple fixed values, dropped enum labels or nonadjacent formatted decision text can fall outside the search. The search also excludes splits into five or more pieces, four pieces outside forward/reverse order, and three pieces on receipts too wide for that search. Process-proven generated IDs are excluded even when their text could complete a secret. Read the [receipt content boundary](guides/receipt-verification.md#receipt-content-boundary) for every bound. The result doesn't prove arbitrary payload detection, every disk-failure mode, unmediated traffic, external anchoring, published verifier availability, or throughput for another build, host or workload. The earlier prototype that omitted content scanning is excluded from these results.
 
 ## Methodology
 

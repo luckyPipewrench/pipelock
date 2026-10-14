@@ -13,7 +13,9 @@ that introduced the drift.
 from __future__ import annotations
 
 import copy
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -326,6 +328,30 @@ class TestReleaseArtifacts(unittest.TestCase):
             self.goreleaser,
         )
         self.assertNotIn("image.source=https://github.com/luckyPipewrench", self.goreleaser)
+
+    @unittest.skipIf(os.name == "nt", "release workflow guard requires bash")
+    def test_chart_namespace_guard_rejects_missing_or_malformed_values(self) -> None:
+        jobs = yaml.load(self.workflow, Loader=WorkflowLoader)["jobs"]
+        package = next(
+            step for step in jobs["release-build"]["steps"]
+            if step.get("name") == "Package Helm chart"
+        )["run"]
+        start = package.index('[[ "$IMAGE_NAMESPACE" =~')
+        guard = package[start:package.index('chart_src=', start)]
+        valid = ("ghcr.io/luckypipewrench", "ghcr.io/pipelab-org")
+        invalid = (None, "", "ghcr.io/", "/pipelock", "ghcr.io/pipelab-org/pipelock",
+                   " ghcr.io/pipelab-org", "ghcr.io/pipelab-org\n", "ghcr.io/Pipelab-org")
+        for namespace in (*valid, *invalid):
+            with self.subTest(namespace=namespace):
+                env = {} if namespace is None else {"IMAGE_NAMESPACE": namespace}
+                result = subprocess.run(
+                    ["bash", "-euo", "pipefail", "-c", guard],
+                    env=env, capture_output=True, text=True, timeout=5, check=False,
+                )
+                if namespace in valid:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_release_waits_for_customer_verifier_install_gate(self) -> None:
         gate = self.workflow.index("  release-verifier-install:")

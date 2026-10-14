@@ -56,6 +56,19 @@ func TestGenerateDockerCompose_AllAgentTypes(t *testing.T) {
 			if !strings.Contains(tmpl, "condition: service_healthy") {
 				t.Error("expected healthcheck dependency")
 			}
+			// The proxy service states a stop budget past Compose's 10 s default,
+			// which a receipt-group close at shutdown can outlast.
+			var doc struct {
+				Services map[string]struct {
+					StopGracePeriod string `yaml:"stop_grace_period"`
+				} `yaml:"services"`
+			}
+			if err := yaml.Unmarshal([]byte(tmpl), &doc); err != nil {
+				t.Fatalf("generated compose does not parse: %v", err)
+			}
+			if got := doc.Services["pipelock"].StopGracePeriod; got != "10m" {
+				t.Errorf("pipelock stop_grace_period = %q, want 10m", got)
+			}
 		})
 	}
 }

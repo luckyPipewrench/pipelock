@@ -343,8 +343,14 @@ func runUpgrade(ctx context.Context, env *upgradeEnv, opts upgradeOpts) error {
 	// marker, so the guard would stay inactive on exactly the hosts this command
 	// is meant to bring current. Upgrade already reloads and restarts, so this is
 	// the one moment the correction costs nothing extra.
-	if err := ensureContainmentMarkerInUnit(env); err != nil {
-		_, _ = fmt.Fprintf(env.errOut, "unit marker update failed: %v\n", err)
+	// The stop timeout rides the same moment: an upgraded host otherwise keeps
+	// systemd's default stop budget, which a receipt-group close can outlast.
+	unitErr := ensureContainmentMarkerInUnit(env)
+	if unitErr == nil {
+		unitErr = ensureStopTimeoutInUnit(env)
+	}
+	if err := unitErr; err != nil {
+		_, _ = fmt.Fprintf(env.errOut, "unit update failed: %v\n", err)
 		if rbErr := rollbackAll(); rbErr != nil {
 			return cliutil.ExitCodeError(cliutil.ExitGeneral, errors.Join(
 				fmt.Errorf("%w: %w", errUpgradeConfig, err),
@@ -571,45 +577,116 @@ func unitHasActiveContainmentMarker(body, marker string) bool {
 func ensureContainmentMarkerInUnit(env *upgradeEnv) error {
 	marker := "Environment=" + config.ContainmentManagedEnvKey + "=" + config.ContainmentManagedEnvValue
 
-	// This is a root-privileged write to a path under /etc, so refuse anything
-	// that is not a plain file before touching it. A symlink here would
-	// redirect the write to a target of someone else's choosing.
-	if info, err := env.lstat(env.unitPath); err != nil {
-		return fmt.Errorf("inspect service unit %s: %w", env.unitPath, err)
-	} else if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("service unit %s is a symlink; refusing privileged write", env.unitPath)
-	} else if !info.Mode().IsRegular() {
-		return fmt.Errorf("service unit %s is not a regular file; refusing privileged write", env.unitPath)
-	}
-
-	current, err := env.readFile(env.unitPath)
+	body, err := readManagedUnit(env)
 	if err != nil {
-		return fmt.Errorf("read service unit %s: %w", env.unitPath, err)
+		return err
 	}
-	body := string(current)
 	if unitHasActiveContainmentMarker(body, marker) {
 		return nil
 	}
-
-	lines := strings.Split(body, "\n")
-	inserted := false
-	out := make([]string, 0, len(lines)+1)
-	for _, line := range lines {
-		out = append(out, line)
-		if !inserted && strings.TrimSpace(line) == "[Service]" {
-			out = append(out, marker)
-			inserted = true
-		}
-	}
-	if !inserted {
+	updated, ok := insertServiceDirective(body, marker)
+	if !ok {
 		return fmt.Errorf("service unit %s has no [Service] section; refusing to guess where the containment marker belongs", env.unitPath)
 	}
-
-	if err := env.writeFile(env.unitPath, []byte(strings.Join(out, "\n")), modeUnitFile); err != nil {
+	if err := env.writeFile(env.unitPath, []byte(updated), modeUnitFile); err != nil {
 		return fmt.Errorf("write service unit %s: %w", env.unitPath, err)
 	}
 	_, _ = fmt.Fprintf(env.out, "  containment marker added to %s\n", env.unitPath)
 	return nil
+}
+
+// ensureStopTimeoutInUnit gives a unit written before the stop budget existed
+// the same TimeoutStopSec a fresh install renders.
+//
+// Without it the longer budget reaches only new hosts, while every upgraded host
+// keeps systemd's 90 s default and can kill the receipt-group close. An operator
+// who already chose a stop budget keeps it: TimeoutSec= sets the stop timeout
+// too, and either directive active in [Service] means the choice was made. A
+// drop-in still overrides the main unit, so nothing here can undo one.
+func ensureStopTimeoutInUnit(env *upgradeEnv) error {
+	body, err := readManagedUnit(env)
+	if err != nil {
+		return err
+	}
+	if unitServiceSetsDirective(body, "TimeoutStopSec", "TimeoutSec") {
+		return nil
+	}
+	directive := fmt.Sprintf("TimeoutStopSec=%d", int64(cliutil.ServiceStopTimeout/time.Second))
+	updated, ok := insertServiceDirective(body, directive)
+	if !ok {
+		return fmt.Errorf("service unit %s has no [Service] section; refusing to guess where the stop timeout belongs", env.unitPath)
+	}
+	if err := env.writeFile(env.unitPath, []byte(updated), modeUnitFile); err != nil {
+		return fmt.Errorf("write service unit %s: %w", env.unitPath, err)
+	}
+	_, _ = fmt.Fprintf(env.out, "  stop timeout added to %s\n", env.unitPath)
+	return nil
+}
+
+// readManagedUnit reads the service unit an upgrade is about to edit.
+//
+// The later write is root-privileged to a path under /etc, so anything that is
+// not a plain file is refused first. A symlink here would redirect the write to
+// a target of someone else's choosing.
+func readManagedUnit(env *upgradeEnv) (string, error) {
+	if info, err := env.lstat(env.unitPath); err != nil {
+		return "", fmt.Errorf("inspect service unit %s: %w", env.unitPath, err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("service unit %s is a symlink; refusing privileged write", env.unitPath)
+	} else if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("service unit %s is not a regular file; refusing privileged write", env.unitPath)
+	}
+	current, err := env.readFile(env.unitPath)
+	if err != nil {
+		return "", fmt.Errorf("read service unit %s: %w", env.unitPath, err)
+	}
+	return string(current), nil
+}
+
+// unitServiceSetsDirective reports whether any of keys is assigned on a line
+// systemd will read: inside [Service], not commented out. systemd ignores
+// whitespace around the key, so "TimeoutStopSec = 5min" counts.
+func unitServiceSetsDirective(body string, keys ...string) bool {
+	section := ""
+	for _, raw := range strings.Split(body, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") || strings.HasPrefix(line, ";") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]") {
+			section = strings.TrimSpace(line[1 : len(line)-1])
+			continue
+		}
+		if section != "Service" {
+			continue
+		}
+		key, _, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		for _, want := range keys {
+			if strings.TrimSpace(key) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// insertServiceDirective places line directly after the first [Service] header
+// and reports false when the unit has none.
+func insertServiceDirective(body, line string) (string, bool) {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines)+1)
+	inserted := false
+	for _, current := range lines {
+		out = append(out, current)
+		if !inserted && strings.TrimSpace(current) == "[Service]" {
+			out = append(out, line)
+			inserted = true
+		}
+	}
+	return strings.Join(out, "\n"), inserted
 }
 
 // preflightUpgradeManagedConfig proves that the managed config remains valid

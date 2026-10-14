@@ -44,6 +44,9 @@ func runSidecarVerify(w io.Writer, result *sidecarPatchResult, opts sidecarOptio
 	if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("replicas: %d", proxyReplicaCount)) {
 		failed = append(failed, fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount))
 	}
+	if !strings.Contains(result.DeploymentYAML, fmt.Sprintf("terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds)) {
+		failed = append(failed, fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds))
+	}
 	if strings.Contains(result.DeploymentYAML, "subPath:") {
 		failed = append(failed, "proxy Deployment still uses subPath ConfigMap mount")
 	}

@@ -32,6 +32,9 @@ services:
       start_period: 5s
       retries: 3
     restart: unless-stopped
+    # Receipt recording closes its evidence at shutdown, which can outlast
+    # Compose's 10 s default on a long-lived, CPU-limited proxy.
+    stop_grace_period: 10m
 
   agent:
     # Replace with your agent image and entrypoint.

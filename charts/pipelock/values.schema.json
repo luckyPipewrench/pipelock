@@ -78,6 +78,7 @@
     "affinity": { "type": "object" },
     "topologySpreadConstraints": { "type": "array" },
     "priorityClassName": { "type": "string" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 0 },
     "podDisruptionBudget": {
       "type": "object",
       "properties": {

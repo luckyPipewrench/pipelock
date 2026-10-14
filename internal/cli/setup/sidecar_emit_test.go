@@ -370,6 +370,10 @@ func TestEmitHelmValuesFormat(t *testing.T) {
 	if values["replicaCount"] != proxyReplicaCount {
 		t.Fatalf("replicaCount = %v, want %d", values["replicaCount"], proxyReplicaCount)
 	}
+	// The bundle states the stop budget rather than relying on the chart default.
+	if got, ok := values["terminationGracePeriodSeconds"].(int); !ok || int64(got) != proxyTerminationGracePeriodSeconds {
+		t.Fatalf("terminationGracePeriodSeconds = %v, want %d", values["terminationGracePeriodSeconds"], proxyTerminationGracePeriodSeconds)
+	}
 
 	imgMap := values["image"].(map[string]interface{})
 	if imgMap["repository"] != defaultImageRepo {

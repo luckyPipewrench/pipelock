@@ -66,6 +66,16 @@ affinity: {}
 topologySpreadConstraints: []
 priorityClassName: ""
 
+# Seconds the proxy pod gets between SIGTERM and SIGKILL. Kubernetes defaults to
+# 30. With the flight recorder on, shutdown closes the receipt group by
+# verifying unverified segments and rehashing earlier evidence, which grows
+# with recorded history and shrinks with CPU: a 300,000-request, 8-chain close
+# on two CPUs took 109 s. A kill before the close finishes leaves durable
+# receipts verifiable but the group unsealed (GROUP_INCOMPLETE). 600 is a
+# chosen budget, not a proven bound; raise it for long-lived recorders on small
+# CPU limits.
+terminationGracePeriodSeconds: 600
+
 # PodDisruptionBudget. Strongly recommended when running multiple replicas
 # behind a single Service, because pipelock is on the agent's critical
 # traffic path and a single eviction takes the proxy down for that pod.

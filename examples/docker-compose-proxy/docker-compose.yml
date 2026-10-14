@@ -8,6 +8,9 @@ services:
       context: ../..
       dockerfile: Dockerfile
     command: ["run", "--config", "/etc/pipelock/pipelock.yaml"]
+    # Receipt recording closes its evidence at shutdown, which can outlast
+    # Compose's 10 s default on a long-lived, CPU-limited proxy.
+    stop_grace_period: 10m
     ports:
       - "127.0.0.1:${PIPELOCK_PROXY_PORT:-18088}:8888"
     volumes:

@@ -259,6 +259,23 @@ Scope and limits:
 - **A restart starts a new chain.** A transcript root seals one process run. The next start records a new run chain beside it (see [One chain per process run](#one-chain-per-process-run)), so a prior clean shutdown never blocks receipts.
 - **Large evidence directories keep emitting.** Resume reads only the tail record it needs and is not subject to the bounded directory-read cap used by query and dashboard paths. Display reads stay bounded and report truncation. Native verification, group lifecycle operations and anchoring read complete session history through separate authoritative readers. Resume and health selection parse the session id out of each shard filename instead of matching a raw prefix, so a session such as `agent` cannot accidentally adopt shards from `agent-debug`.
 
+### Stop budget
+
+Stopping a recording proxy takes time. On SIGTERM, Pipelock stops accepting traffic, drains in-flight receipts, then closes the receipt group: it finishes verifying segments the background worker hasn't reached and rehashes the run's earlier evidence before signing the close. That work grows with recorded history and shrinks with available CPU. In one development measurement with 8 chains and required receipts, a run of 300,000 requests closed in about 15 seconds on 8 CPUs and 109 seconds on 2. These are single measurements, not limits.
+
+Every deployment Pipelock ships states a 10-minute stop budget instead of its manager's default:
+
+| Deployment | Setting | Manager default |
+|---|---|---|
+| `pipelock contain install` systemd unit | `TimeoutStopSec=600` | 90 s |
+| Helm chart | `terminationGracePeriodSeconds: 600` (value `terminationGracePeriodSeconds`) | 30 s |
+| `pipelock init sidecar` generated proxy Deployment and Helm values | `terminationGracePeriodSeconds: 600` | 30 s |
+| `pipelock generate docker-compose` and the Compose examples | `stop_grace_period: 10m` | 10 s |
+
+`pipelock contain upgrade` adds `TimeoutStopSec=600` to an existing unit's `[Service]` section unless the unit already sets `TimeoutStopSec` or `TimeoutSec` there; a drop-in under `pipelock.service.d/` still overrides it. For `docker run`, pass `--stop-timeout 600`, or `docker stop --timeout 600` when stopping it by hand. Ten minutes is a chosen budget, not a proven bound. Raise it for a long-lived recorder on a small CPU limit, and size CPU and memory limits for recording separately: a longer grace period doesn't help a container that runs out of memory.
+
+If the manager kills Pipelock before the close finishes, receipts that were already durable stay on disk and still authenticate, but the group has no signed close. `pipelock verify-receipt --chain DIR --group <group-id>` reports it as `GROUP_INCOMPLETE` and exits nonzero, so a killed run can't pass as complete. A kill earlier in shutdown, while requests are still draining, can also leave a torn final record or, with best-effort receipts, an action without its receipt.
+
 ### One chain per process run
 
 Each Pipelock process run records its own receipt chain under a session named `<base>.run.<id>`, for example `proxy.run.3f9c...`. Two processes sharing one evidence directory therefore never extend the same chain. Each run chain holds only entry types the shipped verifiers already accept, and it opens with an ordinary genesis `session_open`. Verify the full run with `pipelock verify-receipt --chain DIR --session <session> --whole-recorder --key KEY`, where `DIR` contains all its shards. A single-file command checks only the named shard.

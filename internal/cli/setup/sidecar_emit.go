@@ -163,8 +163,9 @@ func emitHelmValuesFormat(w io.Writer, result *sidecarPatchResult, opts sidecarO
 	}
 
 	values := map[string]interface{}{
-		"replicaCount":     proxyReplicaCount,
-		"fullnameOverride": result.ProxyName,
+		"replicaCount":                  proxyReplicaCount,
+		"terminationGracePeriodSeconds": proxyTerminationGracePeriodSeconds,
+		"fullnameOverride":              result.ProxyName,
 		"image": map[string]interface{}{
 			"repository": defaultImageRepo,
 			"tag":        cliutil.Version,

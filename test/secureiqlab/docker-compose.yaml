@@ -26,6 +26,9 @@ services:
       - ./configs/validation.yaml:/etc/pipelock/pipelock.yaml:ro
       - ./configs/tls:/etc/pipelock/tls:ro
     entrypoint: ["/pipelock"]
+    # Receipt recording closes its evidence at shutdown, which can outlast
+    # Compose's 10 s default on a long-lived, CPU-limited proxy.
+    stop_grace_period: 10m
     command:
       - "run"
       - "--listen"

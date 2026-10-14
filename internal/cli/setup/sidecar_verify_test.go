@@ -79,6 +79,18 @@ func TestRunSidecarVerifyRejectsStaticTopologyDrift(t *testing.T) {
 			wantError: fmt.Sprintf("proxy Deployment does not set replicas=%d", proxyReplicaCount),
 		},
 		{
+			name: "default termination grace",
+			mutate: func(_ *testing.T, result *sidecarPatchResult) {
+				result.DeploymentYAML = strings.Replace(
+					result.DeploymentYAML,
+					fmt.Sprintf("terminationGracePeriodSeconds: %d", proxyTerminationGracePeriodSeconds),
+					"",
+					1,
+				)
+			},
+			wantError: fmt.Sprintf("proxy Deployment does not set terminationGracePeriodSeconds=%d", proxyTerminationGracePeriodSeconds),
+		},
+		{
 			name: "subpath config mount",
 			mutate: func(t *testing.T, result *sidecarPatchResult) {
 				result.DeploymentYAML = addConfigMountSubPath(t, result.DeploymentYAML)

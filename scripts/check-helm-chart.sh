@@ -118,6 +118,11 @@ helm template pipelock "$chart" \
   --set 'mcp.listen=[::1]:8889' >"$render_dir/mcp-loopback-ipv6.yaml"
 
 grep -q -- "- run" "$render_dir/default.yaml"
+# The proxy pod states its stop budget rather than inheriting Kubernetes' 30 s,
+# which a receipt-group close on a small CPU limit can outlast.
+grep -q -- "terminationGracePeriodSeconds: 600" "$render_dir/default.yaml"
+helm template pipelock "$chart" --set terminationGracePeriodSeconds=1200 | grep -q -- "terminationGracePeriodSeconds: 1200"
+expect_template_error "/terminationGracePeriodSeconds" --set terminationGracePeriodSeconds=-1
 grep -q -- "conductor:" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-bundles" "$render_dir/values-enterprise-follower.yaml"
 grep -q -- "pipelock-follower-audit-queue" "$render_dir/values-enterprise-follower.yaml"

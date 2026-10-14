@@ -2219,6 +2219,10 @@ func renderSystemUnit(env *installEnv) string {
 		// stuck start into a hung boot dependency. 90 s is systemd's stock
 		// default, so ordinary hosts see no change.
 		fmt.Sprintf("TimeoutStartSec=%d", int64(cliutil.ServiceStartTimeout/time.Second)),
+		// Stated for the opposite reason: closing the receipt group at shutdown
+		// can outlast systemd's 90 s stock stop budget on a small host with a
+		// long history, and a SIGKILL there leaves the run unsealed.
+		fmt.Sprintf("TimeoutStopSec=%d", int64(cliutil.ServiceStopTimeout/time.Second)),
 		"",
 		"NoNewPrivileges=true",
 		"ProtectSystem=strict",

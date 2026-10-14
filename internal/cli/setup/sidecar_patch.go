@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -55,6 +56,11 @@ const (
 	proxyMemoryRequest = "128Mi"
 	proxyCPULimit      = "500m"
 	proxyMemoryLimit   = "512Mi"
+
+	// proxyTerminationGracePeriodSeconds replaces Kubernetes' 30 s pod default:
+	// with receipts on, shutdown closes the receipt group, which can take
+	// minutes on a small CPU limit with a long history.
+	proxyTerminationGracePeriodSeconds = int64(cliutil.ServiceStopTimeout / time.Second)
 
 	managedTopologyAnnotation     = "pipelock.dev/topology"
 	managedProxyNameAnnotation    = "pipelock.dev/proxy-name"
@@ -600,7 +606,8 @@ func renderProxyDeployment(namespace, proxyName, image string, proxyLabels map[s
 					"labels": labelsToInterfaceMap(managedProxyResourceLabels(proxyLabels, "proxy")),
 				},
 				"spec": map[string]interface{}{
-					"automountServiceAccountToken": false,
+					"automountServiceAccountToken":  false,
+					"terminationGracePeriodSeconds": proxyTerminationGracePeriodSeconds,
 					"securityContext": map[string]interface{}{
 						"seccompProfile": map[string]interface{}{
 							"type": "RuntimeDefault",

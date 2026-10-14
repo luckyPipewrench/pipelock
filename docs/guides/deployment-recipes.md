@@ -62,6 +62,7 @@ services:
   pipelock:
     image: ghcr.io/luckypipewrench/pipelock@sha256:66d65eaca81ddae4d0872537bca276bd065baa8f2aebe2960de313cffc53fa47
     command: run --config /config/pipelock.yaml --listen 0.0.0.0:8888
+    stop_grace_period: 10m   # Receipt-group close at shutdown; Compose default is 10 s
     volumes:
       - ./pipelock.yaml:/config/pipelock.yaml:ro
     networks:
@@ -194,6 +195,8 @@ spec:
       labels:
         app: my-agent
     spec:
+      # Room for the receipt-group close at shutdown; Kubernetes defaults to 30 s
+      terminationGracePeriodSeconds: 600
       # Init container: copy pipelock binary for MCP stdio wrapping
       initContainers:
         - name: pipelock-init

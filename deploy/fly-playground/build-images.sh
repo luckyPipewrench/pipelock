@@ -15,6 +15,7 @@
 #   PLAYGROUND_UI_DIR    site static/playground/demo directory (broker builds)
 # Optional env:
 #   PLAYGROUND_PUSH=1    also push each selected image after building
+#   PLAYGROUND_ALLOW_DIRTY=1  allow source changes and mark the build dirty
 #   VERSION              version embedded in the binaries (default: scripts/git-version.sh, as make build)
 #
 # Example:
@@ -48,18 +49,67 @@ fi
 
 if [ "${build_broker}" -eq 1 ]; then
 	: "${PLAYGROUND_UI_DIR:?set PLAYGROUND_UI_DIR to the site static/playground/demo dir}"
+	PLAYGROUND_UI_DIR="$(cd "${PLAYGROUND_UI_DIR}" && pwd -P)"
 	if [ ! -f "${PLAYGROUND_UI_DIR}/index.html" ]; then
 		echo "PLAYGROUND_UI_DIR=${PLAYGROUND_UI_DIR} has no index.html; refusing to build a broker with an empty viewer" >&2
 		exit 1
 	fi
 fi
 
-VM_TAG="${PLAYGROUND_REGISTRY}:vm"
-BROKER_TAG="${PLAYGROUND_REGISTRY}:broker"
-
 cd "${REPO_ROOT}"
+PIPELOCK_COMMIT="$(git rev-parse --verify HEAD)"
+PIPELOCK_DIRTY=false
+if ! pipelock_status="$(git status --porcelain --untracked-files=all)"; then
+	echo "[build-images] ERROR: cannot inspect Pipelock work tree" >&2
+	exit 1
+fi
+if [ -n "${pipelock_status}" ]; then
+	PIPELOCK_DIRTY=true
+fi
+SITE_DIRTY=false
+if [ "${build_broker}" -eq 1 ]; then
+	if ! SITE_ROOT="$(git -C "${PLAYGROUND_UI_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
+		echo "[build-images] ERROR: PLAYGROUND_UI_DIR must be inside a git work tree" >&2
+		exit 1
+	fi
+	SITE_ROOT="$(cd "${SITE_ROOT}" && pwd -P)"
+	SITE_COMMIT="$(git -C "${SITE_ROOT}" rev-parse --verify HEAD)"
+	VIEWER_PATH="${PLAYGROUND_UI_DIR#"${SITE_ROOT}"/}"
+	if [ "${VIEWER_PATH}" = "${PLAYGROUND_UI_DIR}" ]; then
+		echo "[build-images] ERROR: PLAYGROUND_UI_DIR must be inside its git work tree" >&2
+		exit 1
+	fi
+	if ! site_status="$(git -C "${SITE_ROOT}" status --porcelain --untracked-files=all -- ":(literal)${VIEWER_PATH}")"; then
+		echo "[build-images] ERROR: cannot inspect site viewer work tree" >&2
+		exit 1
+	fi
+	if [ -n "${site_status}" ]; then
+		SITE_DIRTY=true
+	fi
+fi
+if [ "${PIPELOCK_DIRTY}" = true ] || [ "${SITE_DIRTY}" = true ]; then
+	if [ "${PLAYGROUND_ALLOW_DIRTY:-}" != 1 ]; then
+		echo "[build-images] ERROR: source changes found; commit them or set PLAYGROUND_ALLOW_DIRTY=1" >&2
+		exit 1
+	fi
+fi
+
+TAG_SUFFIX=""
+if [ "${PLAYGROUND_ALLOW_DIRTY:-}" = 1 ]; then
+	TAG_SUFFIX="-dirty"
+fi
+VM_TAG="${PLAYGROUND_REGISTRY}:vm-${PIPELOCK_COMMIT:0:12}${TAG_SUFFIX}"
+if [ "${build_broker}" -eq 1 ]; then
+	BROKER_TAG="${PLAYGROUND_REGISTRY}:broker-${PIPELOCK_COMMIT:0:12}-${SITE_COMMIT:0:12}${TAG_SUFFIX}"
+fi
+
 # Same version source as `make build`, so a running image names the commit it came from.
 VERSION="${VERSION:-$(./scripts/git-version.sh 2>/dev/null || echo 0.0.0-dev.unknown)}"
+IMAGE_LABELS=(
+	--label "org.opencontainers.image.revision=${PIPELOCK_COMMIT}"
+	--label "org.opencontainers.image.version=${VERSION}"
+	--label "org.opencontainers.image.source=https://github.com/pipelab-org/pipelock"
+)
 
 # Honor the host HTTP proxy for `go mod download` inside the build. On this
 # workstation the proxy is loopback-only, so the build also uses host
@@ -81,13 +131,12 @@ fi
 
 if [ "${build_vm}" -eq 1 ]; then
 	echo "[build-images] building VM image ${VM_TAG}"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
+	docker build "${DOCKER_BUILD_FLAGS[@]}" "${IMAGE_LABELS[@]}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
 fi
 
 # The viewer's inline "Verify in your browser" button loads a WASM build of the
-# shipped verifier from the served dir. Build it straight into PLAYGROUND_UI_DIR
-# so the broker bundles it into /srv/ui. The .wasm is gitignored in the site repo
-# (built here at image time, never committed). Requires deploy/wasm-verify/build.sh
+# shipped verifier from the served dir. Build it into a private staging copy so
+# the operator's site checkout stays untouched. Requires deploy/wasm-verify/build.sh
 # + cmd/pipelock-verifier-wasm (the WASM-verifier change). Fail closed if that
 # build path is absent or produces no .wasm, so the image cannot silently ship a
 # viewer whose inline-verify button points at missing browser-verifier assets.
@@ -114,18 +163,74 @@ BROKER_PREFLIGHT_ARGS=(
 )
 
 if [ "${build_broker}" -eq 1 ]; then
-	echo "[build-images] building browser-verifier WASM into ${PLAYGROUND_UI_DIR}"
-	wasm_stamp="$(mktemp)"
-	trap 'rm -f "${wasm_stamp}"' EXIT
-	deploy/wasm-verify/build.sh "${PLAYGROUND_UI_DIR}"
-	if ! find "${PLAYGROUND_UI_DIR}" -type f -name '*.wasm' -newer "${wasm_stamp}" -print -quit | grep -q .; then
-		echo "[build-images] ERROR: browser-verifier build produced no .wasm under PLAYGROUND_UI_DIR=${PLAYGROUND_UI_DIR}; refusing to ship unwired inline verify UI" >&2
+	stage="$(mktemp -d)"
+	trap 'rm -rf -- "${stage}"' EXIT
+	mkdir "${stage}/ui"
+	cp -a "${PLAYGROUND_UI_DIR}/." "${stage}/ui/"
+	if [ -n "$(find "${stage}/ui" -type l -print -quit)" ]; then
+		echo "[build-images] ERROR: viewer contains symlinks; refusing incomplete provenance" >&2
+		exit 1
+	fi
+	echo "[build-images] building browser-verifier WASM into private staging copy"
+	wasm_stamp="${stage}/wasm-stamp"
+	: > "${wasm_stamp}"
+	deploy/wasm-verify/build.sh "${stage}/ui"
+	if [ -z "$(find "${stage}/ui" -type f -name '*.wasm' -newer "${wasm_stamp}" -print -quit)" ]; then
+		echo "[build-images] ERROR: browser-verifier build produced no .wasm in staging; refusing to ship unwired inline verify UI" >&2
 		exit 1
 	fi
 
+	# Quote JSON without a runtime parser dependency. Paths are sorted bytewise.
+	json_quote() {
+		local value="$1" char replacement i
+		value="${value//\\/\\\\}"
+		value="${value//\"/\\\"}"
+		for ((i = 1; i < 32; i++)); do
+			printf -v char '%b' "$(printf '\\%03o' "${i}")"
+			printf -v replacement '\\u%04x' "${i}"
+			value="${value//"${char}"/"${replacement}"}"
+		done
+		printf '"%s"' "${value}"
+	}
+	file_hash() {
+		local digest
+		if command -v sha256sum >/dev/null 2>&1; then
+			if ! digest="$(sha256sum < "$1")"; then return 1; fi
+		else
+			if ! digest="$(shasum -a 256 < "$1")"; then return 1; fi
+		fi
+		printf '%s' "${digest:0:64}"
+	}
+	find "${stage}/ui" -type f -print0 > "${stage}/files"
+	LC_ALL=C sort -z "${stage}/files" > "${stage}/sorted-files"
+	{
+		printf '{\n  "schema_version": 1,\n  "pipelock_version": %s,\n' "$(json_quote "${VERSION}")"
+		printf '  "pipelock_commit": "%s",\n  "site_commit": "%s",\n' "${PIPELOCK_COMMIT}" "${SITE_COMMIT}"
+		printf '  "viewer_path": %s,\n' "$(json_quote "${VIEWER_PATH}")"
+		printf '  "dirty": %s,\n  "pipelock_dirty": %s,\n  "site_dirty": %s,\n' "$([ "${PLAYGROUND_ALLOW_DIRTY:-}" = 1 ] && echo true || echo false)" "${PIPELOCK_DIRTY}" "${SITE_DIRTY}"
+		printf '  "built_at": "%s",\n  "files": {\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+		first=true
+		while IFS= read -r -d '' path; do
+			relative="${path#"${stage}/ui/"}"
+			if [ "${relative}" = build-info.json ]; then continue; fi
+			if [[ "${relative}" == *\\* || "${relative}" =~ [[:cntrl:]] ]]; then
+				echo "[build-images] ERROR: viewer filename cannot be checked live" >&2
+				exit 1
+			fi
+			if ! digest="$(file_hash "${path}")"; then
+				echo "[build-images] ERROR: cannot hash staged viewer file ${relative}" >&2
+				exit 1
+			fi
+			if [ "${first}" = false ]; then printf ',\n'; fi
+			first=false
+			printf '    %s: "%s"' "$(json_quote "${relative}")" "${digest}"
+		done < "${stage}/sorted-files"
+		printf '\n  }\n}\n'
+	} > "${stage}/ui/build-info.json"
+
 	echo "[build-images] building broker image ${BROKER_TAG} (viewer from ${PLAYGROUND_UI_DIR})"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile.broker \
-		--build-context "ui=${PLAYGROUND_UI_DIR}" \
+	docker build "${DOCKER_BUILD_FLAGS[@]}" "${IMAGE_LABELS[@]}" --label "org.pipelab.playground.site-revision=${SITE_COMMIT}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile.broker \
+		--build-context "ui=${stage}/ui" \
 		-t "${BROKER_TAG}" .
 
 	echo "[build-images] validating broker/viewer image contract"
@@ -144,3 +249,4 @@ if [ "${PLAYGROUND_PUSH:-}" = "1" ]; then
 fi
 
 echo "[build-images] done"
+echo "IMAGE_REFS vm=$([ "${build_vm}" -eq 1 ] && echo "${VM_TAG}" || echo -) broker=$([ "${build_broker}" -eq 1 ] && echo "${BROKER_TAG}" || echo -)"

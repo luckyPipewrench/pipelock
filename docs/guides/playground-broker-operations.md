@@ -276,15 +276,39 @@ The broker's token-to-lease table and daily budgets are in memory. Running two
 brokers without shared state can split sessions, double budgets, and route a
 visitor to a broker that does not recognize its token.
 
-Deploy sequence:
+Build and deploy sequence:
 
-1. Build both images with `deploy/fly-playground/build-images.sh`. Use `--only
-   vm` or `--only broker` when only one image changed. The build
-   runs `serve --check-config` inside the broker image and refuses to publish
-   when the baked viewer is incompatible with its CSP or the non-secret
-   configuration is invalid.
-2. Start the broker with explicit budgets, `--turnstile-sitekey`, and Turnstile
-   enabled. The viewer is fixed to Cloudflare's
+1. Fetch the latest `main` in both the Pipelock and site repositories. Build
+   from clean checkouts of those fetched commits. The build script refuses
+   uncommitted tracked or untracked changes in Pipelock or under the site viewer
+   directory;
+   `PLAYGROUND_ALLOW_DIRTY=1` is only for an explicitly marked diagnostic build.
+   Set `PLAYGROUND_UI_DIR` to the site's `static/playground/demo` directory and
+   `PLAYGROUND_REGISTRY` to the image registry prefix. Run
+   `deploy/fly-playground/build-images.sh` with `PLAYGROUND_PUSH=1`. It prints
+   `IMAGE_REFS vm=... broker=...` as its last line. Save those commit-qualified
+   image references. `--only vm` and `--only broker` are available when only
+   one image needs rebuilding. The broker build stages the viewer, builds its
+   WASM verifier there, records the served files in `/build-info.json`, and runs
+   `serve --check-config` before pushing.
+2. Before changing production, record its current broker image reference, VM
+   image reference and digest, machine configuration, and complete broker
+   arguments, including budgets and security flags. Keep this rollback record
+   together so the previous broker and its VM can be restored as one unit.
+3. Deploy both candidate images and their matching arguments to a separate
+   staging app. Testing a candidate on the production app interrupts active
+   visitor sessions. Keep the public production broker at one warm instance.
+4. On staging, check `/api/live/health`, complete one valid session, confirm an
+   invalid Turnstile or session token fails closed, and pause with `SIGUSR1`.
+   Confirm session creation returns HTTP 503, then resume with `SIGUSR2`.
+   Run `deploy/fly-playground/check-live.sh https://playground.example
+   /path/to/site/static/playground/demo <expected-version>` against the staging
+   origin and require a pass.
+5. Drain active production sessions, then deploy the candidate broker image and
+   visitor VM image reference together. Set the broker's `--image` and
+   `--vm-image-digest` to the same published VM digest. Start the broker with
+   explicit budgets, `--turnstile-sitekey`, and Turnstile enabled. The viewer
+   is fixed to Cloudflare's
    `https://challenges.cloudflare.com` origin.
    If the first-party viewer JavaScript intentionally loads a third-party
    script at runtime or sends browser telemetry to another origin, allow each
@@ -294,17 +318,30 @@ Deploy sequence:
    flags with the deployed broker configuration; they are not image-build
    settings. A third-party `<script src>` baked directly into `index.html`
    remains unsupported by the standard image preflight.
-3. Check `/api/live/health`.
-4. Run one valid session through the public hostname.
-5. Run one invalid Turnstile/session request and confirm it fails closed.
-6. Pause with `SIGUSR1`, confirm session creation returns HTTP 503, then resume.
+6. Run `check-live.sh` against the production origin with the site viewer path
+   and expected version. Confirm health and a valid session before reopening
+   traffic.
 
 Rollback sequence:
 
 1. Pause the current broker with `SIGUSR1`.
-2. Redeploy the prior broker image and its matching argument configuration
-   together. An old binary can reject flags introduced by a newer config, and
-   a new binary can require settings absent from an older config.
-3. Confirm health and budget values.
-4. Run the invalid-token and pause/resume checks again before sending traffic
-   back.
+2. Redeploy the recorded broker image, visitor VM image and digest, machine
+   configuration, and matching broker arguments together. An old binary can
+   reject flags introduced by a newer config, and a new binary can require
+   settings absent from an older config.
+3. Confirm health, budget values, and `check-live.sh` against the restored
+   version. Run the invalid-token and pause/resume checks again before sending
+   traffic back.
+
+### Checking for drift
+
+`deploy/fly-playground/check-live.sh <public-origin> [site-viewer-dir|-]
+[expected-pipelock-version]` reads `/build-info.json` and `/api/live/health`,
+fetches every recorded viewer file, and checks its SHA-256 against the served
+record. With a site viewer directory, it also checks the site commit and source
+assets against the local checkout. The WASM verifier and its JavaScript shim
+are built outputs and are skipped in that local comparison. Use `-` for the
+viewer directory when
+checking only an expected version. Any missing file, mismatched hash, unhealthy
+broker, or version mismatch makes the command fail. The script uses `curl` and
+`jq` and does not change the deployment or either checkout.

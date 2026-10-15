@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# Copyright 2026 Pipelock contributors
+# SPDX-License-Identifier: Apache-2.0
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "$0")" && pwd)"
+tmp="$(mktemp -d)"
+server_pid=""
+cleanup() {
+	if [ -n "${server_pid}" ]; then kill "${server_pid}" 2>/dev/null || true; fi
+	rm -rf -- "${tmp}"
+}
+trap cleanup EXIT
+
+mkdir -p "${tmp}/source/deploy/fly-playground" "${tmp}/source/deploy/wasm-verify" "${tmp}/source/scripts" "${tmp}/site/static/playground/demo" "${tmp}/bin" "${tmp}/capture"
+cp "${script_dir}/build-images.sh" "${tmp}/source/deploy/fly-playground/build-images.sh"
+cat > "${tmp}/source/scripts/git-version.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+echo v-test
+SCRIPT
+cat > "${tmp}/source/deploy/wasm-verify/build.sh" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+printf 'fresh wasm' > "$1/pipelock-verifier.wasm"
+printf 'fresh shim' > "$1/wasm_exec.js"
+SCRIPT
+cat > "${tmp}/bin/docker" <<'SCRIPT'
+#!/usr/bin/env bash
+set -eu
+printf '%s\n' "$*" >> "${DOCKER_LOG}"
+if [ "$1" = build ]; then
+	while [ "$#" -gt 0 ]; do
+		if [ "$1" = --build-context ]; then
+			shift
+			cp -a "${1#ui=}/." "${CAPTURE_DIR}/"
+			break
+		fi
+		shift
+	done
+fi
+SCRIPT
+chmod +x "${tmp}/source/scripts/git-version.sh" "${tmp}/source/deploy/wasm-verify/build.sh" "${tmp}/bin/docker"
+printf '<!doctype html><title>viewer</title>\n' > "${tmp}/site/static/playground/demo/index.html"
+printf 'viewer asset\n' > "${tmp}/site/static/playground/demo/asset file.txt"
+git -C "${tmp}/source" init -q
+git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid add .
+git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
+git -C "${tmp}/site" init -q
+git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid add .
+git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
+
+export PATH="${tmp}/bin:${PATH}" PLAYGROUND_REGISTRY=registry.example/playground
+export PLAYGROUND_UI_DIR="${tmp}/site/static/playground/demo" DOCKER_LOG="${tmp}/docker.log" CAPTURE_DIR="${tmp}/capture"
+"${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/clean.out"
+cp -a "${tmp}/capture" "${tmp}/clean-capture"
+python3 -m json.tool "${tmp}/clean-capture/build-info.json" > /dev/null
+python3 - "${tmp}/clean-capture" "${tmp}/site/static/playground/demo" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+viewer = pathlib.Path(sys.argv[1])
+site = pathlib.Path(sys.argv[2])
+info = json.loads((viewer / "build-info.json").read_text())
+assert info["schema_version"] == 1 and info["dirty"] is False
+assert info["pipelock_version"] == "v-test"
+assert len(info["pipelock_commit"]) == len(info["site_commit"]) == 40
+assert info["built_at"].endswith("Z")
+assert info["viewer_path"] == "static/playground/demo"
+assert list(info["files"]) == sorted(info["files"])
+for name, digest in info["files"].items():
+    assert hashlib.sha256((viewer / name).read_bytes()).hexdigest() == digest
+assert "build-info.json" not in info["files"]
+assert not (site / "build-info.json").exists()
+assert not (site / "pipelock-verifier.wasm").exists()
+assert not (site / "wasm_exec.js").exists()
+PY
+if ! grep -q 'IMAGE_REFS vm=- broker=registry.example/playground:broker-' "${tmp}/clean.out"; then
+	echo 'missing immutable broker ref' >&2
+	exit 1
+fi
+if grep -Eq '(^| )-t registry.example/playground:(vm|broker)( |$)' "${tmp}/docker.log"; then
+	echo 'floating image tag created' >&2
+	exit 1
+fi
+for label in org.opencontainers.image.revision org.opencontainers.image.version org.opencontainers.image.source org.pipelab.playground.site-revision; do
+	if ! grep -q -- "--label ${label}=" "${tmp}/docker.log"; then
+		echo "missing image label: ${label}" >&2
+		exit 1
+	fi
+done
+
+printf 'changed\n' >> "${PLAYGROUND_UI_DIR}/index.html"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/dirty.out" 2>&1; then
+	echo 'dirty site viewer was accepted' >&2
+	exit 1
+fi
+PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/dirty.out"
+python3 - "${tmp}/capture/build-info.json" <<'PY'
+import json
+import sys
+info = json.load(open(sys.argv[1], encoding="utf-8"))
+assert info["dirty"] is True and info["site_dirty"] is True
+PY
+grep -q -- '-dirty$' "${tmp}/dirty.out"
+
+printf 'changed\n' >> "${tmp}/source/scripts/git-version.sh"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/dirty.out" 2>&1; then
+	echo 'dirty Pipelock tree was accepted' >&2
+	exit 1
+fi
+PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/dirty.out"
+grep -q -- 'vm-.*-dirty broker=-' "${tmp}/dirty.out"
+mkdir -p "${tmp}/not-a-repo"
+printf '<!doctype html>\n' > "${tmp}/not-a-repo/index.html"
+if PLAYGROUND_UI_DIR="${tmp}/not-a-repo" PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/dirty.out" 2>&1; then
+	echo 'non-git viewer was accepted' >&2
+	exit 1
+fi
+git -C "${tmp}/site" show HEAD:static/playground/demo/index.html > "${PLAYGROUND_UI_DIR}/index.html"
+
+mkdir -p "${tmp}/web/api/live"
+cp -a "${tmp}/clean-capture/." "${tmp}/web/"
+printf '{"ok":true}\n' > "${tmp}/web/api/live/health"
+python3 - "${tmp}/web" "${tmp}/port" <<'PY' &
+import http.server
+import os
+import sys
+
+os.chdir(sys.argv[1])
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, _format, *_args):
+        pass
+
+    def do_GET(self):
+        if self.path == "/index.html":
+            self.send_response(301)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        return super().do_GET()
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    stream.write(str(server.server_port))
+server.serve_forever()
+PY
+server_pid=$!
+for _ in {1..50}; do
+	if [ -s "${tmp}/port" ]; then break; fi
+	sleep 0.1
+done
+if [ ! -s "${tmp}/port" ]; then
+	echo 'local test server did not start' >&2
+	exit 1
+fi
+origin="http://127.0.0.1:$(cat "${tmp}/port")"
+"${script_dir}/check-live.sh" "${origin}" "${tmp}/site/static/playground/demo" v-test > "${tmp}/check.out" || {
+	cat "${tmp}/check.out" >&2
+	exit 1
+}
+if "${script_dir}/check-live.sh" "${origin}" - wrong-version > "${tmp}/check.out" 2>&1; then
+	echo 'wrong version was accepted' >&2
+	exit 1
+fi
+printf 'local only\n' > "${PLAYGROUND_UI_DIR}/extra.txt"
+if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then
+	echo 'local-only file was accepted' >&2
+	exit 1
+fi
+mv "${PLAYGROUND_UI_DIR}/extra.txt" "${tmp}/extra.txt"
+git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm moved
+if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then
+	echo 'different site commit was accepted' >&2
+	exit 1
+fi
+printf 'tampered\n' > "${tmp}/web/asset file.txt"
+if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
+	echo 'tampered served file was accepted' >&2
+	exit 1
+fi
+printf 'viewer asset\n' > "${tmp}/web/asset file.txt"
+python3 - "${tmp}/web/build-info.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    info = json.load(stream)
+info["files"]["../outside"] = "0" * 64
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump(info, stream)
+PY
+if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
+	echo 'unsafe manifest path was accepted' >&2
+	exit 1
+fi
+cp "${tmp}/clean-capture/build-info.json" "${tmp}/web/build-info.json"
+printf '{"ok":false}\n' > "${tmp}/web/api/live/health"
+if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
+	echo 'unhealthy broker was accepted' >&2
+	exit 1
+fi
+printf '{"ok":true}\n' > "${tmp}/web/api/live/health"
+mv "${tmp}/web/build-info.json" "${tmp}/web/removed-build-info.json"
+if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
+	echo 'missing build info was accepted' >&2
+	exit 1
+fi
+echo 'PASS: clean/dirty build provenance and live drift checks'

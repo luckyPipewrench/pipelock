@@ -354,6 +354,7 @@ func TestBuildServerStaticDir(t *testing.T) {
 		t.Fatalf("mkdir ui: %v", err)
 	}
 	writeTestFile(t, uiDir, "index.html", "<html><body>live demo ui</body></html>")
+	writeTestFile(t, uiDir, "build-info.json", `{"schema_version":1}`)
 	flyTokenFile := writeTestFile(t, dir, "fly.token", "fly-file-token\n")
 	gateSecret := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
 	gateSecretFile := writeTestFile(t, dir, "gate.b64", gateSecret+"\n")
@@ -390,6 +391,9 @@ func TestBuildServerStaticDir(t *testing.T) {
 	t.Cleanup(ts.Close)
 	if body, status := httpGetStatus(t, ts.URL+"/"); status != http.StatusOK || !strings.Contains(body, "live demo ui") {
 		t.Fatalf("GET / = %d %q, want 200 serving the UI", status, body)
+	}
+	if body, status := httpGetStatus(t, ts.URL+"/build-info.json"); status != http.StatusOK || body != `{"schema_version":1}` {
+		t.Fatalf("GET /build-info.json = %d %q, want served build info", status, body)
 	}
 	if _, status := httpGetStatus(t, ts.URL+livechat.RouteHealth); status != http.StatusOK {
 		t.Fatalf("GET %s = %d, want 200 (API served alongside static)", livechat.RouteHealth, status)

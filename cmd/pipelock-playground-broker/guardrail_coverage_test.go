@@ -79,6 +79,7 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 		"PLAYGROUND_REGISTRY=registry.example/playground",
 		"PLAYGROUND_UI_DIR=",
 		"PLAYGROUND_PUSH=",
+		"PLAYGROUND_ALLOW_DIRTY=1",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -91,6 +92,17 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 	logText := string(logBytes)
 	if !strings.Contains(logText, "Dockerfile") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
 		t.Fatalf("VM-only docker calls = %q", logText)
+	}
+}
+
+func TestPlaygroundBuildProvenanceScripts(t *testing.T) {
+	cmd := exec.CommandContext(t.Context(), "bash", "../../deploy/fly-playground/test-build-provenance.sh")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("playground provenance scripts: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "PASS: clean/dirty build provenance and live drift checks") {
+		t.Fatalf("provenance test output = %q", output)
 	}
 }
 

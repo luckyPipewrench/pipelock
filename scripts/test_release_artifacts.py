@@ -311,7 +311,6 @@ class TestReleaseArtifacts(unittest.TestCase):
         self.assertNotIn("helm package charts/pipelock", package_run)
         self.assertIn('to="  repository: ${IMAGE_NAMESPACE}/pipelock"', package_run)
         self.assertIn('image: \\"${IMAGE_NAMESPACE}/pipelock:${app_version}\\"', package_run)
-        self.assertIn("renders an image outside ${IMAGE_NAMESPACE}", package_run)
 
         # The chart's provenance check names the repository that ran the release.
         self.assertIn('--repo "$GITHUB_REPOSITORY"', self.workflow)

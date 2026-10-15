@@ -378,7 +378,7 @@ func extractVisibleStrings(raw json.RawMessage, budget *MediaTextBudget) Extract
 		budget = &MediaTextBudget{}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	if err := extract.DecodeJSON(raw, &parsed); err != nil {
 		return ExtractStringsResult{}
 	}
 
@@ -706,7 +706,7 @@ func decodeMediaPayload(payload string) ([]byte, bool) {
 // depth cap without returning any extracted strings.
 func jsonDepthTruncated(raw json.RawMessage) bool {
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	if err := extract.DecodeJSON(raw, &parsed); err != nil {
 		return false
 	}
 	return valueDepthTruncated(parsed, 0)
@@ -779,7 +779,7 @@ func ExtractStringsForKeys(raw json.RawMessage, keyPattern *regexp.Regexp) []str
 // keys and reports whether recursive extraction hit the depth cap.
 func ExtractStringsForKeysResult(raw json.RawMessage, keyPattern *regexp.Regexp) ExtractStringsResult {
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	if err := extract.DecodeJSON(raw, &parsed); err != nil {
 		return ExtractStringsResult{}
 	}
 	m, ok := parsed.(map[string]interface{})

@@ -4,9 +4,10 @@
 package tools
 
 import (
-	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 )
 
 // toolTextSink is the single schema text walker. The []string collectors are
@@ -218,7 +219,7 @@ func toolScanTextOrdered(t ToolDef, order schemaKeyOrder) (string, []toolTextSpa
 	}
 	if len(t.InputSchema) > 0 {
 		var parsed interface{}
-		if json.Unmarshal(t.InputSchema, &parsed) == nil {
+		if extract.DecodeJSON(t.InputSchema, &parsed) == nil {
 			sink := toolTextSink{track: true, order: order}
 			sink.schemaValue(parsed, "", 0)
 			for i, text := range sink.texts {

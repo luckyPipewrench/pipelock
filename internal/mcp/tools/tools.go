@@ -24,6 +24,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/a2amethods"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
@@ -1526,7 +1527,7 @@ func extractToolRuleDescriptionText(t ToolDef) string {
 	}
 	if len(t.InputSchema) > 0 {
 		var schema any
-		if json.Unmarshal(t.InputSchema, &schema) == nil {
+		if extract.DecodeJSON(t.InputSchema, &schema) == nil {
 			collectSchemaDescriptionFields(schema, &parts, 0)
 		}
 	}
@@ -1725,7 +1726,7 @@ func toolKeyExtractionTruncated(raw json.RawMessage) bool {
 
 func toolFieldContainsOpaqueMedia(raw json.RawMessage) bool {
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	if err := extract.DecodeJSON(raw, &parsed); err != nil {
 		return false
 	}
 	return valueContainsOpaqueToolMedia(parsed)
@@ -1898,7 +1899,7 @@ func expandParamName(name string) string {
 // definitions, items, and additionalProperties). Returns sorted, deduplicated names.
 func ExtractParamNames(schema json.RawMessage) []string {
 	var parsed map[string]interface{}
-	if err := json.Unmarshal(schema, &parsed); err != nil {
+	if err := extract.DecodeJSON(schema, &parsed); err != nil {
 		return nil
 	}
 	seen := make(map[string]bool)
@@ -1949,7 +1950,7 @@ func ExtractSchemaDescriptions(schema json.RawMessage) []string {
 
 func schemaDescriptionsOrdered(schema json.RawMessage, order schemaKeyOrder) []string {
 	var parsed interface{}
-	if err := json.Unmarshal(schema, &parsed); err != nil {
+	if err := extract.DecodeJSON(schema, &parsed); err != nil {
 		return nil
 	}
 	sink := toolTextSink{order: order}
@@ -1963,7 +1964,7 @@ func schemaDescriptionsOrdered(schema json.RawMessage, order schemaKeyOrder) []s
 // as clean merely because the more general JSON extractor can traverse it.
 func schemaTextExtractionTruncated(schema json.RawMessage) bool {
 	var parsed interface{}
-	if err := json.Unmarshal(schema, &parsed); err != nil {
+	if err := extract.DecodeJSON(schema, &parsed); err != nil {
 		return false
 	}
 	return schemaValueDepthTruncated(parsed, 0)

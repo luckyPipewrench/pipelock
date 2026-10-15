@@ -327,7 +327,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 // The caller validates JSON and its shared depth bound before this traversal.
 func a2aPartTextViews(body []byte) []string {
 	var parsed any
-	if err := json.Unmarshal(body, &parsed); err != nil {
+	if err := extract.DecodeJSON(body, &parsed); err != nil {
 		return nil
 	}
 	var views []string

@@ -166,7 +166,7 @@ func classifyFieldName(name string) FieldClass {
 // breach, emits a single FieldBudgetExceeded and stops.
 func WalkA2AJSON(data json.RawMessage, emit func(path string, value string, class FieldClass)) {
 	var parsed interface{}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if err := extract.DecodeJSON(data, &parsed); err != nil {
 		return
 	}
 	nodeCount := 0
@@ -190,7 +190,7 @@ func walkValue(v interface{}, path, parentKey string, nodeCount *int, depth int,
 		class := classifyLeafValue(parentKey, val)
 		emit(path, val, class)
 
-	case float64:
+	case json.Number:
 		// Numbers are not security-relevant for classification
 		*nodeCount++
 

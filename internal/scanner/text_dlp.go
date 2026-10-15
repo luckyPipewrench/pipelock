@@ -503,8 +503,7 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 }
 
 func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPOptions) TextDLPResult {
-	var decodes decodingMemo
-	return s.scanTextForDLPWithDecodes(ctx, text, opts, &decodes)
+	return s.scanTextDLPViews(ctx, text, text, opts)
 }
 
 // ScanTextForDLPWithCardView scans a type-preserving pair supplied by an
@@ -528,26 +527,33 @@ func (s *Scanner) ScanTextForDLPInboundWithCardView(ctx context.Context, text, c
 
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	var originalDecodes decodingMemo
-	if text == cardView || !s.hasGenericCardPatterns() {
+	if !s.hasGenericCardPatterns() {
 		return s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
 	}
+	// Partition even literal inputs: an early card match must not stop
+	// segment decoding for unrelated credentials that callers still enforce
+	// after destination-specific card suppression.
 	emit := opts.emitWarns
 	opts.emitWarns = false
 	opts.patterns = textDLPNonCardPatterns
 	original := s.scanTextForDLPWithDecodes(ctx, text, opts, &originalDecodes)
-	var cardDecodes decodingMemo
+	var typedDecodes decodingMemo
+	cardDecodes := &originalDecodes
+	if text != cardView {
+		cardDecodes = &typedDecodes
+	}
 	opts.patterns = textDLPCardPatterns
 	opts.scanSecretLeak = false
-	cards := s.scanTextForDLPWithDecodes(ctx, cardView, opts, &cardDecodes)
+	cards := s.scanTextForDLPWithDecodes(ctx, cardView, opts, cardDecodes)
 	original.Matches = append(original.Matches, cards.Matches...)
 	original.InformationalMatches = append(original.InformationalMatches, cards.InformationalMatches...)
 	for i := range original.Matches {
-		if original.Matches[i].genericCard {
+		if text != cardView && original.Matches[i].genericCard {
 			original.Matches[i].span.ViewLabel = spanViewLabel("json_integer", original.Matches[i].span.ViewLabel)
 		}
 	}
 	for i := range original.InformationalMatches {
-		if original.InformationalMatches[i].genericCard {
+		if text != cardView && original.InformationalMatches[i].genericCard {
 			original.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_integer", original.InformationalMatches[i].span.ViewLabel)
 		}
 	}

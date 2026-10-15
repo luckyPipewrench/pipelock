@@ -47,8 +47,8 @@ func ExtractAllStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 	var totalBytes int
 	truncated := false
 
-	var extract func(v interface{}, depth int)
-	extract = func(v interface{}, depth int) {
+	var visit func(v interface{}, depth int)
+	visit = func(v interface{}, depth int) {
 		if truncated {
 			return
 		}
@@ -66,7 +66,7 @@ func ExtractAllStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 			totalBytes += len(val)
 		case []interface{}:
 			for _, item := range val {
-				extract(item, depth+1)
+				visit(item, depth+1)
 			}
 		case map[string]interface{}:
 			keys := make([]string, 0, len(val))
@@ -81,13 +81,13 @@ func ExtractAllStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 				}
 				result = append(result, k)
 				totalBytes += len(k)
-				extract(val[k], depth+1)
+				visit(val[k], depth+1)
 			}
 		}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
-		extract(parsed, 0)
+	if err := extract.DecodeJSON(raw, &parsed); err == nil {
+		visit(parsed, 0)
 	}
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
 }

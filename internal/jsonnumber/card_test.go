@@ -38,6 +38,7 @@ func TestCardViewDocumentBoundaries(t *testing.T) {
 		{"escaped quote", `{"a":"\"1.5","n":1.5}`, `{"a":"\"1.5","n":1  }`},
 		{"duplicate occurrences", `{"n":1.5,"n":2.5}`, `{"n":1  ,"n":2  }`},
 		{"integer only", "[42]", "[42]"},
+		{"strings only", `["1.5","example"]`, `["1.5","example"]`},
 		{"empty", "", ""},
 		{"malformed", `{"n":0.125`, `{"n":0.125`},
 		{"two documents", "[0.5] [0.5]", "[0.5] [0.5]"},

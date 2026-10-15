@@ -367,9 +367,10 @@ code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to
 trigger a review and `YOUR_GITHUB_USER_ID` with that account's numeric id
 (`gh api users/YOUR_GITHUB_LOGIN --jq .id`). The id is what decides who is
 trusted, because a login can be renamed and an id cannot. Keep the association
-check on the value your repository reports: `OWNER` when a personal account owns
-the repository, `MEMBER` when an organization owns it. Relying on the association
-alone would let any organization member trigger a review.
+check, and replace `YOUR_REPOSITORY_ASSOCIATION` with the value your repository
+reports: `OWNER` when a personal account owns the repository, `MEMBER` when an
+organization owns it. Relying on the association alone would let any
+organization member trigger a review.
 
 Grant `issues: write` and `pull-requests: write`. A called workflow cannot hold
 a permission its caller withheld, so dropping either one silently strips it
@@ -406,7 +407,7 @@ jobs:
       github.triggering_actor == 'YOUR_GITHUB_LOGIN' &&
       github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
       github.event.comment.user.id == YOUR_GITHUB_USER_ID &&
-      github.event.comment.author_association == 'MEMBER' &&
+      github.event.comment.author_association == 'YOUR_REPOSITORY_ASSOCIATION' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')

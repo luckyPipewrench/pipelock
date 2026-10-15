@@ -5843,6 +5843,8 @@ class AdoptionStubTest(OfflineReviewTestCase):
     REAL_LOGIN = "luckyPipewrench"
     PLACEHOLDER_USER_ID = "YOUR_GITHUB_USER_ID"
     REAL_USER_ID = "142104046"
+    PLACEHOLDER_ASSOCIATION = "YOUR_REPOSITORY_ASSOCIATION"
+    REAL_ASSOCIATION = "MEMBER"
 
     def documented_stub(self) -> dict[str, object]:
         guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
@@ -5856,6 +5858,8 @@ class AdoptionStubTest(OfflineReviewTestCase):
         # placeholder where this repository carries its own login.
         self.assertIn(self.PLACEHOLDER_LOGIN, body, "the stub must not hard-code one account")
         self.assertIn(self.PLACEHOLDER_USER_ID, body, "the stub must not hard-code one account id")
+        self.assertIn(self.PLACEHOLDER_ASSOCIATION, body, "the stub must not assume one association")
+        body = body.replace(self.PLACEHOLDER_ASSOCIATION, self.REAL_ASSOCIATION)
         body = body.replace(self.PLACEHOLDER_USER_ID, self.REAL_USER_ID)
         return parse_yaml(body.replace(self.PLACEHOLDER_LOGIN, self.REAL_LOGIN))
 

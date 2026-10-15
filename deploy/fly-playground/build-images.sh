@@ -15,7 +15,7 @@
 #   PLAYGROUND_UI_DIR    site static/playground/demo directory (broker builds)
 # Optional env:
 #   PLAYGROUND_PUSH=1    also push each selected image after building
-#   VERSION              version embedded in the binaries (default dev)
+#   VERSION              version embedded in the binaries (default: scripts/git-version.sh, as make build)
 #
 # Example:
 #   PLAYGROUND_REGISTRY=registry.fly.io/<app> \
@@ -58,6 +58,8 @@ VM_TAG="${PLAYGROUND_REGISTRY}:vm"
 BROKER_TAG="${PLAYGROUND_REGISTRY}:broker"
 
 cd "${REPO_ROOT}"
+# Same version source as `make build`, so a running image names the commit it came from.
+VERSION="${VERSION:-$(./scripts/git-version.sh 2>/dev/null || echo 0.0.0-dev.unknown)}"
 
 # Honor the host HTTP proxy for `go mod download` inside the build. On this
 # workstation the proxy is loopback-only, so the build also uses host
@@ -79,7 +81,7 @@ fi
 
 if [ "${build_vm}" -eq 1 ]; then
 	echo "[build-images] building VM image ${VM_TAG}"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION:-dev}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
+	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
 fi
 
 # The viewer's inline "Verify in your browser" button loads a WASM build of the
@@ -122,7 +124,7 @@ if [ "${build_broker}" -eq 1 ]; then
 	fi
 
 	echo "[build-images] building broker image ${BROKER_TAG} (viewer from ${PLAYGROUND_UI_DIR})"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION:-dev}" -f deploy/fly-playground/Dockerfile.broker \
+	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION}" -f deploy/fly-playground/Dockerfile.broker \
 		--build-context "ui=${PLAYGROUND_UI_DIR}" \
 		-t "${BROKER_TAG}" .
 

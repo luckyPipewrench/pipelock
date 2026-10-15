@@ -20,6 +20,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/contententropy"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/tools"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
@@ -286,8 +287,8 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 		texts := extracted.Strings
 		if len(texts) > 0 {
-			joined := strings.Join(texts, "\n")
-			dlpResult := sc.ScanTextForDLP(ctx, joined)
+			joined := strings.Join(texts, " ")
+			dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, strings.Join(extracted.CardStrings, " "))
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
@@ -377,7 +378,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 	if len(extracted.Strings) == 0 {
 		return false
 	}
-	joined := strings.Join(extracted.Strings, "\n")
+	joined := strings.Join(extracted.Strings, " ")
 	forceBlock := false
 	injectResult := sc.ScanResponse(ctx, joined)
 	if injectResult.Failed() {
@@ -388,7 +389,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
 		forceBlock = true
 	}
-	dlpResult := sc.ScanTextForDLP(ctx, joined)
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, strings.Join(extracted.CardStrings, " "))
 	if !dlpResult.Clean {
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 		if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -1204,6 +1205,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 	reader := transport.NewSSEReader(body)
 	var injectionTail string
 	var dlpTail string
+	var cardTail string
 
 	for {
 		select {
@@ -1239,6 +1241,14 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// event:) would otherwise slip through - same class of bypass as
 		// external review finding #2 on the generic SSE path.
 		canonical := canonicalSSEEventText(event, reader)
+		cardCanonical := canonicalSSEEventText([]byte(jsonnumber.CardView(string(event), extract.MaxExtractDepth)), reader)
+		// SSE metadata is string-valued (WHATWG server-sent events). Inspect
+		// each value before envelope joins can remove a credential boundary.
+		for _, metadata := range []string{reader.LastEventID(), reader.LastEventType(), reader.LastRetry()} {
+			if dlpResult := sc.ScanTextForDLP(ctx, metadata); !dlpResult.Clean {
+				return fmt.Errorf("%w: dlp in sse metadata: %s", ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+			}
+		}
 		if injResult := sc.ScanResponse(ctx, canonical); !injResult.Clean {
 			if injResult.Failed() {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, injResult.ScanError)
@@ -1246,7 +1256,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
 		}
-		if dlpResult := sc.ScanTextForDLP(ctx, canonical); !dlpResult.Clean {
+		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); !dlpResult.Clean {
 			return fmt.Errorf("%w: dlp in sse metadata: %s",
 				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 		}
@@ -1254,7 +1264,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// Rolling tails: injection keeps word boundaries; DLP does not insert a
 		// separator so a credential split exactly at an event boundary is visible
 		// to the same detectors that caught per-event data.
-		currentText, currentTruncated := extractTextFromEvent(event)
+		currentText, currentCardText, currentTruncated := extractTextViewsFromEvent(event)
 		if currentTruncated {
 			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
@@ -1270,7 +1280,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		}
 		if dlpTail != "" && currentText != "" {
 			combined := dlpTail + currentText
-			dlpResult := sc.ScanTextForDLP(ctx, combined)
+			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+currentCardText)
 			if !dlpResult.Clean {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
@@ -1282,6 +1292,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			current := []byte(currentText)
 			injectionTail = advanceSSERollingTail(injectionTail, current, false, " ")
 			dlpTail = advanceSSERollingTail(dlpTail, current, false, "")
+			cardTail = advanceSSERollingTail(cardTail, []byte(currentCardText), false, "")
 		}
 
 		// Forward clean event. Preserve id, event, and retry fields from the
@@ -1299,15 +1310,20 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 // extractTextFromEvent extracts scannable text from an SSE event payload.
 // The payload is JSON - extract all string values for the rolling tail.
 func extractTextFromEvent(event []byte) (string, bool) {
+	text, _, truncated := extractTextViewsFromEvent(event)
+	return text, truncated
+}
+
+func extractTextViewsFromEvent(event []byte) (string, string, bool) {
 	if len(event) == 0 {
-		return "", false
+		return "", "", false
 	}
 	extracted := extract.AllStringsFromJSONResult(json.RawMessage(event))
 	texts := extracted.Strings
 	if len(texts) == 0 {
-		return "", extracted.Truncated
+		return "", "", extracted.Truncated
 	}
-	return strings.Join(texts, " "), extracted.Truncated
+	return strings.Join(texts, " "), strings.Join(extracted.CardStrings, " "), extracted.Truncated
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the

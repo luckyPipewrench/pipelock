@@ -17,8 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
-	"github.com/luckyPipewrench/pipelock/internal/extract"
-	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
@@ -430,11 +428,7 @@ func (s *Scanner) ScanRequestBodyTextForDLP(ctx context.Context, text string) Te
 // Callers must independently verify that the request matches an explicit
 // destination route before using it.
 func (s *Scanner) ScanRequestBodyTextPartsForDLP(ctx context.Context, parts []string, separator string) TextDLPResult {
-	cards := make([]string, len(parts))
-	for i, part := range parts {
-		cards[i] = jsonnumber.CardView(part, extract.MaxExtractDepth)
-	}
-	return s.ScanRequestBodyTextPartsWithCardViews(ctx, parts, cards, separator)
+	return s.ScanRequestBodyTextPartsWithCardViews(ctx, parts, parts, separator)
 }
 
 // ScanRequestBodyTextPartsWithCardViews preserves numeric provenance while
@@ -509,11 +503,8 @@ func (s *Scanner) EmitTextDLPWarnMatches(ctx context.Context, matches []TextDLPM
 }
 
 func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPOptions) TextDLPResult {
-	if !s.hasGenericCardPatterns() {
-		var decodes decodingMemo
-		return s.scanTextForDLPWithDecodes(ctx, text, opts, &decodes)
-	}
-	return s.scanTextDLPViews(ctx, text, jsonnumber.CardView(text, extract.MaxExtractDepth), opts)
+	var decodes decodingMemo
+	return s.scanTextForDLPWithDecodes(ctx, text, opts, &decodes)
 }
 
 // ScanTextForDLPWithCardView scans a type-preserving pair supplied by an
@@ -521,6 +512,12 @@ func (s *Scanner) scanTextForDLP(ctx context.Context, text string, opts textDLPO
 // card policy; literal strings must be supplied unchanged in both views.
 func (s *Scanner) ScanTextForDLPWithCardView(ctx context.Context, text, cardView string) TextDLPResult {
 	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{emitWarns: true, scanSecretLeak: true})
+}
+
+// ScanTextForDLPQuietWithCardView scans an explicit type-preserving pair
+// without emitting duplicate warn telemetry during cross-message comparisons.
+func (s *Scanner) ScanTextForDLPQuietWithCardView(ctx context.Context, text, cardView string) TextDLPResult {
+	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{scanSecretLeak: true})
 }
 
 // ScanTextForDLPInboundWithCardView is the inbound counterpart, retaining

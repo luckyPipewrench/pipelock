@@ -106,6 +106,10 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.body)); err != nil {
 				t.Fatal(err)
 			}
+			// A complete numeric message keeps its type in the retained tail.
+			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.body)); err != nil {
+				t.Fatal(err)
+			}
 			source := &receiptFrameConn{input: bytes.NewReader(wire.Bytes())}
 			sink := &receiptFrameConn{input: bytes.NewReader(nil)}
 			r := &wsRelay{proxy: p, cfg: cfg, scanner: s, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/metrics", maxMsg: cfg.WebSocketProxy.MaxMessageBytes, scanText: true, clientConn: source, upstreamConn: sink}

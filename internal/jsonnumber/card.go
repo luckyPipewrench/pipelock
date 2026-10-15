@@ -14,8 +14,11 @@ import (
 // neither evaluates exponents nor rounds numbers. Invalid or over-budget
 // spellings retain their original conservative scan view.
 //
-// Spaces preserve byte coordinates and form valid JSON whitespace. This view
-// is only for generic card patterns, never known values or other detectors.
+// Commas preserve byte coordinates and the numeric-leaf channel's value
+// separation convention (jsonrpc.ExtractNumericLeaves). Unlike whitespace,
+// they survive DLP compaction, so masked numbers cannot fabricate a card by
+// joining their integer components. This internal scan view is never parsed
+// as JSON or forwarded; known values and other detectors use the original.
 func IntegralView(n json.Number) string {
 	s := n.String()
 	if _, ok := boundedComponents(s); !ok {
@@ -25,7 +28,7 @@ func IntegralView(n json.Number) string {
 	if end < 0 {
 		return s
 	}
-	return s[:end] + strings.Repeat(" ", len(s)-end)
+	return s[:end] + strings.Repeat(",", len(s)-end)
 }
 
 // CardView applies IntegralView only to numeric tokens in one complete JSON

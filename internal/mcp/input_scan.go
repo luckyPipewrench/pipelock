@@ -389,7 +389,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// Also unescape JSON \uXXXX sequences so DLP patterns match
 		// secrets encoded with JSON unicode escapes (parser differential fix).
 		if dlpResult.Clean {
-			dlpResult = sc.ScanTextForDLP(ctx, raw)
+			dlpResult = sc.ScanTextForDLPWithCardView(ctx, raw, jsonnumber.CardView(raw, extract.MaxExtractDepth))
 		}
 		if dlpResult.Clean {
 			if unescaped := unescapeJSONUnicode(raw); unescaped != raw {
@@ -498,7 +498,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		}
 	}
 	if dlpResult.Clean {
-		dlpResult = sc.ScanTextForDLP(ctx, string(trimmed))
+		dlpResult = sc.ScanTextForDLPWithCardView(ctx, string(trimmed), jsonnumber.CardView(string(trimmed), extract.MaxExtractDepth))
 	}
 	if dlpResult.Clean {
 		if unescaped := unescapeJSONUnicode(string(trimmed)); unescaped != string(trimmed) {
@@ -600,7 +600,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 
 	// Fall back to full raw text for cross-structure patterns.
 	if dlpResult.Clean {
-		dlpResult = sc.ScanTextForDLP(ctx, text)
+		dlpResult = sc.ScanTextForDLPWithCardView(ctx, text, jsonnumber.CardView(text, extract.MaxExtractDepth))
 	}
 	// JSON unicode unescape: resolve \uXXXX sequences in raw text so DLP
 	// patterns match secrets encoded with JSON unicode escapes.

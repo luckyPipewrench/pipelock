@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 func TestCardJSONNumbers(t *testing.T) {
@@ -48,9 +50,9 @@ func TestCardJSONNumbers(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			for _, inbound := range []bool{false, true} {
-				result := s.ScanTextForDLP(t.Context(), tt.text)
+				result := s.ScanTextForDLPWithCardView(t.Context(), tt.text, jsonnumber.CardView(tt.text, extract.MaxExtractDepth))
 				if inbound {
-					result = s.ScanTextForDLPInbound(t.Context(), tt.text)
+					result = s.ScanTextForDLPInboundWithCardView(t.Context(), tt.text, jsonnumber.CardView(tt.text, extract.MaxExtractDepth))
 				}
 				card := false
 				for _, m := range result.Matches {
@@ -73,7 +75,7 @@ func TestCardJSONKnownValues(t *testing.T) {
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, text := range []string{`{"ctr":0.41111111` + `11111111}`, `{"n":"0.41111111` + `11111111"}`} {
-		for _, result := range []TextDLPResult{s.ScanTextForDLP(t.Context(), text), s.ScanTextForDLPInbound(t.Context(), text)} {
+		for _, result := range []TextDLPResult{s.ScanTextForDLPWithCardView(t.Context(), text, jsonnumber.CardView(text, extract.MaxExtractDepth)), s.ScanTextForDLPInboundWithCardView(t.Context(), text, jsonnumber.CardView(text, extract.MaxExtractDepth))} {
 			found := false
 			for _, m := range result.Matches {
 				found = found || strings.HasPrefix(m.PatternName, "Canary Token (")
@@ -98,17 +100,17 @@ func TestCardJSONKnownSecretAndValidatorIdentity(t *testing.T) {
 	t.Cleanup(s.Close)
 	card := "41111111" + "11111111"
 	metric := `{"n":0.` + card + `}`
-	if r := s.ScanTextForDLP(t.Context(), metric); !r.Clean {
+	if r := s.ScanTextForDLPWithCardView(t.Context(), metric, jsonnumber.CardView(metric, extract.MaxExtractDepth)); !r.Clean {
 		t.Fatalf("rule name selected policy: %+v", r)
 	}
 	s.envSecrets = []string{card}
-	if r := s.ScanTextForDLP(t.Context(), metric); r.Clean {
+	if r := s.ScanTextForDLPWithCardView(t.Context(), metric, jsonnumber.CardView(metric, extract.MaxExtractDepth)); r.Clean {
 		t.Fatal("original known secret was lost")
 	}
-	if r := s.ScanTextForDLPInbound(t.Context(), metric); !r.Clean {
+	if r := s.ScanTextForDLPInboundWithCardView(t.Context(), metric, jsonnumber.CardView(metric, extract.MaxExtractDepth)); !r.Clean {
 		t.Fatal("inbound env semantics changed")
 	}
-	r := s.ScanTextForDLPQuiet(t.Context(), `{"n":`+card+`.1}`)
+	r := s.ScanTextForDLPQuietWithCardView(t.Context(), `{"n":`+card+`.1}`, jsonnumber.CardView(`{"n":`+card+`.1}`, extract.MaxExtractDepth))
 	located := false
 	for _, m := range r.Matches {
 		located = located || m.PatternName == "Renamed card rule" && strings.Contains(m.Span().ViewLabel, "json_integer")
@@ -129,7 +131,7 @@ func TestCardJSONMetricDoesNotMaskEncodedSecret(t *testing.T) {
 	value := "whsec_" + strings.Repeat("a", 24)
 	for i := range 4 {
 		text := `{"n":0.41111111` + `11111111,"s` + strings.Repeat("x", i) + `":"https://api.vendor.example/` + base64.StdEncoding.EncodeToString([]byte(value)) + `/end"}`
-		r := s.ScanTextForDLP(t.Context(), text)
+		r := s.ScanTextForDLPWithCardView(t.Context(), text, jsonnumber.CardView(text, extract.MaxExtractDepth))
 		found := false
 		for _, m := range r.Matches {
 			found = found || m.PatternName == "Stripe Webhook Secret"

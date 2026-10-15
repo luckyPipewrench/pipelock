@@ -4,8 +4,10 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
@@ -71,6 +73,7 @@ func TestCardJSONInputTypes(t *testing.T) {
 		{"written integer", `{"n":` + card + `.1}`, false},
 		{"integer exponent", `{"n":` + card + `e-2}`, false},
 		{"fraction split", `{"n":41111111.11111111}`, true},
+		{"unrelated decimals", `[4111.21,1111.22,1111.23,1111.24]`, true},
 		{"string", `{"n":"0.` + card + `"}`, false},
 		{"JSON string", `{"n":"{\"n\":0.` + card + `}"}`, false},
 		{"encoded string", `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, false},
@@ -109,6 +112,56 @@ func TestCardJSONResponseLiteralFields(t *testing.T) {
 		v := ScanResponse(line, s)
 		if v.Clean || v.Error != "" || len(v.DLPMatches) == 0 {
 			t.Fatalf("string lost its type: %+v", v)
+		}
+	}
+}
+
+func TestCardJSONA2ANumericTypes(t *testing.T) {
+	s := testA2AScanner(t)
+	t.Cleanup(s.Close)
+	card := "41111111" + "11111111"
+	for _, tt := range []struct {
+		body  string
+		clean bool
+	}{
+		{`{"metric":0.` + card + `}`, true},
+		{`{"metric":` + card + `.1}`, false},
+		{`{"metric":"0.` + card + `"}`, false},
+	} {
+		result := ScanA2ARequestBody(t.Context(), []byte(tt.body), s, enabledA2ACfg())
+		if result.Clean != tt.clean {
+			t.Fatalf("body=%s result=%+v want clean=%v", tt.body, result, tt.clean)
+		}
+	}
+}
+
+func TestCardJSONA2AStreamTypes(t *testing.T) {
+	s := testA2AScanner(t)
+	t.Cleanup(s.Close)
+	card := "41111111" + "11111111"
+	for _, tt := range []struct {
+		event string
+		clean bool
+	}{
+		{`{"metric":0.` + card + `}`, true},
+		{`{"metric":` + card + `.1}`, false},
+		{`{"metric":"0.` + card + `"}`, false},
+	} {
+		stream := "data: " + tt.event + "\n\ndata: " + tt.event + "\n\n"
+		var forwarded bytes.Buffer
+		err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg())
+		if (err == nil) != tt.clean {
+			t.Fatalf("event=%s error=%v want clean=%v", tt.event, err, tt.clean)
+		}
+		if tt.clean && forwarded.String() != stream {
+			t.Fatalf("numeric event bytes changed: %q", forwarded.String())
+		}
+	}
+	for _, field := range []string{"id", "event"} {
+		stream := field + ": 0." + card + "\ndata: {}\n\n"
+		var forwarded bytes.Buffer
+		if err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg()); err == nil || forwarded.Len() != 0 {
+			t.Fatalf("string metadata received numeric relief: field=%s error=%v bytes=%d", field, err, forwarded.Len())
 		}
 	}
 }

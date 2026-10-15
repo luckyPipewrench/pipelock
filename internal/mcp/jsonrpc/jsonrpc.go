@@ -850,7 +850,9 @@ func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 		}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err == nil && json.Valid(raw) {
 		extract(parsed, 0)
 	}
 	return ExtractStringsResult{Strings: result, Truncated: truncated}
@@ -904,7 +906,9 @@ func ExtractKeysFromJSONResult(raw json.RawMessage) ExtractKeysResult {
 		}
 	}
 	var parsed interface{}
-	if err := json.Unmarshal(raw, &parsed); err == nil {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&parsed); err == nil && json.Valid(raw) {
 		extract(parsed, 0)
 	}
 	return ExtractKeysResult{Keys: result, Truncated: truncated}

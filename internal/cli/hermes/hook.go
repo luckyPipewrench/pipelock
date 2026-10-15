@@ -203,27 +203,27 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 	switch event.HookEventName {
 	case HookPreToolCall:
 		// Outbound: the agent is invoking a tool; arguments may egress.
-		text, truncated := extractToolInputText(event.ToolInput)
+		text, cards, truncated := extractToolInputViews(event.ToolInput)
 		if truncated {
 			return blockDecision("pipelock: tool arguments exceed maximum inspectable nesting depth")
 		}
-		return scanCombined(ctx, sc, text,
+		return scanCombinedViews(ctx, sc, text, cards,
 			fmt.Sprintf("tool %q arguments", event.ToolName), directionOutbound)
 	case HookTransformToolResult:
 		// Inbound: a tool result flowing back to the agent.
-		text, truncated := extractToolInputText(event.ToolInput)
+		text, cards, truncated := extractToolInputViews(event.ToolInput)
 		if truncated {
 			return blockDecision("pipelock: tool result exceeds maximum inspectable nesting depth")
 		}
-		return scanCombined(ctx, sc, text,
+		return scanCombinedViews(ctx, sc, text, cards,
 			fmt.Sprintf("tool %q result", event.ToolName), directionInbound)
 	case HookPreGatewayDispatch:
 		// Inbound: an operator->agent message being dispatched.
-		text, truncated := extractToolInputText(event.ToolInput)
+		text, cards, truncated := extractToolInputViews(event.ToolInput)
 		if truncated {
 			return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
 		}
-		return scanCombined(ctx, sc, text,
+		return scanCombinedViews(ctx, sc, text, cards,
 			"inbound gateway dispatch", directionInbound)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
@@ -266,6 +266,10 @@ const (
 const hermesTerminalTool = "terminal"
 
 func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string, dir scanDirection) HookDecision {
+	return scanCombinedViews(ctx, sc, text, text, surface, dir)
+}
+
+func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, text, cards, surface string, dir scanDirection) HookDecision {
 	if strings.TrimSpace(text) == "" {
 		return allowDecision()
 	}
@@ -277,9 +281,9 @@ func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string
 	// poisoned tool result or operator message is the real inbound threat.
 	var dlp scanner.TextDLPResult
 	if dir == directionInbound {
-		dlp = sc.ScanTextForDLPInbound(ctx, text)
+		dlp = sc.ScanTextForDLPInboundWithCardView(ctx, text, cards)
 	} else {
-		dlp = sc.ScanTextForDLP(ctx, text)
+		dlp = sc.ScanTextForDLPWithCardView(ctx, text, cards)
 	}
 	if !dlp.Clean && len(dlp.Matches) > 0 {
 		enforceable := dlp.Matches
@@ -319,26 +323,32 @@ func dlpBlockReason(surface string, match scanner.TextDLPMatch) string {
 // extractToolInputText collapses the structured tool_input JSON value into a
 // single text blob for the scanner. It reuses extract.AllStringsFromJSON so
 // JSON object keys are scanned too: an agent can exfiltrate by putting secrets
-// in argument names just as easily as in values. Strings are joined with
-// newlines so adjacent values aren't concatenated into a substring no field
-// actually contains.
+// in argument names just as easily as in values. A space separates adjacent
+// values through normalization, using the scan API's tool-argument convention.
 func extractToolInputText(raw json.RawMessage) (string, bool) {
+	text, _, truncated := extractToolInputViews(raw)
+	return text, truncated
+}
+
+func extractToolInputViews(raw json.RawMessage) (string, string, bool) {
 	if len(raw) == 0 {
-		return "", false
+		return "", "", false
 	}
 	// Some Hermes events carry tool_input as a plain JSON string (gateway
 	// text, simple shell commands). Try the string case first so we don't
 	// drop into the recursive walker for what is already a leaf value.
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString, false
+		return asString, asString, false
 	}
 	extracted := extract.AllStringsFromJSONResult(raw)
 	strs := extracted.Strings
 	if len(strs) == 0 {
-		return "", extracted.Truncated
+		return "", "", extracted.Truncated
 	}
-	return strings.Join(strs, "\n"), extracted.Truncated
+	// Use the scan API tool-argument join convention. Spaces retain value
+	// boundaries through normalization; control newlines can be removed.
+	return strings.Join(strs, " "), strings.Join(extracted.CardStrings, " "), extracted.Truncated
 }
 
 // readAllWithCtx is io.ReadAll bounded by ctx and a byte ceiling. If ctx fires

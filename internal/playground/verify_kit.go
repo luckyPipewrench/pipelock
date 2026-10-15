@@ -78,11 +78,12 @@ var verifyKitRequiredFiles = []string{
 }
 
 // verifyKitOptionalFiles are extracted when present but their absence does not
-// fail the kit build.
+// fail the kit build. The bundle's VERIFY.txt is left out: it describes the raw
+// bundle's directory layout, which the kit rearranges, and the kit carries its
+// own launcher and verifier.txt instead.
 var verifyKitOptionalFiles = []string{
 	hostContainmentWitnessFile,
 	orchestratorDelegationFile,
-	"VERIFY.txt",
 }
 
 // BuildLiveVerifyKit builds a single-download, offline verification kit for one

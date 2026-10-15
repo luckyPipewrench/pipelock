@@ -148,6 +148,9 @@ func TestReplayKits(t *testing.T) {
 					if strings.HasSuffix(f.Name, "replay-archive-authorization.json") {
 						authorizations++
 					}
+					if strings.HasSuffix(f.Name, "/VERIFY.txt") {
+						t.Fatalf("%s carries the raw bundle's VERIFY.txt, whose paths don't match the kit", entry.Name())
+					}
 				}
 				_ = zr.Close()
 				if launchers != 1 || authorizations != 1 {

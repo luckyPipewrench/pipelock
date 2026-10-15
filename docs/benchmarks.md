@@ -4,12 +4,13 @@ Receipt-load measurements and raw scanner benchmarks from Go's testing framework
 
 ## Million-request receipt run
 
-The released 3.7.0 binary, which contains the receipt caching and bounded-search changes in [#1897](https://github.com/luckyPipewrench/pipelock/pull/1897), completed 1,000,000 measured requests with required receipts. All 5,855,850 expected receipt records were present. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
+The released 3.7.0 binary, which contains the receipt caching and bounded-search changes in [#1897](https://github.com/luckyPipewrench/pipelock/pull/1897), completed 1,000,000 measured requests with required receipts after 1,000 warm-up requests. All 5,855,850 expected receipt records were present, including those from warm-up. Throughput and latency exclude warm-up. The complete eight-shard group verified `GROUP_VALID`, with clean shutdown and zero append-lock timeouts. Requests and receipt records are different counts: one request can produce intent, outcome and other configured evidence records.
 
 | Measurement | Observed result |
 |---|---:|
 | Measured requests | 1,000,000 |
-| Expected receipt records | 5,855,850 |
+| Warm-up requests (excluded from performance) | 1,000 |
+| Expected receipt records (including warm-up) | 5,855,850 |
 | Missing receipt records | 0 |
 | Signed group shards | 8, `GROUP_VALID` |
 | Throughput | 333 requests/s |
@@ -22,7 +23,7 @@ A separate 20,000-request calibration of the same binary on the same host, under
 
 | CPU quota cap | One chain, requests/s | Chains equal to cap, requests/s |
 |---:|---:|---:|
-| 2 | 96 | 96 |
+| 2 | 96 | 95 |
 | 4 | 122 | 192 |
 | 8 | 125 | 351 |
 

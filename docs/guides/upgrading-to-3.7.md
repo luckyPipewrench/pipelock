@@ -31,7 +31,7 @@ Receipt scanning checks whole values before signing and uses a bounded fragment 
 
 Stopping a recording proxy now has a stated budget. Closing the receipt group at shutdown can outlast systemd's 90 s, Kubernetes' 30 s and Compose's 10 s defaults on a small CPU allocation with a long history, so the managed systemd unit, the Helm chart, generated Kubernetes and Compose output and the examples set 10 minutes. An upgrade run by the 3.7.0 `pipelock contain upgrade` adds the unit setting unless one is already set, but upgrading from an earlier release runs the old binary's upgrade, which doesn't; run `pipelock contain install` with the new binary afterwards, as described below. Helm and generated output pick it up when upgraded or regenerated; hand-written manifests need their own setting. A run killed before its close finishes verifies as `GROUP_INCOMPLETE`. See [stop budget](flight-recorder.md#stop-budget).
 
-The [million-request measurement](../benchmarks.md#million-request-receipt-run) recorded a valid eight-chain group with no missing expected records. It measures that workload and development build; it doesn't certify every deployment or bind a later release artifact by itself.
+The [million-request measurement](../benchmarks.md#million-request-receipt-run) used the published v3.7.0 binary and recorded a valid eight-chain group with no missing expected records. It measures that binary and workload; it doesn't certify every deployment or throughput for another build, host or workload.
 
 ## Containment and sandbox launches
 

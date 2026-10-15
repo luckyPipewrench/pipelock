@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 func TestResponsePrecision_StatusReport(t *testing.T) {
@@ -81,7 +83,7 @@ func TestResponsePrecision_NumericTelemetry(t *testing.T) {
 		{"separated card", "card 4111 1111 " + "1111 1111", false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			result := s.ScanTextForDLPInbound(t.Context(), tt.text)
+			result := s.ScanTextForDLPInboundWithCardView(t.Context(), tt.text, jsonnumber.CardView(tt.text, extract.MaxExtractDepth))
 			for _, m := range result.Matches {
 				t.Logf("pattern=%s encoding=%s", m.PatternName, m.Encoded)
 			}

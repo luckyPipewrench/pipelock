@@ -23,6 +23,9 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
 		return nil
 	}
+	if transport == TransportFetch && scanner.IsVerifiedImageResponseBody(body) {
+		return nil // Fetch scans images after media policy removes metadata.
+	}
 	contentType := responseContentType(headers)
 	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
 	if shieldLeavesBodyUnchanged(pipeline) {
@@ -50,10 +53,10 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 	return &result
 }
 
-// scanFetchReadableBeforeShield scans the original readability representation,
-// without adding markup or executable scripts to fetch's existing scan surface.
+// scanFetchReadableBeforeShield preserves fetch's original readability result,
+// including its raw-content fallback only when readability is unavailable.
 func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, headers http.Header, target string) *scanner.ResponseScanResult {
-	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
+	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled || scanner.IsVerifiedImageResponseBody(body) {
 		return nil
 	}
 	contentType := responseContentType(headers)
@@ -74,10 +77,12 @@ func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg
 		return nil
 	}
 	article, err := readability.FromReader(strings.NewReader(content), parsed)
-	if err != nil || article.TextContent == "" {
-		return nil // Never substitute raw markup for readable text.
+	if err == nil && article.TextContent != "" {
+		content = article.TextContent
 	}
-	readable := sc.ScanResponseWithSuppress(ctx, article.TextContent, target, cfg.Suppress)
+	// Match handleFetch: raw content is scanned only when extraction fails or
+	// returns no text. Successful extraction still excludes markup and scripts.
+	readable := sc.ScanResponseWithSuppress(ctx, content, target, cfg.Suppress)
 	readable.TransformedContent = "" // Original bytes are classification-only.
 	return &readable
 }

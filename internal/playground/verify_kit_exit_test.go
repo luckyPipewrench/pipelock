@@ -59,7 +59,7 @@ func TestLiveKitScriptExitStatus(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(app, "pipelock-verifier"), []byte(verifier), 0o600); err != nil {
 						t.Fatal(err)
 					}
-					if err := os.Chmod(filepath.Join(app, "pipelock-verifier"), 0o700); err != nil { //nolint:gosec // The private verifier fixture must be executable by its owner.
+					if err := os.Chmod(filepath.Join(app, "pipelock-verifier"), 0o700); err != nil { // #nosec G302 -- the private verifier fixture must be executable by its owner.
 						t.Fatal(err)
 					}
 					if osName == VerifyKitOSMacOS {

@@ -6557,7 +6557,14 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 
 	contentType := responseContentType(resp.Header)
 	title := ""
-	preShieldScan := scanBeforeShield(r.Context(), sc, cfg, body, resp.Header, resp.Request.URL.String(), TransportFetch)
+	preShieldHiddenScan := scanBeforeShield(r.Context(), sc, cfg, body, resp.Header, resp.Request.URL.String(), TransportFetch)
+	preShieldReadableScan := scanFetchReadableBeforeShield(r.Context(), sc, cfg, body, resp.Header, resp.Request.URL.String())
+	preShieldScan := preShieldHiddenScan
+	if preShieldReadableScan != nil {
+		combined := retainShieldScan(preShieldHiddenScan, *preShieldReadableScan, nil)
+		combined.TransformedContent = ""
+		preShieldScan = &combined
+	}
 
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
@@ -6690,7 +6697,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			if hidden != "" {
 				rawResult = sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
 			}
-			rawResult = retainShieldScan(preShieldScan, rawResult, []byte(content))
+			rawResult = retainShieldScan(preShieldHiddenScan, rawResult, []byte(content))
 			hiddenScanResult = &rawResult
 			hiddenInjectionFound = !rawResult.Clean && !rawResult.Failed()
 			responsePromptHit = responsePromptHit || hiddenInjectionFound
@@ -6748,6 +6755,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		var scanResult scanner.ResponseScanResult
 		if scanAsHTML {
 			scanResult = sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
+			scanResult = retainShieldScan(preShieldReadableScan, scanResult, []byte(content))
 		} else {
 			scanResult = sc.ScanResponseBodyWithSuppress(r.Context(), []byte(content), finalResponseURL, cfg.Suppress)
 		}

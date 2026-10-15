@@ -6,8 +6,11 @@ package proxy
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
+
+	readability "github.com/go-shiori/go-readability"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -45,6 +48,38 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 		result = sc.ScanResponseBodyWithSuppress(ctx, body, target, cfg.Suppress)
 	}
 	return &result
+}
+
+// scanFetchReadableBeforeShield scans the original readability representation,
+// without adding markup or executable scripts to fetch's existing scan surface.
+func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, headers http.Header, target string) *scanner.ResponseScanResult {
+	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
+		return nil
+	}
+	contentType := responseContentType(headers)
+	mediaType, valid := shieldMediaTypeEssence(contentType)
+	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
+	if !valid || (mediaType != "text/html" && mediaType != "application/xhtml+xml") || shieldLeavesBodyUnchanged(pipeline) {
+		return nil
+	}
+	content, utf16, err := decodeShieldUTF16(body, contentType, pipeline)
+	if err != nil {
+		return nil // Keep the existing Shield/body-scan failure path.
+	}
+	if !utf16 {
+		content = string(body)
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return nil
+	}
+	article, err := readability.FromReader(strings.NewReader(content), parsed)
+	if err != nil || article.TextContent == "" {
+		return nil // Never substitute raw markup for readable text.
+	}
+	readable := sc.ScanResponseWithSuppress(ctx, article.TextContent, target, cfg.Suppress)
+	readable.TransformedContent = "" // Original bytes are classification-only.
+	return &readable
 }
 
 // retainShieldScan combines findings, never transformations. Only the scan of

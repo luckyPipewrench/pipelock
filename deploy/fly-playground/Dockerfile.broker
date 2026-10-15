@@ -28,13 +28,13 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 ENV CGO_ENABLED=0
-RUN go build -trimpath -ldflags "-s -w" -o /out/pipelock-playground-broker ./cmd/pipelock-playground-broker
+RUN go build -trimpath -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" -o /out/pipelock-playground-broker ./cmd/pipelock-playground-broker
 RUN go install github.com/randall77/makefat@v0.0.0-20260406194835-1b91746796b7
-RUN GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-linux ./cmd/pipelock-verifier \
- && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-amd64 ./cmd/pipelock-verifier \
- && GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-macos-arm64 ./cmd/pipelock-verifier \
+RUN GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" -o /out/pipelock-verifier-linux ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" -o /out/pipelock-verifier-macos-amd64 ./cmd/pipelock-verifier \
+ && GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" -o /out/pipelock-verifier-macos-arm64 ./cmd/pipelock-verifier \
  && makefat /out/pipelock-verifier-macos /out/pipelock-verifier-macos-amd64 /out/pipelock-verifier-macos-arm64 \
- && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o /out/pipelock-verifier-windows.exe ./cmd/pipelock-verifier
+ && GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X github.com/luckyPipewrench/pipelock/internal/cliutil.Version=${VERSION} -X github.com/luckyPipewrench/pipelock/internal/proxy.Version=${VERSION}" -o /out/pipelock-verifier-windows.exe ./cmd/pipelock-verifier
 
 # Stage the static UI here (a shell-having stage) and normalize perms with a real
 # chmod. The broker runs as nonroot, so served assets MUST be world-readable or

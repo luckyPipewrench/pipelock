@@ -15,6 +15,7 @@
 #   PLAYGROUND_UI_DIR    site static/playground/demo directory (broker builds)
 # Optional env:
 #   PLAYGROUND_PUSH=1    also push each selected image after building
+#   VERSION              version embedded in the binaries (default dev)
 #
 # Example:
 #   PLAYGROUND_REGISTRY=registry.fly.io/<app> \
@@ -78,7 +79,7 @@ fi
 
 if [ "${build_vm}" -eq 1 ]; then
 	echo "[build-images] building VM image ${VM_TAG}"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
+	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION:-dev}" -f deploy/fly-playground/Dockerfile -t "${VM_TAG}" .
 fi
 
 # The viewer's inline "Verify in your browser" button loads a WASM build of the
@@ -121,7 +122,7 @@ if [ "${build_broker}" -eq 1 ]; then
 	fi
 
 	echo "[build-images] building broker image ${BROKER_TAG} (viewer from ${PLAYGROUND_UI_DIR})"
-	docker build "${DOCKER_BUILD_FLAGS[@]}" -f deploy/fly-playground/Dockerfile.broker \
+	docker build "${DOCKER_BUILD_FLAGS[@]}" --build-arg "VERSION=${VERSION:-dev}" -f deploy/fly-playground/Dockerfile.broker \
 		--build-context "ui=${PLAYGROUND_UI_DIR}" \
 		-t "${BROKER_TAG}" .
 

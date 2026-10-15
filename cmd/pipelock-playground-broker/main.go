@@ -201,7 +201,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: false,
 		Version:       cliutil.Version,
 	}
-	root.AddCommand(newServeCmd(), newArchiveReplayCmd())
+	root.AddCommand(newServeCmd(), newArchiveReplayCmd(), newReplayKitsCmd())
 	return root
 }
 
@@ -306,16 +306,12 @@ func buildArchiveVerifyKits(f *archiveReplayFlags, bundle []byte) ([]archiveKit,
 // created here under O_EXCL, so it can never delete a pre-existing artifact.
 func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiveKit) (err error) {
 	var created []string
-	var createdDir string
 	defer func() {
 		if err == nil {
 			return
 		}
 		for _, path := range created {
 			_ = os.Remove(path)
-		}
-		if createdDir != "" {
-			_ = os.Remove(createdDir)
 		}
 	}()
 
@@ -333,11 +329,25 @@ func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiv
 	if len(kits) == 0 {
 		return nil
 	}
-	kitDir := filepath.Clean(f.kitOutputDir)
+	return publishArchiveKitDirectory(f.kitOutputDir, kits)
+}
+
+// publishArchiveKitDirectory refuses existing paths and removes only files it
+// created if the complete set cannot be written.
+func publishArchiveKitDirectory(outputDir string, kits []archiveKit) (err error) {
+	kitDir := filepath.Clean(outputDir)
 	if err = os.Mkdir(kitDir, 0o750); err != nil {
 		return fmt.Errorf("create kit output directory: %w", err)
 	}
-	createdDir = kitDir
+	var created []string
+	defer func() {
+		if err != nil {
+			for _, path := range created {
+				_ = os.Remove(path)
+			}
+			_ = os.Remove(kitDir)
+		}
+	}()
 	for _, kit := range kits {
 		path := filepath.Join(kitDir, kit.name)
 		madeKit, kitErr := writeNewArchiveFile(path, kit.data)
@@ -345,8 +355,7 @@ func publishArchiveArtifacts(f *archiveReplayFlags, bundle []byte, kits []archiv
 			created = append(created, path)
 		}
 		if kitErr != nil {
-			err = kitErr
-			return err
+			return kitErr
 		}
 	}
 	return nil

@@ -360,7 +360,7 @@ If `finalize` fails while the comment still reads `running`, retry only that job
 ## Reusing the reviewer in another repository
 
 The stub below carries nothing specific to any one repository, so every adopting
-repository holds the same file. Make two replacements. Replace both occurrences
+repository holds the same file. Make four replacements. Replace both occurrences
 of `PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
 commit SHA; do not use a branch or tag, because either can move the reviewer
 code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to

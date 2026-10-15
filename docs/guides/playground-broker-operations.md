@@ -338,10 +338,10 @@ Rollback sequence:
 `deploy/fly-playground/check-live.sh <public-origin> [site-viewer-dir|-]
 [expected-pipelock-version]` reads `/build-info.json` and `/api/live/health`,
 fetches every recorded viewer file, and checks its SHA-256 against the served
-record. With a site viewer directory, it also checks the site commit and source
-assets against the local checkout. The WASM verifier and its JavaScript shim
-are built outputs and are skipped in that local comparison. Use `-` for the
-viewer directory when
-checking only an expected version. Any missing file, mismatched hash, unhealthy
+record. With a site viewer directory, it also compares every viewer file with
+the local checkout and notes when the site has newer commits; a site commit
+that leaves the viewer unchanged is not drift. The WASM verifier and its
+JavaScript shim are built outputs and are skipped in that local comparison.
+Use `-` for the viewer directory when checking only an expected version. Any missing file, mismatched hash, unhealthy
 broker, or version mismatch makes the command fail. The script uses `curl` and
 `jq` and does not change the deployment or either checkout.

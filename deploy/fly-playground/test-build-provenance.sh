@@ -171,8 +171,14 @@ if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/ch
 fi
 mv "${PLAYGROUND_UI_DIR}/extra.txt" "${tmp}/extra.txt"
 git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm moved
-if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then
-	echo 'different site commit was accepted' >&2
+# A site commit that leaves the viewer untouched is not drift; the files decide.
+if ! "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then
+	echo 'site commit outside the viewer was reported as drift' >&2
+	cat "${tmp}/check.out" >&2
+	exit 1
+fi
+if ! grep -q 'site has moved past the built commit' "${tmp}/check.out"; then
+	echo 'moved site commit was not noted' >&2
 	exit 1
 fi
 printf 'tampered\n' > "${tmp}/web/asset file.txt"

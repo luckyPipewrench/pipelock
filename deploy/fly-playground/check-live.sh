@@ -86,9 +86,10 @@ if [ -n "${site_dir}" ] && [ "${site_dir}" != - ]; then
 		echo "[check-live] ERROR: local viewer must be inside a git work tree" >&2
 		exit 1
 	fi
+	# Site commits that leave the viewer alone are not drift; the per-file
+	# comparison below is what fails the check.
 	if [ "${local_site_commit}" != "$(jq -r '.site_commit' <<< "${info}")" ]; then
-		echo "[check-live] local site commit differs from build info" >&2
-		failures=$((failures + 1))
+		echo "[check-live] note: local site has moved past the built commit; comparing viewer files"
 	fi
 fi
 while IFS= read -r path; do

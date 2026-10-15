@@ -28,6 +28,9 @@ func TestLiveKitScriptExitStatus(t *testing.T) {
 					if !strings.Contains(body, command+"\r\nset \"verify_status=%errorlevel%\"\r\n") || !strings.HasSuffix(body, "exit /b %verify_status%\r\n") {
 						t.Fatal("Windows launcher does not preserve verifier status")
 					}
+					if !strings.Contains(body, "if \"%verify_status%\"==\"0\" (echo result: VALID means") {
+						t.Fatal("Windows launcher prints the VALID explanation regardless of verifier status")
+					}
 					if runtime.GOOS != "windows" {
 						t.Skip("Windows cmd execution requires Windows; template contract checked")
 					}
@@ -81,6 +84,10 @@ func TestLiveKitScriptExitStatus(t *testing.T) {
 				}
 				if got != status {
 					t.Fatalf("exit = %d, want verifier exit %d: %s", got, status, out)
+				}
+				// The VALID explanation is printed only when the verifier passed.
+				if saysValid := strings.Contains(string(out), "result: VALID means"); saysValid != (status == 0) {
+					t.Fatalf("VALID line printed = %v for verifier exit %d: %s", saysValid, status, out)
 				}
 			})
 		}

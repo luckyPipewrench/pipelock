@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -21,9 +22,9 @@ func newReplayKitsCmd() *cobra.Command {
 		Short: "Build offline kits from an authorized replay without signing",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			bundle, err := os.ReadFile(filepath.Clean(bundlePath))
+			bundle, err := readBoundedBundle(bundlePath)
 			if err != nil {
-				return fmt.Errorf("read replay bundle: %w", err)
+				return err
 			}
 			artifacts, err := playground.ExtractRunArtifactsFromBundle(bundle)
 			if err != nil {
@@ -57,4 +58,22 @@ func newReplayKitsCmd() *cobra.Command {
 		_ = cmd.MarkFlagRequired(name)
 	}
 	return cmd
+}
+
+// readBoundedBundle reads at most playground.MaxBundleFileBytes, so an oversized
+// bundle is refused before it is held in memory.
+func readBoundedBundle(path string) ([]byte, error) {
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("read replay bundle: %w", err)
+	}
+	defer func() { _ = file.Close() }()
+	bundle, err := io.ReadAll(io.LimitReader(file, playground.MaxBundleFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("read replay bundle: %w", err)
+	}
+	if len(bundle) > playground.MaxBundleFileBytes {
+		return nil, fmt.Errorf("replay bundle exceeds %d bytes", playground.MaxBundleFileBytes)
+	}
+	return bundle, nil
 }

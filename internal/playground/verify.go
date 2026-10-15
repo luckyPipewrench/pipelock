@@ -101,6 +101,11 @@ const (
 	maxBundleExpandedBytes = 32 << 20
 )
 
+// MaxBundleFileBytes caps a bundle file read before extraction. It equals the
+// expanded-size cap and the browser verifier's download limit, so the offline
+// tools refuse the same oversized bundles the published viewer does.
+const MaxBundleFileBytes = maxBundleExpandedBytes
+
 // requiredChecks is the full set of check names that must all appear and pass
 // for a run to be considered verified. finalize uses this to enforce that the
 // entire chain ran -- a future early-return that forgets to append a Check

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/playground"
 )
 
 func rewriteReplayBundle(t *testing.T, bundle []byte, change string) []byte {
@@ -172,5 +174,40 @@ func TestReplayKitsHasNoSigningFlags(t *testing.T) {
 				t.Fatalf("flag accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestReadBoundedBundleRefusesOversize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "large.tar.gz")
+	file, err := os.Create(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Truncate(int64(playground.MaxBundleFileBytes) + 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	if _, err := readBoundedBundle(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized bundle: err = %v", err)
+	}
+	exact := filepath.Join(t.TempDir(), "exact.tar.gz")
+	if err := os.WriteFile(exact, make([]byte, 16), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := readBoundedBundle(exact); err != nil || len(got) != 16 {
+		t.Fatalf("small bundle: len=%d err=%v", len(got), err)
+	}
+}
+
+func TestPublishArchiveKitDirectoryRollsBackPartialWrite(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "kits")
+	// The second kit reuses the first name, so its exclusive create fails after
+	// the first kit has been written.
+	kits := []archiveKit{{name: "kit.zip", data: []byte("first")}, {name: "kit.zip", data: []byte("second")}}
+	if err := publishArchiveKitDirectory(dir, kits); err == nil {
+		t.Fatal("duplicate kit name was accepted")
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Fatalf("output directory left behind after failed publish: %v", err)
 	}
 }

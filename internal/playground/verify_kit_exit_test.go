@@ -93,3 +93,35 @@ func TestLiveKitScriptExitStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveKitScriptMissingAppDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Bash launcher requires a POSIX host")
+	}
+	for _, osName := range []VerifyKitOS{VerifyKitOSLinux, VerifyKitOSMacOS} {
+		t.Run(string(osName), func(t *testing.T) {
+			name, body, err := liveKitScript(osName, PublishedOrchestratorPubKeyHex, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dir := t.TempDir() // no app directory: the launcher's cd must fail
+			if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			command := exec.CommandContext(t.Context(), "bash", "verify.sh")
+			if osName == VerifyKitOSMacOS {
+				command = exec.CommandContext(t.Context(), "bash", "Verify.command")
+			}
+			command.Dir = dir
+			command.Stdin = strings.NewReader("x\n")
+			out, err := command.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 {
+				t.Fatalf("missing app dir: err=%v out=%s", err, out)
+			}
+			if strings.Contains(string(out), "result: VALID means") {
+				t.Fatalf("missing app dir printed the VALID explanation: %s", out)
+			}
+		})
+	}
+}

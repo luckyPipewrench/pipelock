@@ -2423,6 +2423,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return true
 	}
 
+	var preShieldScan *scanner.ResponseScanResult
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
 		if blockShieldPartial(body, complete) {
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
@@ -2488,7 +2489,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 				ParentActionID: requestActionID,
 				Verdict:        config.ActionAllow,
 				Layer:          browserShieldLayer,
-				Pattern:        browserShieldPattern,
+				Pattern:        shieldReceiptPattern(preShieldScan),
 				Severity:       browserShieldSeverity,
 				Shield:         summary,
 				Transport:      TransportReverse,
@@ -3323,6 +3324,7 @@ responseScanning:
 	}
 
 	// Browser Shield on reverse proxy responses - uses shared pipeline.
+	preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, body, resp.Header, resp.Request.URL.String(), TransportReverse)
 	shieldChanged := false
 	svgShielded := false
 	svgRefusal := ""
@@ -3380,7 +3382,7 @@ responseScanning:
 					ParentActionID: requestActionID,
 					Verdict:        config.ActionAllow,
 					Layer:          browserShieldLayer,
-					Pattern:        browserShieldPattern,
+					Pattern:        shieldReceiptPattern(preShieldScan),
 					Severity:       browserShieldSeverity,
 					Shield:         shieldSummary,
 					Transport:      "reverse",
@@ -3428,6 +3430,7 @@ responseScanning:
 
 	// Scan the response text for injection patterns.
 	result := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress)
+	result = retainShieldScan(preShieldScan, result, body)
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 	// A response injection match is a taint source; the deferred taint
 	// observation above reads this flag when the response completes.

@@ -2940,13 +2940,17 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		// Browser Shield on forward proxy responses. Use post-redirect host
 		// so exempt_domains checks match the actual response origin.
+		var preShieldScan *scanner.ResponseScanResult
+		if !fwdAuthenticatedArtifact {
+			preShieldScan = scanBeforeShield(r.Context(), sc, cfg, respBody, resp.Header, resp.Request.URL.String(), TransportForward)
+		}
 		shieldBodyBytes := int64(len(respBody))
 		var shieldBlocked *shieldBlockResult
 		var shieldSummary *receipt.ShieldSummary
 		var svgShielded bool
 		shieldBlocked = p.blockShieldPartialResponse(resp, respBody, fwdRespHost, cfg, actx)
 		if shieldBlocked == nil {
-			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard})
+			respBody, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, cfg, shieldResponseContext{retainedScan: preShieldScan, hostname: fwdRespHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportForward, parentActionID: actionID, shard: selectedReceiptShard})
 		}
 		if shieldBlocked != nil {
 			p.metrics.RecordBlocked(fwdRespHost, shieldBlocked.info.Layer, time.Since(start), agentLabel)
@@ -3158,6 +3162,7 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 		// is enabled, even if response scanning is off.
 		if sc.ResponseScanningEnabled() && !fwdAuthenticatedArtifact {
 			scanResult := sc.ScanResponseBodyWithSuppress(r.Context(), respBody, resp.Request.URL.String(), cfg.Suppress)
+			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
 			recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportForward)
 			recordDroppedResponseScanMatches(p.metrics, p.logger, actx, scanResult.SuppressedMatches, TransportForward)
 			recordObservedCoreResponseMatches(p.metrics, p.logger, actx, scanResult.ObservedCoreMatches, TransportForward)

@@ -2636,13 +2636,17 @@ func newInterceptHandler(
 		}
 
 		// Browser Shield on intercepted response body.
+		var preShieldScan *scanner.ResponseScanResult
+		if !interceptAuthenticatedArtifact {
+			preShieldScan = scanBeforeShield(r.Context(), ic.Scanner, ic.Config, respBody, resp.Header, r.URL.String(), TransportConnect)
+		}
 		svgShielded := false
 		if ic.Proxy != nil {
 			var shieldBlocked *shieldBlockResult
 			var shieldSummary *receipt.ShieldSummary
 			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
 			if shieldBlocked == nil {
-				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{retainedScan: preShieldScan, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
 			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)
@@ -2869,6 +2873,7 @@ func newInterceptHandler(
 		}
 		if ic.Scanner.ResponseScanningEnabled() && !interceptAuthenticatedArtifact {
 			scanResult := ic.Scanner.ScanResponseBodyWithSuppress(r.Context(), respBody, r.URL.String(), ic.Config.Suppress)
+			scanResult = retainShieldScan(preShieldScan, scanResult, respBody)
 			recordSuppressedResponseScanExempts(ic.Metrics, scanResult.SuppressedMatches, TransportConnect)
 			recordDroppedResponseScanMatches(ic.Metrics, ic.Logger, actx, scanResult.SuppressedMatches, TransportConnect)
 			recordObservedCoreResponseMatches(ic.Metrics, ic.Logger, actx, scanResult.ObservedCoreMatches, TransportConnect)

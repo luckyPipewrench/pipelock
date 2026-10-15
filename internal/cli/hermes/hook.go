@@ -323,8 +323,9 @@ func dlpBlockReason(surface string, match scanner.TextDLPMatch) string {
 // extractToolInputText collapses the structured tool_input JSON value into a
 // single text blob for the scanner. It reuses extract.AllStringsFromJSON so
 // JSON object keys are scanned too: an agent can exfiltrate by putting secrets
-// in argument names just as easily as in values. A space separates adjacent
-// values through normalization, using the scan API's tool-argument convention.
+// in argument names just as easily as in values. Newlines retain the existing
+// injection and split-secret views; the card-only view uses spaces to preserve
+// value boundaries through card normalization.
 func extractToolInputText(raw json.RawMessage) (string, bool) {
 	text, _, truncated := extractToolInputViews(raw)
 	return text, truncated
@@ -346,9 +347,7 @@ func extractToolInputViews(raw json.RawMessage) (string, string, bool) {
 	if len(strs) == 0 {
 		return "", "", extracted.Truncated
 	}
-	// Use the scan API tool-argument join convention. Spaces retain value
-	// boundaries through normalization; control newlines can be removed.
-	return strings.Join(strs, " "), strings.Join(extracted.CardStrings, " "), extracted.Truncated
+	return strings.Join(strs, "\n"), strings.Join(extracted.CardStrings, " "), extracted.Truncated
 }
 
 // readAllWithCtx is io.ReadAll bounded by ctx and a byte ceiling. If ctx fires

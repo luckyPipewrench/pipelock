@@ -287,7 +287,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 		texts := extracted.Strings
 		if len(texts) > 0 {
-			joined := strings.Join(texts, " ")
+			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, strings.Join(extracted.CardStrings, " "))
 			if !dlpResult.Clean {
 				result.Clean = false
@@ -378,7 +378,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 	if len(extracted.Strings) == 0 {
 		return false
 	}
-	joined := strings.Join(extracted.Strings, " ")
+	joined := strings.Join(extracted.Strings, "\n")
 	forceBlock := false
 	injectResult := sc.ScanResponse(ctx, joined)
 	if injectResult.Failed() {

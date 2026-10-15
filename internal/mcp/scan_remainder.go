@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
@@ -27,7 +28,7 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *json
 		return "", "", false
 	}
 	var envelope map[string]any
-	if json.Unmarshal(raw, &envelope) != nil {
+	if extract.DecodeJSON(raw, &envelope) != nil {
 		return "", "", false
 	}
 	var uris []string
@@ -161,7 +162,7 @@ func removeTypedResponseText(value any, raw json.RawMessage, uris *[]string) any
 
 func sameResponseJSONValue(value any, raw json.RawMessage) bool {
 	var selected any
-	return json.Unmarshal(raw, &selected) == nil && reflect.DeepEqual(value, selected)
+	return extract.DecodeJSON(raw, &selected) == nil && reflect.DeepEqual(value, selected)
 }
 
 func removeResponseStringLeaves(value any, mediaCandidate bool) any {

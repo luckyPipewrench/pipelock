@@ -619,11 +619,11 @@ func TestExtractToolInputText(t *testing.T) {
 	}{
 		{name: "empty", input: "", want: ""},
 		{name: "plain-string", input: `"hello world"`, want: "hello world"},
-		{name: "object", input: `{"a":"first","b":"second"}`, want: "a first b second"},
-		{name: "object-keys", input: `{"secret_key":"value"}`, want: "secret_key value"},
-		{name: "nested", input: `{"outer":{"inner":"deep"}}`, want: "outer inner deep"},
-		{name: "array", input: `["x","y","z"]`, want: "x y z"},
-		{name: "numbers", input: `{"count":42,"ratio":0.5}`, want: "count 42 ratio 0.5"},
+		{name: "object", input: `{"a":"first","b":"second"}`, want: "a\nfirst\nb\nsecond"},
+		{name: "object-keys", input: `{"secret_key":"value"}`, want: "secret_key\nvalue"},
+		{name: "nested", input: `{"outer":{"inner":"deep"}}`, want: "outer\ninner\ndeep"},
+		{name: "array", input: `["x","y","z"]`, want: "x\ny\nz"},
+		{name: "numbers", input: `{"count":42,"ratio":0.5}`, want: "count\n42\nratio\n0.5"},
 		{name: "null-value", input: `null`, want: ""},
 		{name: "over-depth", input: deepHermesJSONObject("depth-regression-sentinel", 100), want: "", wantTruncated: true},
 	}

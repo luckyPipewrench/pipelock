@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 )
@@ -113,7 +114,7 @@ func (pc *Config) credentialCandidateMatches(rule *CompiledRule, candidate strin
 // arguments cannot be parsed, which sends the call back to the ordinary matcher.
 func jsonObjectKeys(raw json.RawMessage) (keys []string, ok bool) {
 	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
+	if err := extract.DecodeJSON(raw, &v); err != nil {
 		return nil, false
 	}
 	var walk func(any)

@@ -305,10 +305,12 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         # expression's structure, so the assertion has to be the expression.
         expected = (
             "github.actor == 'luckyPipewrench' && "
+            "github.actor_id == '142104046' && "
+            "github.run_attempt == '1' && "
             "github.triggering_actor == 'luckyPipewrench' && "
             "github.event.comment.user.login == 'luckyPipewrench' && "
             "github.event.comment.user.id == 142104046 && "
-            "contains(fromJSON('[\"OWNER\", \"MEMBER\"]'), github.event.comment.author_association) && "
+            "github.event.comment.author_association == 'MEMBER' && "
             "github.event.issue.pull_request && "
             "(github.event.comment.body == '/review' || "
             "github.event.comment.body == '/review deep')"

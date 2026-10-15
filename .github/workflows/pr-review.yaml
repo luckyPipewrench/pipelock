@@ -21,14 +21,17 @@ jobs:
     # review. The reusable workflow runs only immutable Pipelock action code.
     # The login checks and the numeric user id together pin the commenter to the
     # maintainer's account; a login can be renamed and reused, an id cannot.
-    # Inside the organization GitHub reports the maintainer as MEMBER, so the
-    # association check admits OWNER or MEMBER and does not decide trust.
+    # Inside the organization GitHub reports the maintainer as MEMBER. A re-run
+    # keeps the original comment but changes the triggering actor, so only the
+    # first attempt is admitted.
     if: >-
       github.actor == 'luckyPipewrench' &&
+      github.actor_id == '142104046' &&
+      github.run_attempt == '1' &&
       github.triggering_actor == 'luckyPipewrench' &&
       github.event.comment.user.login == 'luckyPipewrench' &&
       github.event.comment.user.id == 142104046 &&
-      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
+      github.event.comment.author_association == 'MEMBER' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')

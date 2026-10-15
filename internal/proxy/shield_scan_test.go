@@ -22,6 +22,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/session"
 	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
@@ -81,31 +82,132 @@ func TestShieldFetchHiddenReadabilityFailure(t *testing.T) {
 	}
 }
 
-func TestShieldFetchImageScanScope(t *testing.T) {
+func TestShieldImageScanScope(t *testing.T) {
 	body := buildValidPNG([]byte("Comment\x00" + shieldScanDirective))
 	if !scanner.IsVerifiedImageResponseBody(body) {
 		t.Fatal("fixture must be a verified image")
 	}
-	for _, enabled := range []bool{false, true} {
-		t.Run(map[bool]string{false: "off", true: "on"}[enabled], func(t *testing.T) {
-			cfg := shieldRewriteMarkerConfig()
-			enableShieldRewriteMarkerCategories(cfg)
-			cfg.BrowserShield.Enabled = enabled
-			cfg.ResponseScanning.Enabled = true
-			cfg.ResponseScanning.Action = config.ActionBlock
-			status, got := requestShieldScan(t, cfg, TransportFetch, body, "text/html")
-			if status != http.StatusOK {
-				t.Fatalf("image metadata widened fetch scan: status=%d %s", status, got)
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect, TransportReverse} {
+		for _, mediaEnabled := range []bool{false, true} {
+			for _, enabled := range []bool{false, true} {
+				t.Run(transport+map[bool]string{false: "/media off", true: "/media on"}[mediaEnabled]+map[bool]string{false: "/shield off", true: "/shield on"}[enabled], func(t *testing.T) {
+					cfg := shieldRewriteMarkerConfig()
+					enableShieldRewriteMarkerCategories(cfg)
+					cfg.BrowserShield.Enabled = enabled
+					cfg.MediaPolicy.Enabled = ptrBool(mediaEnabled)
+					cfg.ResponseScanning.Enabled = true
+					cfg.ResponseScanning.Action = config.ActionBlock
+					status, got := requestShieldScan(t, cfg, transport, body, "text/html")
+					want := http.StatusOK
+					if !mediaEnabled {
+						want = http.StatusForbidden
+					}
+					if status != want {
+						t.Fatalf("image scan status=%d, want %d: %s", status, want, got)
+					}
+					p := newTestProxyWithConfig(t, cfg)
+					headers := http.Header{"Content-Type": {"text/html"}}
+					if got := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example", transport); got != nil {
+						t.Fatalf("image entered hidden scan: %+v", got)
+					}
+					if got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example"); got != nil {
+						t.Fatalf("image entered readability scan: %+v", got)
+					}
+				})
 			}
-			p := newTestProxyWithConfig(t, cfg)
-			headers := http.Header{"Content-Type": {"text/html"}}
-			if got := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example", TransportFetch); got != nil {
-				t.Fatalf("image entered hidden scan: %+v", got)
+		}
+	}
+}
+
+func TestShieldFetchHiddenFailureEvidence(t *testing.T) {
+	for _, fragment := range []string{"<!-- " + shieldScanDirective + " -->", `<div style="display:none">` + shieldScanDirective + `</div>`} {
+		for _, enabled := range []bool{false, true} {
+			for _, exempt := range []bool{false, true} {
+				for _, action := range []string{config.ActionBlock, config.ActionWarn, config.ActionStrip, config.ActionAsk} {
+					t.Run(fragment+map[bool]string{false: "/off/", true: "/on/"}[enabled]+action+map[bool]string{false: "/scored", true: "/exempt"}[exempt], func(t *testing.T) {
+						cfg := adaptiveConfig()
+						cfg.BrowserShield.Enabled = enabled
+						enableShieldRewriteMarkerCategories(cfg)
+						cfg.ResponseScanning.Enabled = true
+						cfg.ResponseScanning.Action = action
+						if exempt {
+							cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+						}
+						cfg.FlightRecorder.RequireReceipts = true
+						var events bytes.Buffer
+						logger, err := audit.NewWithStream("json", "stdout", "", false, true, &events)
+						if err != nil {
+							t.Fatal(err)
+						}
+						sc := scanner.MustNew(cfg)
+						t.Cleanup(sc.Close)
+						p, err := New(cfg, logger, sc, metrics.New())
+						if err != nil {
+							t.Fatal(err)
+						}
+						t.Cleanup(p.Close)
+						dir := t.TempDir()
+						emitter, rec, _ := newCoverageEmitter(t, dir)
+						p.receiptEmitterPtr.Store(emitter)
+						t.Cleanup(func() { _ = rec.Close() })
+						upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+							w.Header().Set("Content-Type", "text/html")
+							_, _ = io.WriteString(w, fragment)
+						}))
+						t.Cleanup(upstream.Close)
+						sess := p.sessionMgrPtr.Load().GetOrCreate(adaptiveSessionKeyHTTPTest)
+						w := httptest.NewRecorder()
+						p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil))
+						if w.Code != http.StatusForbidden {
+							t.Fatalf("hidden-only fetch status=%d: %s", w.Code, w.Body.String())
+						}
+						if strings.Contains(w.Body.String(), shieldScanDirective) {
+							t.Fatal("refusal restored hidden content")
+						}
+						signal := session.SignalBlock
+						if action == config.ActionWarn {
+							signal = session.SignalNearMiss
+						}
+						if action == config.ActionStrip {
+							signal = session.SignalStrip
+							if enabled {
+								// Shield removed the entire body, so there is no strip
+								// representation and the existing helper upgrades to block.
+								signal = session.SignalBlock
+							}
+						}
+						wantScore := session.SignalPoints[signal]
+						if exempt {
+							wantScore = 0
+						}
+						if enabled {
+							wantScore += session.SignalPoints[session.SignalShieldRewrite]
+						}
+						if got := sess.ThreatScore(); got != wantScore {
+							t.Errorf("score=%v, want %v", got, wantScore)
+						}
+						if !strings.Contains(events.String(), "Prompt Injection") {
+							t.Errorf("audit lost finding: %s", events.String())
+						}
+						if err := rec.Close(); err != nil {
+							t.Fatal(err)
+						}
+						found := false
+						for _, got := range extractReceiptsFromDir(t, dir) {
+							if got.ActionRecord.Layer == responseScanLayer && got.ActionRecord.Verdict == config.ActionBlock {
+								found = true
+								if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") {
+									t.Errorf("refusal receipt lost finding: %s", got.ActionRecord.Pattern)
+								}
+							}
+						}
+						if !found {
+							t.Fatal("response-scan refusal receipt missing")
+						}
+					})
+				}
 			}
-			if got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example"); got != nil {
-				t.Fatalf("image entered readability scan: %+v", got)
-			}
-		})
+		}
 	}
 }
 

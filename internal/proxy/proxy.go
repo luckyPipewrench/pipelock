@@ -6724,7 +6724,44 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// concatenated fragments), so strip cannot function here.
 	if hiddenInjectionFound && !readabilityOK {
 		responsePromptHit = true
-		reason := "hidden injection detected and readability extraction failed (fail-closed)"
+		// Preserve scoring and named audit/receipt evidence when readability
+		// cannot produce a deliverable representation. Discard strip output:
+		// hidden-fragment offsets do not address the full HTML.
+		recordSuppressedResponseScanExempts(p.metrics, hiddenScanResult.SuppressedMatches, TransportFetch)
+		recordDroppedResponseScanMatches(p.metrics, log, actx, hiddenScanResult.SuppressedMatches, TransportFetch)
+		recordObservedCoreResponseMatches(p.metrics, log, actx, hiddenScanResult.ObservedCoreMatches, TransportFetch)
+		blocked, _, _, failureLayer := p.filterAndActOnResponseScan(responseScanContext{
+			requestContext: r.Context(),
+			shard:          selectedReceiptShard,
+			writer:         w,
+			result:         *hiddenScanResult,
+			content:        content,
+			displayURL:     displayURL,
+			responseURL:    finalResponseURL,
+			agent:          agent,
+			actorAuth:      id.Auth,
+			clientIP:       clientIP,
+			requestID:      requestID,
+			actionID:       actionID,
+			scanner:        sc,
+			config:         cfg,
+			logger:         log,
+			sessionLevel:   recEscalationLevel(fetchRec),
+			exempt:         responseScanExempt,
+		})
+		if blocked {
+			layer := firstNonEmptyString(failureLayer, responseScanLayer)
+			p.metrics.RecordBlocked(parsed.Hostname(), layer, time.Since(start), agentLabel)
+			outcomeStatus = strconv.Itoa(http.StatusForbidden)
+			outcomeBytes = int64(len(body))
+			outcomeReason = layer
+			return
+		}
+		patternNames := make([]string, len(hiddenScanResult.Matches))
+		for i, match := range hiddenScanResult.Matches {
+			patternNames[i] = match.PatternName
+		}
+		reason := "hidden injection detected and readability extraction failed (fail-closed): " + strings.Join(patternNames, ", ")
 		log.LogBlocked(actx, responseScanLayer, reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{

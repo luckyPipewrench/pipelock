@@ -23,8 +23,8 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
 		return nil
 	}
-	if transport == TransportFetch && scanner.IsVerifiedImageResponseBody(body) {
-		return nil // Fetch scans images after media policy removes metadata.
+	if scanner.IsVerifiedImageResponseBody(body) {
+		return nil // Images are scanned after media policy removes metadata.
 	}
 	contentType := responseContentType(headers)
 	pipeline := detectShieldPipelineForResponse(contentType, body, headers)

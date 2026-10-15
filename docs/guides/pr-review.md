@@ -364,8 +364,12 @@ repository holds the same file. Make two replacements. Replace both occurrences
 of `PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
 commit SHA; do not use a branch or tag, because either can move the reviewer
 code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to
-trigger a review, or drop those clauses and rely on `author_association ==
-'OWNER'` alone.
+trigger a review and `YOUR_GITHUB_USER_ID` with that account's numeric id
+(`gh api users/YOUR_GITHUB_LOGIN --jq .id`). The id is what decides who is
+trusted, because a login can be renamed and an id cannot. Keep the association
+check: GitHub reports a repository owner as `OWNER` but reports an organization
+owner or member as `MEMBER`, so the check admits both, and relying on it alone
+would let any organization member trigger a review.
 
 Grant `issues: write` and `pull-requests: write`. A called workflow cannot hold
 a permission its caller withheld, so dropping either one silently strips it
@@ -399,7 +403,8 @@ jobs:
       github.actor == 'YOUR_GITHUB_LOGIN' &&
       github.triggering_actor == 'YOUR_GITHUB_LOGIN' &&
       github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
-      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.user.id == YOUR_GITHUB_USER_ID &&
+      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')

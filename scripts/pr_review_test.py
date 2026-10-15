@@ -307,7 +307,8 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
             "github.actor == 'luckyPipewrench' && "
             "github.triggering_actor == 'luckyPipewrench' && "
             "github.event.comment.user.login == 'luckyPipewrench' && "
-            "github.event.comment.author_association == 'OWNER' && "
+            "github.event.comment.user.id == 142104046 && "
+            "contains(fromJSON('[\"OWNER\", \"MEMBER\"]'), github.event.comment.author_association) && "
             "github.event.issue.pull_request && "
             "(github.event.comment.body == '/review' || "
             "github.event.comment.body == '/review deep')"
@@ -5838,6 +5839,8 @@ class AdoptionStubTest(OfflineReviewTestCase):
 
     PLACEHOLDER_LOGIN = "YOUR_GITHUB_LOGIN"
     REAL_LOGIN = "luckyPipewrench"
+    PLACEHOLDER_USER_ID = "YOUR_GITHUB_USER_ID"
+    REAL_USER_ID = "142104046"
 
     def documented_stub(self) -> dict[str, object]:
         guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
@@ -5850,6 +5853,8 @@ class AdoptionStubTest(OfflineReviewTestCase):
         # The stub is written for another repository, so it carries a
         # placeholder where this repository carries its own login.
         self.assertIn(self.PLACEHOLDER_LOGIN, body, "the stub must not hard-code one account")
+        self.assertIn(self.PLACEHOLDER_USER_ID, body, "the stub must not hard-code one account id")
+        body = body.replace(self.PLACEHOLDER_USER_ID, self.REAL_USER_ID)
         return parse_yaml(body.replace(self.PLACEHOLDER_LOGIN, self.REAL_LOGIN))
 
     @staticmethod

@@ -19,11 +19,16 @@ jobs:
   review:
     # This gate authorizes the external provider call and outbound PR-code
     # review. The reusable workflow runs only immutable Pipelock action code.
+    # The login checks and the numeric user id together pin the commenter to the
+    # maintainer's account; a login can be renamed and reused, an id cannot.
+    # Inside the organization GitHub reports the maintainer as MEMBER, so the
+    # association check admits OWNER or MEMBER and does not decide trust.
     if: >-
       github.actor == 'luckyPipewrench' &&
       github.triggering_actor == 'luckyPipewrench' &&
       github.event.comment.user.login == 'luckyPipewrench' &&
-      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.user.id == 142104046 &&
+      contains(fromJSON('["OWNER", "MEMBER"]'), github.event.comment.author_association) &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')

@@ -198,6 +198,21 @@ func TestShieldRetainsResponseScan(t *testing.T) {
 	}
 }
 
+func TestShieldRetainsCoreScanWithOptionalLayerDisabled(t *testing.T) {
+	for _, transport := range []string{TransportFetch, TransportForward, TransportConnect, TransportReverse} {
+		t.Run(transport, func(t *testing.T) {
+			cfg := shieldRewriteMarkerConfig()
+			enableShieldRewriteMarkerCategories(cfg)
+			cfg.ResponseScanning.Enabled = false
+			body := `<html><body><!-- ` + shieldScanDirective + ` --><article><p>` + strings.Repeat("Ordinary documentation. ", 60) + `</p></article></body></html>`
+			status, result := requestShieldScan(t, cfg, transport, []byte(body), "text/html")
+			if status != http.StatusForbidden {
+				t.Fatalf("core finding status = %d, want 403: %s", status, result)
+			}
+		})
+	}
+}
+
 func TestShieldOriginalScanControls(t *testing.T) {
 	for _, tc := range []struct {
 		name, fragment string

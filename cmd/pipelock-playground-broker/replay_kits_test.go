@@ -193,12 +193,18 @@ func TestReadBoundedBundleRefusesOversize(t *testing.T) {
 	if _, err := readBoundedBundle(path); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized bundle: err = %v", err)
 	}
+	// A bundle of exactly the limit is accepted.
 	exact := filepath.Join(t.TempDir(), "exact.tar.gz")
-	if err := os.WriteFile(exact, make([]byte, 16), 0o600); err != nil {
+	exactFile, err := os.Create(filepath.Clean(exact))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := readBoundedBundle(exact); err != nil || len(got) != 16 {
-		t.Fatalf("small bundle: len=%d err=%v", len(got), err)
+	if err := exactFile.Truncate(int64(playground.MaxBundleFileBytes)); err != nil {
+		t.Fatal(err)
+	}
+	_ = exactFile.Close()
+	if got, err := readBoundedBundle(exact); err != nil || len(got) != playground.MaxBundleFileBytes {
+		t.Fatalf("bundle at the limit: len=%d err=%v", len(got), err)
 	}
 }
 

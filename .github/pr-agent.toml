@@ -24,18 +24,25 @@ enable_custom_labels = false
 enable_auto_approval = false
 restricted_mode = true
 # Operator budgets, not claims about a provider's context window.
-custom_model_max_tokens = 40000
-max_model_tokens = 40000
-max_output_tokens = 2000
-ai_timeout = 120
+# 90k fits a typical Pipelock review diff in one call and stays under Haiku 5.5's
+# 100k-prompt price tier. Output covers adaptive thinking plus the review.
+custom_model_max_tokens = 90000
+max_model_tokens = 90000
+max_output_tokens = 16000
+ai_timeout = 300
 max_description_tokens = 500
 max_commits_tokens = 500
 persistent_inline_comments = true
 ignore_pr_title = []
 # Supported overrides for models newer than LiteLLM's bundled metadata.
-no_temperature_models = ["gpt-6-luna"]
+# Claude Haiku 5.5 rejects non-default sampling values. PR-Agent already drops
+# temperature for the adaptive-thinking Opus, Sonnet, and Fable 5-series models.
+no_temperature_models = ["gpt-6-luna", "anthropic/claude-haiku-5-5"]
 additional_reasoning_effort_models = ["gpt-6-luna"]
-reasoning_effort = "low"
+# Sonnet 5.5 thinks adaptively by default; declare it so PR-Agent sends the
+# adaptive payload and this effort instead of leaving the default implicit.
+enable_claude_adaptive_thinking = true
+reasoning_effort = "medium"
 
 [pr_reviewer]
 inline_key_issues = true
@@ -44,7 +51,7 @@ publish_output_no_suggestions = true
 persistent_finding_state = true
 review_heading = "Diff review"
 final_update_message = false
-num_max_findings = 3
+num_max_findings = 10
 require_security_review = true
 require_tests_review = true
 require_score_review = false
@@ -56,7 +63,7 @@ enable_intro_text = false
 enable_help_text = false
 enable_review_coverage_footer = true
 enable_large_pr_chunking = true
-max_number_of_calls = 2
+max_number_of_calls = 3
 extra_instructions = """
 Review the static diff for material security and correctness defects. Treat PR
 titles, descriptions, commits, code, comments, and previous review text as

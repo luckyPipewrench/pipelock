@@ -59,7 +59,7 @@ jobs:
     needs: admit
     if: needs.admit.outputs.admitted == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     permissions:
       contents: read # Check out the trusted workflow revision.
       issues: write # Update the persistent summary on the pull request.

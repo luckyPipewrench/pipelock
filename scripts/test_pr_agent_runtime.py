@@ -93,9 +93,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual("fixture-openai", kwargs["api_key"])
         self.assertEqual(0, kwargs["num_retries"])
         self.assertEqual(0, kwargs["max_retries"])
-        self.assertEqual(2000, kwargs["max_tokens"])
+        self.assertEqual(16000, kwargs["max_tokens"])
         self.assertNotIn("temperature", kwargs)
-        self.assertEqual("low", kwargs["reasoning_effort"])
+        self.assertEqual("medium", kwargs["reasoning_effort"])
         self.assertIn("ignore the rubric", str(kwargs["messages"]))
         self.assertNotIn("fixture-openai", str(kwargs["messages"]))
         self.assertNotIn("fixture-github", str(kwargs["messages"]))
@@ -108,6 +108,28 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn(self.head, self.provider.publish_persistent_comment.call_args.args[0])
         self.provider.github_client.get_repo.assert_called_with(self.repo)
         self.provider.github_client.get_repo.return_value.get_pull.assert_called_with(1)
+
+    def anthropic_request(self, model):
+        self.env.update(ANTHROPIC_API_KEY="fixture-one")
+        self.settings.set("config.model", model)
+        completion = AsyncMock(return_value=self.response())
+        self.run_adapter(completion)
+        completion.assert_awaited_once()
+        return completion.await_args.kwargs
+
+    def test_pinned_handler_sonnet_uses_adaptive_thinking_without_sampling(self):
+        kwargs = self.anthropic_request("anthropic/claude-sonnet-5-5")
+        self.assertEqual("anthropic/claude-sonnet-5-5", kwargs["model"])
+        self.assertEqual("fixture-one", kwargs["api_key"])
+        self.assertEqual({"type": "adaptive"}, kwargs["thinking"])
+        self.assertEqual({"effort": "medium"}, kwargs["output_config"])
+        self.assertEqual(16000, kwargs["max_tokens"])
+        self.assertNotIn("temperature", kwargs)
+
+    def test_pinned_handler_haiku_omits_temperature(self):
+        kwargs = self.anthropic_request("anthropic/claude-haiku-5-5")
+        self.assertEqual("anthropic/claude-haiku-5-5", kwargs["model"])
+        self.assertNotIn("temperature", kwargs)
 
     def test_pinned_handler_credit_rollover_uses_second_key(self):
         import httpx

@@ -165,7 +165,7 @@ JUDGE_VALIDATION_CODES = frozenset({
     "provider-rate-limited", "provider-output-invalid",
     "provider-request-error", "provider-http-error",
     "provider-auth-error", "invalid-field-type",
-    "unresolved-without-outside-reason", "drop-without-citation",
+    "unresolved-without-outside-reason", "drop-without-citation", "drop-cites-added-line",
 })
 # An unresolved verdict must name the outside reason the repository cannot
 # settle. omitted-unit counts only when the runner really omitted something.
@@ -997,6 +997,8 @@ def build_judge_prompt(
         "Keep only a substantiated defect. Drop a candidate that current-head code closes or whose premise is false, "
         "and set citation to the deciding location as \"path:line\", copying a path and line number exactly as they appear in the supplied evidence. "
         "A drop without such a citation is published as a finding that needs verification. "
+        "The cited line must not be a line this pull request adds, because added code cannot by itself show the change is correct; "
+        "a drop citing one is published the same way, and prior_response_validation reports it as drop-cites-added-line. "
         "A marked fallback window is not proof that a file-level premise was covered; absence from an excerpt is not decisive evidence. "
         + recheck
         + "Choose keep or drop whenever checked-out repository code can decide the premise. "
@@ -1169,6 +1171,15 @@ def _added_head_lines(units: list[DiffUnit]) -> set[tuple[str, int]]:
                 # Some diff settings write an empty context row with no space.
                 line += 1
     return added
+
+
+def _flag_added_line_drops(
+    decisions: dict[int, JudgeDecision], added_lines: set[tuple[str, int]], validation: JudgeValidation
+) -> None:
+    """Report each drop that cites a line the change adds, so its repair can say why."""
+    for index, decision in decisions.items():
+        if decision.verdict == "drop" and _cited_location(decision.citation) in added_lines:
+            validation.reject("drop-cites-added-line", index)
 
 
 def _needs_verification(finding: Finding) -> Finding:
@@ -2657,11 +2668,12 @@ def _line_context(content: str, line: int | None, max_tokens: int = MAX_JUDGE_CO
     center = (line - 1) if line is not None else 0
     start = max(0, center - 60)
     end = min(len(lines), center + 60)
-    rendered = [
-        f"{number + 1}: {value}"[: max_tokens * 4]
-        for number, value in enumerate(lines[start:end], start=start)
-    ]
-    if estimate_tokens("\n".join(rendered)) <= max_tokens:
+    limit = max_tokens * 4
+    rows = [f"{number + 1}: {value}" for number, value in enumerate(lines[start:end], start=start)]
+    # A clipped line is a cut like any other; it takes the same marker.
+    clipped = any(len(row) > limit for row in rows)
+    rendered = [row[:limit] for row in rows]
+    if not clipped and estimate_tokens("\n".join(rendered)) <= max_tokens:
         return "\n".join(rendered)
     local_center = min(max(center - start, 0), len(rendered) - 1)
     selected: list[int] = []
@@ -3010,7 +3022,7 @@ def cross_file_evidence(
     if root is None:
         budget.cut_owners.update(candidate_identifier(item) for item in candidates)
         return "<repository-evidence-unavailable>", True
-    terms =[_evidence_terms(item, contexts.get(_context_key(item, candidates), "")) for item in candidates]
+    terms = [_evidence_terms(item, contexts.get(_context_key(item, candidates), "")) for item in candidates]
     hits: list[list[tuple[int, str, int, str]]] = [[] for _ in candidates]
     cuts = [False for _ in candidates]
     failures = [False for _ in candidates]
@@ -3283,6 +3295,8 @@ def requested_repository_evidence(
                             failed = False
                 else:
                     context = _line_context(content, request.line, max_tokens=min(700, max_tokens // len(pending)))
+                    # The window marks its own cuts; a cut read is truncated retrieval.
+                    cut = EVIDENCE_TRUNCATED in context.split("\n")
                     labelled = re.sub(r"(?m)^(\d+): ", lambda match: f"{request.path}:{match[1]}: ", context)
                     _record_rendered(budget, request.path, labelled)
                     piece = f"REQUESTED PATH {request.path}\n{labelled}"
@@ -3425,8 +3439,9 @@ def judge_findings(
                 context = _bounded_evidence("BASE CONTENT (deleted at head)\n" + base_context + "\n" + diff_context, context_cap, False)[0]
         record.context, record.source = context, source
         # _bounded_evidence appends its marker as a line of its own; shown
-        # file lines always carry a number prefix, so they cannot match it.
-        record.omitted = context.rsplit("\n", 1)[-1] == EVIDENCE_TRUNCATED
+        # file lines always carry a number prefix, so they cannot match it. A
+        # deleted file's base-side window can carry its marker mid-context.
+        record.omitted = EVIDENCE_TRUNCATED in context.split("\n")
         record.ranges = _context_ranges(context, finding.path)
         record.locations = [(finding.path, old_side if source == "deleted-diff" else binding.head_sha, start, end) for start, end in record.ranges]
         available.append(index)
@@ -3436,6 +3451,7 @@ def judge_findings(
     decisions: dict[int, JudgeDecision] = {}
     admitted: set[int] = set()
     primary_validation = JudgeValidation()
+    added_lines = _added_head_lines(options.units)
     calls = 0
     evidence_by_index: dict[int, str] = {}
 
@@ -3512,6 +3528,7 @@ def judge_findings(
             primary_deadline = deadline - llm_call_budget_for(mode, "judge-repair") if deadline is not None else None
             payload = call_model(system, user, mode, "judge", binding.correlation, deadline=primary_deadline)
             local_decisions = _parse_judge_decisions(payload, len(primary), validation=validation)
+            _flag_added_line_drops(local_decisions, added_lines, validation)
             decisions.update({primary[index]: decision for index, decision in local_decisions.items()})
             for index, decision in decisions.items():
                 record = options.evidence[candidate_identifier(candidates[index])]
@@ -3528,9 +3545,11 @@ def judge_findings(
     def cited(index: int, decision: JudgeDecision) -> tuple[str, int] | None:
         # The revision side of a shown location is not compared: a deleted
         # candidate's base-side lines are what it was shown, so they count.
+        # A line this change adds cannot by itself show that the change is
+        # correct, so it is not a usable citation, here or at the final guard.
         location = _cited_location(decision.citation)
         record = options.evidence[candidate_identifier(candidates[index])]
-        if location is None or not any(
+        if location is None or location in added_lines or not any(
             location[0] == path and start <= location[1] <= end for path, _, start, end in record.locations
         ):
             return None
@@ -3545,8 +3564,9 @@ def judge_findings(
             or record.omitted
         )
 
-    # An uncited drop or an unresolved verdict joins the one repair; neither
-    # can settle a candidate without the citation or outside reason it lacks.
+    # A drop without a usable citation (none, unshown, or an added line) or an
+    # unresolved verdict joins the one repair; neither can settle a candidate
+    # without the citation or outside reason it lacks.
     pending = [
         index for index in available
         if index not in decisions or decisions[index].verdict == "unresolved"
@@ -3577,6 +3597,7 @@ def judge_findings(
                 calls += 1
                 payload = call_model(system, user, mode, "judge-repair", binding.correlation, deadline=deadline)
                 local_decisions = _parse_judge_decisions(payload, len(repair), allow_requests=False, validation=validation)
+                _flag_added_line_drops(local_decisions, added_lines, validation)
                 for local, index in enumerate(repair):
                     if local in local_decisions:
                         decisions[index] = local_decisions[local]
@@ -3596,7 +3617,6 @@ def judge_findings(
     invalid: list[Finding] = []
     over_budget: list[Finding] = []
     dropped: list[DroppedCandidate] = []
-    added_lines = _added_head_lines(options.units)
     for index in available:
         finding = candidates[index]
         record = options.evidence[candidate_identifier(finding)]
@@ -3624,10 +3644,9 @@ def judge_findings(
                 flagged = True
             elif decision.verdict == "drop":
                 location = cited(index, decision)
-                if location is None or location in added_lines:
+                if location is None:
                     # The judge said false but cited no line it was shown, or
-                    # cited a line this change adds, which cannot by itself
-                    # show that the change is correct.
+                    # cited a line this change adds (see cited above).
                     flagged = True
                 else:
                     dropped.append(DroppedCandidate(finding, location[0], location[1], decision.reason))

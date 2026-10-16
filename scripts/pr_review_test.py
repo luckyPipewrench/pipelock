@@ -7948,6 +7948,137 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
             with self.subTest(mode=mode):
                 self.assertIn(f"candidate judge `{pr_review.model_for_phase(mode, 'judge')}` (`high` reasoning).", pr_review.review_profile(mode))
 
+    ADDED_DIFF = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -3,3 +3,4 @@\n ctx3\n-old\n+new4\n+new5\n ctx6\n"
+
+    def judge_added(self, *replies: dict) -> tuple[tuple, object, object, object]:
+        units, _ = pr_review.parse_diff(self.ADDED_DIFF)
+        candidate = pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        options = pr_review.JudgeOptions(units=units)
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+            pr_review, "fetch_file_context", return_value="line\n" * 30
+        ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+            pr_review, "call_model", side_effect=list(replies)
+        ) as model:
+            result = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+        return result, options, model, candidate
+
+    def test_the_prompt_states_that_a_cited_line_cannot_be_one_the_change_adds(self) -> None:
+        system, _ = pr_review.build_judge_prompt([pr_review.Finding("medium", "a.go", 1, "c", "w", "f")], {}, [], "")
+        self.assertIn("must not be a line this pull request adds", system)
+        self.assertIn("drop-cites-added-line", system)
+
+    def test_a_drop_citing_an_added_line_gets_the_one_repair_and_can_settle_there(self) -> None:
+        first = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": "a.go:4"}]}
+        repair = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": "a.go:3"}]}
+        (verified, judged, _b, _f, unresolved, invalid), options, model, candidate = self.judge_added(first, repair)
+        self.assertTrue(judged)
+        self.assertEqual(model.call_count, 2, "the added-line citation joins the one repair")
+        self.assertEqual(json.loads(model.call_args_list[1].args[1])["prior_response_validation"],
+                         [{"index": 0, "rejections": ["drop-cites-added-line"]}])
+        self.assertEqual((verified, unresolved, invalid), ([], [], []))
+        self.assertEqual(options.dropped, [pr_review.DroppedCandidate(candidate, "a.go", 3, "closed")])
+        self.assertEqual(options.diagnostics["judge"], {"drop-cites-added-line": 1})
+        self.assertNotIn("judge-repair", options.diagnostics)
+
+    def test_a_repair_that_still_cites_an_added_line_is_published_needs_verification(self) -> None:
+        reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": "a.go:4"}]}
+        (verified, _j, _b, _f, unresolved, invalid), options, model, candidate = self.judge_added(reply, reply)
+        self.assertEqual(model.call_count, 2)
+        self.assertEqual((unresolved, invalid, options.dropped), ([], [], []))
+        self.assertEqual(verified, [pr_review._needs_verification(candidate)])
+        self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].verdict, "needs-verification")
+        self.assertEqual(options.diagnostics["judge-repair"], {"drop-cites-added-line": 1})
+
+    def test_only_a_drop_citing_an_added_line_is_rejected_for_it(self) -> None:
+        added = {("a.go", 4)}
+        keep = {"index": 1, "verdict": "keep", "reason": "r", "citation": "a.go:4"}
+        unresolved = {"index": 2, "verdict": "unresolved", "reason": "r", "citation": "a.go:4", "blocked_on": "external-system"}
+        payload = {"findings": [
+            {"index": 0, "verdict": "drop", "reason": "r", "citation": "./a.go:4"}, keep, unresolved,
+            {"index": 3, "verdict": "drop", "reason": "r", "citation": "a.go:3"},
+            {"index": 4, "verdict": "drop", "reason": "r", "citation": "b.go:4"},
+            {"index": 5, "verdict": "drop", "reason": "r", "citation": None},
+        ]}
+        validation = pr_review.JudgeValidation()
+        decisions = pr_review._parse_judge_decisions(payload, 6, validation=validation)
+        pr_review._flag_added_line_drops(decisions, added, validation)
+        self.assertEqual({index: codes for index, codes in validation.by_index.items() if "drop-cites-added-line" in codes}, {0: {"drop-cites-added-line"}})
+        self.assertEqual(validation.counts["drop-cites-added-line"], 1)
+
+    ONE_LONG_LINE = "x" * 30_000 + "\n"
+
+    def test_a_line_clipped_to_the_context_budget_carries_the_truncation_marker(self) -> None:
+        # Lines are clipped at four characters a token, counting the "N: " prefix.
+        limit = 80 * 4
+        for value, marked in (("x" * (limit - len("1: ")), False), ("x" * (limit - len("1: ") + 1), True)):
+            with self.subTest(length=len(value), marked=marked):
+                context = pr_review._line_context(value + "\n", 1, 80)
+                rows = context.split("\n")
+                self.assertEqual(rows[-1] == pr_review.EVIDENCE_TRUNCATED, marked)
+                self.assertEqual(len(rows), 2 if marked else 1)
+                self.assertTrue(rows[0].startswith("1: x"))
+                self.assertLessEqual(pr_review.estimate_tokens(context), 80)
+        whole = pr_review._line_context(self.ONE_LONG_LINE, 1)
+        self.assertEqual(whole.split("\n")[-1], pr_review.EVIDENCE_TRUNCATED)
+
+    def test_a_clipped_only_line_makes_omitted_unit_a_recorded_omission(self) -> None:
+        candidate = pr_review.Finding("medium", "a.go", 1, "claim", "premise", "fix")
+        reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit"}]}
+        (verified, _j, _b, _f, unresolved, _i), options, _model = self.judge(reply, reply, content=self.ONE_LONG_LINE, candidate=candidate)
+        record = options.evidence[pr_review.candidate_identifier(candidate)]
+        self.assertTrue(record.omitted)
+        self.assertEqual((verified, unresolved), ([], [candidate]))
+        # The same minified line inside a longer file already took the marker path.
+        (verified, _j, _b, _f, unresolved, _i), options, _model = self.judge(
+            reply, reply, content="a\n" + self.ONE_LONG_LINE + "b\n", candidate=pr_review.Finding("medium", "a.go", 2, "claim", "premise", "fix"))
+        self.assertEqual((verified, unresolved), ([], [pr_review.Finding("medium", "a.go", 2, "claim", "premise", "fix")]))
+
+    def test_an_unclipped_only_line_is_not_an_omission(self) -> None:
+        candidate = pr_review.Finding("medium", "a.go", 1, "claim", "premise", "fix")
+        reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit"}]}
+        (verified, _j, _b, _f, unresolved, _i), options, _model = self.judge(reply, reply, content="x" * 4_000 + "\n", candidate=candidate)
+        self.assertFalse(options.evidence[pr_review.candidate_identifier(candidate)].omitted)
+        self.assertEqual((verified, unresolved), ([pr_review._needs_verification(candidate)], []))
+
+    def test_a_clipped_requested_path_line_is_recorded_as_truncated_retrieval(self) -> None:
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        owner = "0123456789abcdef"
+        for content, truncated in (("short\n" * 3, False), (self.ONE_LONG_LINE, True)):
+            with self.subTest(truncated=truncated):
+                decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(path="a.go", line=1),))}
+                record = pr_review.CandidateEvidence(owner)
+                with mock.patch.object(pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")), mock.patch.object(
+                    pr_review, "_read_commit_file", return_value=content
+                ):
+                    evidence, unavailable = pr_review.requested_repository_evidence(
+                        binding, decisions, owners={0: owner}, records={owner: record})
+                self.assertEqual(unavailable, truncated)
+                self.assertEqual(pr_review.EVIDENCE_TRUNCATED in evidence.split("\n"), truncated)
+                self.assertEqual(record.retrieval, "unavailable-or-truncated" if truncated else "retrieved")
+
+    def test_a_clipped_base_side_line_of_a_deleted_file_is_an_omission(self) -> None:
+        diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n"
+        units, _ = pr_review.parse_diff(diff)
+        candidate = pr_review.Finding("medium", "a.go", 1, "claim", "premise", "fix")
+        reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit"}]}
+        for base, omitted in (("short\n", False), (self.ONE_LONG_LINE, True)):
+            with self.subTest(omitted=omitted):
+                options = pr_review.JudgeOptions(units=units)
+                reads = {self.BINDING.head_sha: None, self.BINDING.base_sha: base}
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+                    pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+                ), mock.patch.object(
+                    pr_review, "_read_commit_file", side_effect=lambda _root, revision, *_a: reads[revision]
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                    pr_review, "call_model", side_effect=[reply, reply]
+                ):
+                    result = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+                record = options.evidence[pr_review.candidate_identifier(candidate)]
+                self.assertEqual(record.source, "deleted-diff")
+                self.assertIn("BASE CONTENT (deleted at head)", record.context)
+                self.assertEqual(record.omitted, omitted)
+                self.assertEqual(result[4], [candidate] if omitted else [])
+
 
 if __name__ == "__main__":
     unittest.main()

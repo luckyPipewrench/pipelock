@@ -86,16 +86,19 @@ The judge must back each verdict that removes or withholds a candidate:
   request adds. Every cited drop is listed in a collapsed "Dropped by the
   judge with a citation" section with the candidate's severity, its cited
   location and the reason. A drop with no citation, one citing a line the
-  judge wasn't shown, or one citing a line the change adds is published as a
-  finding marked `(needs verification: the judge gave no usable citation or
-  outside reason)`, which reads differently from a reviewer's own
-  `(needs verification)`.
+  judge wasn't shown, or one citing a line the change adds goes to the one
+  repair. The prompt states the rule, and a drop citing an added line is
+  reported to the repair as `drop-cites-added-line`. If the repair still
+  doesn't cite a usable line, the candidate is published as a finding marked
+  `(needs verification: the judge gave no usable citation or outside reason)`,
+  which reads differently from a reviewer's own `(needs verification)`.
 - An `unresolved` verdict names its outside reason in `blocked_on`:
   `external-system`, `runtime-behaviour`, `published-artifact` or
   `omitted-unit`. `omitted-unit` counts only when the runner recorded that it
   left something out for that candidate: a fallback window, a truncated
-  context, cut or unavailable cross-file evidence, failed requested evidence,
-  or an unanswered request. Text in the shown files is never read to decide
+  context (including a single line clipped to the context budget, which takes
+  the same truncation marker), cut or unavailable cross-file evidence, failed
+  or truncated requested evidence, or an unanswered request. Text in the shown files is never read to decide
   this. Without a valid reason the validation code is
   `unresolved-without-outside-reason`, and if the repair doesn't supply one the
   candidate is published with the same judge marker, `(needs verification: the

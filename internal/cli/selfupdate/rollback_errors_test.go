@@ -119,6 +119,11 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 				if readErr != nil || string(got) != string(backupBytes) {
 					t.Fatalf("target after rollback = %q (%v), want backup bytes", got, readErr)
 				}
+				kept, keptErr := os.ReadFile(filepath.Clean(backupPath))
+				if keptErr != nil || string(kept) != string(backupBytes) {
+					t.Fatalf("backup after successful rollback = %q (%v), want it kept as the recovery path", kept, keptErr)
+				}
+				assertDirEntries(t, filepath.Dir(target), "pipelock", "pipelock.bak")
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -130,21 +135,26 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 			if !tt.is(err) {
 				t.Fatalf("rollback error %v does not carry the expected cause", err)
 			}
-			entries, dirErr := os.ReadDir(filepath.Dir(target))
-			if dirErr != nil {
-				t.Fatal(dirErr)
-			}
-			var names []string
-			for _, e := range entries {
-				names = append(names, e.Name())
-			}
 			want := []string{"pipelock.bak"}
 			if tt.want == "restoring backup" {
 				want = []string{"pipelock", "pipelock.bak"}
 			}
-			if strings.Join(names, ",") != strings.Join(want, ",") {
-				t.Fatalf("directory after failed rollback = %v, want exactly %v", names, want)
-			}
+			assertDirEntries(t, filepath.Dir(target), want...)
 		})
+	}
+}
+
+func assertDirEntries(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("entries in %s = %v, want exactly %v", dir, names, want)
 	}
 }

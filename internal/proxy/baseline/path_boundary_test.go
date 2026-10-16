@@ -5,6 +5,7 @@ package baseline
 
 import (
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -27,11 +28,19 @@ func TestTrustedRootRelativePathBoundary(t *testing.T) {
 		wantRel string
 		want    string // empty means success expected
 		is      error
+		exact   string // full error text for rows whose error wraps no cause
 	}{
 		{name: "child path accepted", root: root, path: filepath.Join(root, "profiles", "agent.json"), wantRel: filepath.Join("profiles", "agent.json")},
-		{name: "empty trusted root", root: "", path: filepath.Join(root, "x"), want: "trusted root is empty"},
-		{name: "root itself is not a file path", root: root, path: root, want: "escapes trusted root"},
-		{name: "parent escape", root: root, path: filepath.Dir(root), want: "escapes trusted root"},
+		{name: "dot-dot named child accepted", root: root, path: filepath.Join(root, "..hidden"), wantRel: "..hidden"},
+		{name: "empty trusted root", root: "", path: filepath.Join(root, "x"), want: "trusted root is empty", exact: "profile trusted root is empty"},
+		{
+			name: "root itself is not a file path", root: root, path: root, want: "escapes trusted root",
+			exact: fmt.Sprintf("profile path %q escapes trusted root %q", root, root),
+		},
+		{
+			name: "parent escape", root: root, path: filepath.Dir(root), want: "escapes trusted root",
+			exact: fmt.Sprintf("profile path %q escapes trusted root %q", filepath.Dir(root), root),
+		},
 		{name: "sibling escape", root: root, path: filepath.Join(filepath.Dir(root), "other", "x"), want: "escapes trusted root"},
 		{name: "missing root cannot be canonicalized", root: missingRoot, path: filepath.Join(missingRoot, "x"), want: "canonicalize trusted root", is: fs.ErrNotExist},
 	}
@@ -50,6 +59,9 @@ func TestTrustedRootRelativePathBoundary(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v, want %q", err, tt.want)
 			}
+			if tt.exact != "" && err.Error() != tt.exact {
+				t.Fatalf("error = %q, want exactly %q", err.Error(), tt.exact)
+			}
 			if tt.is != nil && !errors.Is(err, tt.is) {
 				t.Fatalf("error %v does not wrap %v", err, tt.is)
 			}
@@ -61,7 +73,10 @@ func TestTrustedRootRelativePathBoundary(t *testing.T) {
 }
 
 func TestPathWithinBoundary(t *testing.T) {
-	dir := filepath.Join(string(os.PathSeparator), "srv", "profiles")
+	// pathWithin is purely lexical (Abs/Rel, no filesystem lookups), so the
+	// case-only row holds on case-insensitive filesystems too: nothing is
+	// created on disk under "Profiles" for it to alias.
+	dir := filepath.Join(t.TempDir(), "profiles")
 	tests := []struct {
 		name string
 		path string
@@ -72,6 +87,7 @@ func TestPathWithinBoundary(t *testing.T) {
 		{name: "dot-dot named child", path: filepath.Join(dir, "..hidden"), want: true},
 		{name: "parent", path: filepath.Dir(dir), want: false},
 		{name: "shared-prefix sibling", path: dir + "-other", want: false},
+		{name: "case-only sibling", path: filepath.Join(filepath.Dir(dir), "Profiles", "x"), want: false},
 		{name: "traversal out", path: dir + string(os.PathSeparator) + filepath.Join("..", "..", "etc"), want: false},
 	}
 	for _, tt := range tests {

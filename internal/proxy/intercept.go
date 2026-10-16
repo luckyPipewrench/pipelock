@@ -2637,8 +2637,11 @@ func newInterceptHandler(
 
 		// Browser Shield on intercepted response body.
 		var preShieldScan *scanner.ResponseScanResult
-		if !interceptAuthenticatedArtifact {
-			preShieldScan = scanBeforeShield(r.Context(), ic.Scanner, ic.Config, respBody, resp.Header, r.URL.String(), TransportConnect)
+		scanOriginal := func(original []byte, headers http.Header) *scanner.ResponseScanResult {
+			if !interceptAuthenticatedArtifact {
+				preShieldScan = scanBeforeShield(r.Context(), ic.Scanner, ic.Config, original, headers, r.URL.String(), TransportConnect)
+			}
+			return preShieldScan
 		}
 		svgShielded := false
 		if ic.Proxy != nil {
@@ -2646,7 +2649,7 @@ func newInterceptHandler(
 			var shieldSummary *receipt.ShieldSummary
 			shieldBlocked = ic.Proxy.blockShieldPartialResponse(resp, respBody, ic.TargetHost, ic.Config, actx)
 			if shieldBlocked == nil {
-				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{retainedScan: preShieldScan, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
+				respBody, shieldSummary, svgShielded, shieldBlocked = ic.Proxy.applyShieldResponse(respBody, responseContentType(resp.Header), resp.Header, ic.Config, shieldResponseContext{scanOriginal: scanOriginal, hostname: ic.TargetHost, actx: actx, clientIP: ic.ClientIP, requestID: ic.RequestID, transport: TransportConnect, parentActionID: actionID, shard: ic.receiptShard})
 			}
 			if shieldBlocked != nil {
 				ic.Metrics.RecordTLSResponseBlocked(shieldBlocked.info.Layer)

@@ -14,43 +14,105 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
+	"github.com/luckyPipewrench/pipelock/internal/shield"
 )
 
-// scanBeforeShield preserves the transport's existing scan surface before a
-// rewrite can remove it. Declared HTML on fetch scans only hidden fragments:
-// executable scripts and markup remain outside its readability-based contract.
+// fetchResponseSurface is the fetch representation shared by retention and
+// delivery. Successful readability extraction excludes executable scripts and
+// markup; only the existing extraction-failure fallback scans raw HTML.
+type fetchResponseSurface struct {
+	content, title, hidden string
+	html, readabilityOK    bool
+	extractionErr          error
+}
+
+func deriveFetchResponse(body []byte, contentType string, target *url.URL) fetchResponseSurface {
+	surface := fetchResponseSurface{content: string(body)}
+	mediaType, valid := shieldMediaTypeEssence(contentType)
+	surface.html = valid && (mediaType == "text/html" || mediaType == "application/xhtml+xml") && !scanner.IsVerifiedImageResponseBody(body)
+	if !surface.html {
+		return surface
+	}
+	decoded, utf16, err := decodeShieldUTF16(body, contentType, shield.PipelineHTML)
+	if err != nil {
+		surface.html = false // Preserve the existing body-scanner fallback.
+		return surface
+	}
+	if utf16 {
+		surface.content = decoded
+	}
+	surface.hidden = extractHiddenContent(surface.content)
+	article, err := readability.FromReader(strings.NewReader(surface.content), target)
+	surface.extractionErr = err
+	if err == nil && article.TextContent != "" {
+		surface.content, surface.title = article.TextContent, article.Title
+		surface.readabilityOK = true
+	}
+	return surface
+}
+
+type fetchResponseScan struct {
+	result scanner.ResponseScanResult
+	hidden *scanner.ResponseScanResult
+}
+
+func scanFetchResponse(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, surface fetchResponseSurface, target string) fetchResponseScan {
+	scanned := fetchResponseScan{}
+	if surface.html {
+		// Fetch delivers title and content separately. Scan them together once,
+		// preserving cross-field matches; only content is a supported strip target.
+		prefix := ""
+		if surface.title != "" {
+			prefix = surface.title + "\n"
+		}
+		scanned.result = sc.ScanResponseWithSuppress(ctx, prefix+surface.content, target, cfg.Suppress)
+		if prefix != "" && scanned.result.TransformedContent != "" {
+			// A changed title cannot be delivered through content's strip output.
+			// An unchanged prefix maps the scanner's remaining output exactly to the
+			// separately delivered content, without inventing or reusing offsets.
+			candidate, unchangedTitle := strings.CutPrefix(scanned.result.TransformedContent, prefix)
+			scanned.result.TransformedContent = ""
+			if unchangedTitle {
+				scanned.result.TransformedContent = candidate
+			}
+		}
+	} else {
+		scanned.result = sc.ScanResponseBodyWithSuppress(ctx, []byte(surface.content), target, cfg.Suppress)
+	}
+
+	if surface.hidden != "" {
+		hidden := sc.ScanResponseWithSuppress(ctx, surface.hidden, target, cfg.Suppress)
+		scanned.hidden = &hidden
+		visibleSuppressed := scanned.result.SuppressedMatches
+		scanned.result = retainShieldScan(&hidden, scanned.result, []byte(surface.content))
+		// Distinct hidden and visible surfaces each retain suppression counts.
+		scanned.result.SuppressedMatches = append(append([]scanner.ResponseMatch(nil), hidden.SuppressedMatches...), visibleSuppressed...)
+	}
+	return scanned
+}
+
+// scanBeforeShield retains classifications on the transport's scan surface.
+// Callers invoke it lazily only when Shield actually changes the body.
 func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, headers http.Header, target, transport string) *scanner.ResponseScanResult {
 	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
 		return nil
 	}
 	contentType := responseContentType(headers)
-	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
-	if shieldLeavesBodyUnchanged(pipeline) {
+	if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(contentType, body, headers)) {
 		return nil
 	}
-	// Scan what the transport's own scan reads once media policy has run, so
-	// image metadata the existing path removes is not retained and metadata it
-	// keeps is not lost to a rewrite.
 	surface := shieldScanSurface(cfg, contentType, body, headers, target)
 	var result scanner.ResponseScanResult
-	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
-	fetchHTML := transport == TransportFetch && validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml") && !scanner.IsVerifiedImageResponseBody(surface)
-	if fetchHTML {
-		content, utf16, err := decodeShieldUTF16(surface, contentType, pipeline)
+	if transport == TransportFetch {
+		parsed, err := url.Parse(target)
 		if err != nil {
-			return nil // Shield and the body scanner retain their error handling.
-		}
-		if !utf16 {
-			content = string(surface)
-		}
-		hidden := extractHiddenContent(content)
-		if hidden == "" {
 			return nil
 		}
-		result = sc.ScanResponseWithSuppress(ctx, hidden, target, cfg.Suppress)
+		result = scanFetchResponse(ctx, sc, cfg, deriveFetchResponse(surface, contentType, parsed), target).result
 	} else {
 		result = sc.ScanResponseBodyWithSuppress(ctx, surface, target, cfg.Suppress)
 	}
+	result.TransformedContent = "" // Original bytes are classification-only.
 	return &result
 }
 
@@ -71,44 +133,6 @@ func shieldScanSurface(cfg *config.Config, contentType string, body []byte, head
 		return body
 	}
 	return verdict.Body
-}
-
-// scanFetchReadableBeforeShield preserves fetch's original readability result,
-// including its raw-content fallback only when readability is unavailable.
-func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, headers http.Header, target string) *scanner.ResponseScanResult {
-	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
-		return nil
-	}
-	contentType := responseContentType(headers)
-	mediaType, valid := shieldMediaTypeEssence(contentType)
-	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
-	if !valid || (mediaType != "text/html" && mediaType != "application/xhtml+xml") || shieldLeavesBodyUnchanged(pipeline) {
-		return nil
-	}
-	surface := shieldScanSurface(cfg, contentType, body, headers, target)
-	if scanner.IsVerifiedImageResponseBody(surface) {
-		return nil // handleFetch scans a verified image's metadata, not readable text.
-	}
-	content, utf16, err := decodeShieldUTF16(surface, contentType, pipeline)
-	if err != nil {
-		return nil // Keep the existing Shield/body-scan failure path.
-	}
-	if !utf16 {
-		content = string(surface)
-	}
-	parsed, err := url.Parse(target)
-	if err != nil {
-		return nil
-	}
-	article, err := readability.FromReader(strings.NewReader(content), parsed)
-	if err == nil && article.TextContent != "" {
-		content = article.TextContent
-	}
-	// Match handleFetch: raw content is scanned only when extraction fails or
-	// returns no text. Successful extraction still excludes markup and scripts.
-	readable := sc.ScanResponseWithSuppress(ctx, content, target, cfg.Suppress)
-	readable.TransformedContent = "" // Original bytes are classification-only.
-	return &readable
 }
 
 // retainShieldScan combines findings, never transformations. Only the scan of

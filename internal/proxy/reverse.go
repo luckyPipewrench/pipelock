@@ -2482,7 +2482,11 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
 			scanned := body[:shieldMaxBytes]
+			originalHeaders := resp.Header.Clone()
 			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			if !bytes.Equal(scanned, head) {
+				preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, body, originalHeaders, resp.Request.URL.String(), TransportReverse)
+			}
 			summary = partialShieldSummary(summary, scanned, responseContentType(resp.Header), bodyBytes, shieldMaxBytes)
 			if !confirmReverseDecision(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
@@ -3324,7 +3328,6 @@ responseScanning:
 	}
 
 	// Browser Shield on reverse proxy responses - uses shared pipeline.
-	preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, body, resp.Header, resp.Request.URL.String(), TransportReverse)
 	shieldChanged := false
 	svgShielded := false
 	svgRefusal := ""
@@ -3355,6 +3358,7 @@ responseScanning:
 			}
 		} else {
 			originalBodyBytes := len(body)
+			originalBody, originalHeaders := body, resp.Header.Clone()
 			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
 			if shieldResult.uninspectableReason != "" {
 				rp.logger.LogBlocked(newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), shieldUninspectableLayer, shieldResult.uninspectableReason)
@@ -3368,6 +3372,9 @@ responseScanning:
 			}
 			svgShielded, svgRefusal = shieldResult.svgValidated, shieldResult.svgRefusal
 			body, shieldSummary = shieldResult.body, shieldResult.summary
+			if !bytes.Equal(originalBody, body) {
+				preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, originalBody, originalHeaders, resp.Request.URL.String(), TransportReverse)
+			}
 			if shieldSummary != nil {
 				shieldChanged = true
 				shieldSummary.BodyBytes = originalBodyBytes

@@ -115,8 +115,12 @@ func TestShieldImageScanScope(t *testing.T) {
 					if mediaEnabled && retained != nil && !retained.Clean {
 						t.Fatalf("metadata that media policy removes was retained: %+v", retained)
 					}
-					if got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example"); got != nil {
-						t.Fatalf("image entered readability scan: %+v", got)
+					parsed, err := url.Parse("https://api.vendor.example")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got := deriveFetchResponse(body, "text/html", parsed); got.html || got.title != "" {
+						t.Fatalf("image entered readability extraction: %+v", got)
 					}
 				})
 			}
@@ -485,28 +489,17 @@ func TestShieldFetchReadableScanScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := []byte(`<html><body><article><p>` + strings.Repeat("Ordinary documentation. ", 60) + `</p>` + tc.fragment + `</article></body></html>`)
-			got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, http.Header{"Content-Type": {"text/html"}}, "https://api.vendor.example/article")
-			if got == nil || got.Clean != tc.clean || got.TransformedContent != "" {
-				t.Fatalf("readable scan widened its surface: %+v", got)
+			parsed, err := url.Parse("https://api.vendor.example/article")
+			if err != nil {
+				t.Fatal(err)
 			}
-		})
-	}
-	for _, tc := range []struct {
-		name, contentType, body, target string
-		disabled                        bool
-	}{
-		{"disabled", "text/html", "<p>Ordinary documentation.</p>", "https://api.vendor.example", true},
-		{"unchanged", "text/plain", "Ordinary documentation.", "https://api.vendor.example", false},
-		{"sniffed", "application/unknown", "<html><p>Ordinary documentation.</p></html>", "https://api.vendor.example", false},
-		{"malformed encoding", "text/html; charset=utf-16le", "\xff\xfe\x01", "https://api.vendor.example", false},
-		{"invalid URL", "text/html", "<p>Ordinary documentation.</p>", "https://%", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			cfgCopy := *cfg
-			cfgCopy.BrowserShield.Enabled = !tc.disabled
-			got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), &cfgCopy, []byte(tc.body), http.Header{"Content-Type": {tc.contentType}}, tc.target)
-			if got != nil {
-				t.Fatalf("unavailable readable representation acquired a scan: %+v", got)
+			surface := deriveFetchResponse(body, "text/html", parsed)
+			// This test isolates the readable representation; hidden scanning
+			// has separate positive controls.
+			surface.hidden = ""
+			got := scanFetchResponse(t.Context(), p.scannerPtr.Load(), cfg, surface, parsed.String()).result
+			if got.Clean != tc.clean {
+				t.Fatalf("readable scan widened its surface: %+v", got)
 			}
 		})
 	}
@@ -532,8 +525,10 @@ func TestShieldRetainedScanReceipt(t *testing.T) {
 			}
 			body := []byte("<html><body><!-- " + shieldScanDirective + " --><p>Ordinary content</p></body></html>")
 			headers := http.Header{"Content-Type": {"text/html"}}
-			before := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example", TransportFetch)
-			_, summary, _, blocked := p.applyShieldResponse(body, "text/html", headers, cfg, shieldResponseContext{retainedScan: before, hostname: "api.vendor.example", transport: TransportFetch, parentActionID: receipt.NewActionID()})
+			callback := func(original []byte, originalHeaders http.Header) *scanner.ResponseScanResult {
+				return scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, original, originalHeaders, "https://api.vendor.example", TransportFetch)
+			}
+			_, summary, _, blocked := p.applyShieldResponse(body, "text/html", headers, cfg, shieldResponseContext{scanOriginal: callback, hostname: "api.vendor.example", transport: TransportFetch, parentActionID: receipt.NewActionID()})
 			if summary == nil || summary.AgentTraps == 0 {
 				t.Fatal("fixture did not exercise Shield removal")
 			}
@@ -869,4 +864,164 @@ func requestShieldScan(t *testing.T, cfg *config.Config, transport string, body 
 		t.Fatal(err)
 	}
 	return resp.StatusCode, string(result)
+}
+
+// Titles are part of the fetch JSON even though readability omits them from
+// TextContent. They must participate in every response action.
+func TestFetchTitleScanning(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		for _, action := range []string{config.ActionBlock, config.ActionWarn, config.ActionStrip, config.ActionAsk} {
+			for _, exempt := range []bool{false, true} {
+				t.Run(action+map[bool]string{false: "/off", true: "/on"}[enabled]+map[bool]string{false: "", true: "/exempt"}[exempt], func(t *testing.T) {
+					cfg := shieldRewriteMarkerConfig()
+					enableShieldRewriteMarkerCategories(cfg)
+					cfg.BrowserShield.Enabled = enabled
+					cfg.ResponseScanning.Enabled = true
+					cfg.ResponseScanning.Action = action
+					cfg.FlightRecorder.RequireReceipts = true
+					if exempt {
+						cfg.ResponseScanning.ExemptDomains = []string{"127.0.0.1"}
+					}
+					p := newTestProxyWithConfig(t, cfg)
+					dir := t.TempDir()
+					emitter, rec, _ := newCoverageEmitter(t, dir)
+					p.receiptEmitterPtr.Store(emitter)
+					t.Cleanup(func() { _ = rec.Close() })
+					upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+						w.Header().Set("Content-Type", "text/html")
+						_, _ = io.WriteString(w, "<html><head><title>"+shieldScanDirective+"</title></head><body><article><p>"+strings.Repeat("Ordinary documentation. ", 60)+"</p></article></body></html>")
+					}))
+					t.Cleanup(upstream.Close)
+					w := httptest.NewRecorder()
+					p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil))
+					want := http.StatusForbidden
+					if exempt || action == config.ActionWarn {
+						want = http.StatusOK
+					}
+					if w.Code != want {
+						t.Fatalf("title status=%d want=%d: %s", w.Code, want, w.Body.String())
+					}
+					if err := rec.Close(); err != nil {
+						t.Fatal(err)
+					}
+					found := false
+					for _, r := range extractReceiptsFromDir(t, dir) {
+						if r.ActionRecord.Layer == responseScanLayer && strings.Contains(r.ActionRecord.Pattern, "Prompt Injection") {
+							found = true
+							verdict := config.ActionBlock
+							if exempt || action == config.ActionWarn {
+								verdict = config.ActionWarn
+							}
+							if r.ActionRecord.Verdict != verdict {
+								t.Errorf("title receipt verdict=%s want=%s", r.ActionRecord.Verdict, verdict)
+							}
+						}
+					}
+					if !found {
+						t.Fatal("title finding missing from response receipt")
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestFetchTitleStripMapping(t *testing.T) {
+	for _, title := range []string{"Reference manual", shieldScanDirective} {
+		t.Run(title, func(t *testing.T) {
+			cfg := shieldRewriteMarkerConfig()
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Action = config.ActionStrip
+			p := newTestProxyWithConfig(t, cfg)
+			result := scanFetchResponse(t.Context(), p.scannerPtr.Load(), cfg, fetchResponseSurface{html: true, title: title, content: "Before " + shieldScanDirective + " after"}, "https://api.vendor.example").result
+			if result.Clean {
+				t.Fatal("attack fixture scanned clean")
+			}
+			if title == shieldScanDirective {
+				if result.TransformedContent != "" {
+					t.Fatalf("unsafe title acquired strip output: %q", result.TransformedContent)
+				}
+			} else if result.TransformedContent == "" || strings.Contains(result.TransformedContent, title) || strings.Contains(result.TransformedContent, shieldScanDirective) || !strings.Contains(result.TransformedContent, "Before") {
+				t.Fatalf("content-only strip mapping failed: %q", result.TransformedContent)
+			}
+		})
+	}
+}
+
+func TestShieldOriginalScanIsLazy(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, contentType                  string
+		disabled, exempt, scanHead, oversizeWarn bool
+		wantCalls                                int
+	}{
+		{name: "unchanged", body: "<html><body><p>Ordinary documentation.</p></body></html>", contentType: "text/html"},
+		{name: "rewrite", body: "<html><body><!-- " + shieldScanDirective + " --><p>Ordinary documentation.</p></body></html>", contentType: "text/html", wantCalls: 1},
+		{name: "utf16 rewrite", body: "<html><body><!-- " + shieldScanDirective + " --><p>Ordinary documentation.</p></body></html>", contentType: "text/html; charset=utf-16le", wantCalls: 1},
+		{name: "disabled", body: "<!-- " + shieldScanDirective + " -->", contentType: "text/html", disabled: true},
+		{name: "exempt", body: "<!-- " + shieldScanDirective + " -->", contentType: "text/html", exempt: true},
+		{name: "scan head unchanged", body: "<html><body><p>" + strings.Repeat("Ordinary documentation. ", 20) + "</p></body></html>", contentType: "text/html", scanHead: true},
+		{name: "oversize warn", body: "<!-- " + shieldScanDirective + " -->" + strings.Repeat("Ordinary documentation. ", 20), contentType: "text/html", oversizeWarn: true},
+		{name: "scan head rewrite", body: "<!-- " + shieldScanDirective + " -->" + strings.Repeat("Ordinary documentation. ", 20), contentType: "text/html", scanHead: true, wantCalls: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := shieldRewriteMarkerConfig()
+			enableShieldRewriteMarkerCategories(cfg)
+			cfg.BrowserShield.Enabled = !tc.disabled
+			if tc.exempt {
+				cfg.BrowserShield.ExemptDomains = []string{"api.vendor.example"}
+			}
+			if tc.scanHead {
+				cfg.BrowserShield.MaxShieldBytes = 128
+				cfg.BrowserShield.OversizeAction = config.ShieldOversizeScanHead
+			}
+			if tc.oversizeWarn {
+				cfg.BrowserShield.MaxShieldBytes = 128
+				cfg.BrowserShield.OversizeAction = config.ShieldOversizeWarn
+			}
+			p := newTestProxyWithConfig(t, cfg)
+			body := []byte(tc.body)
+			if tc.name == "utf16 rewrite" {
+				body = encodeUTF16ForShieldTest(tc.body, shieldUTF16LE, true)
+			}
+			headers := http.Header{"Content-Type": {tc.contentType}}
+			calls := 0
+			callback := func(original []byte, originalHeaders http.Header) *scanner.ResponseScanResult {
+				calls++
+				if !bytes.Equal(original, body) || originalHeaders.Get("Content-Type") != tc.contentType {
+					t.Fatal("retention lost original bytes or encoding")
+				}
+				return nil
+			}
+			_, _, _, blocked := p.applyShieldResponse(body, tc.contentType, headers, cfg, shieldResponseContext{scanOriginal: callback, hostname: "api.vendor.example", transport: TransportFetch})
+			if blocked != nil {
+				t.Fatalf("rewrite blocked: %+v", blocked)
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("original scans=%d want=%d", calls, tc.wantCalls)
+			}
+		})
+	}
+}
+
+func TestFetchResponseSurfaceMalformedEncoding(t *testing.T) {
+	target, err := url.Parse("https://api.vendor.example/article")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := append(encodeUTF16ForShieldTest("<html><body>"+shieldScanDirective+"</body></html>", shieldUTF16LE, true), 0)
+	got := deriveFetchResponse(body, "text/html; charset=utf-16le", target)
+	if got.html || got.readabilityOK || got.content != string(body) || got.title != "" || got.hidden != "" {
+		t.Fatalf("malformed encoding did not preserve body-scanner fallback: %+v", got)
+	}
+	cfg := shieldRewriteMarkerConfig()
+	cfg.ResponseScanning.Enabled = true
+	cfg.ResponseScanning.Action = config.ActionStrip
+	p := newTestProxyWithConfig(t, cfg)
+	result := scanFetchResponse(t.Context(), p.scannerPtr.Load(), cfg, got, target.String()).result
+	if result.Clean || result.TransformedContent != "" {
+		t.Fatalf("malformed directive acquired a clean or stripped result: %+v", result)
+	}
+	if got := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, []byte("<p>Ordinary</p>"), http.Header{"Content-Type": {"text/html"}}, "https://%", TransportFetch); got != nil {
+		t.Fatalf("invalid target acquired scan: %+v", got)
+	}
 }

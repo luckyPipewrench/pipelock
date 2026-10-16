@@ -26,10 +26,10 @@ git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.
 make -C pipelock install
 
 # Or download the v3.7.0 Linux amd64 archive
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-tar xzf pipelock_3.7.0_linux_amd64.tar.gz
-sudo install -m 0755 pipelock /usr/local/bin/pipelock
+gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz &&
+  gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml &&
+  tar xzf pipelock_3.7.0_linux_amd64.tar.gz &&
+  sudo install -m 0755 pipelock /usr/local/bin/pipelock
 
 # Or Homebrew (macOS)
 brew install luckyPipewrench/tap/pipelock
@@ -268,21 +268,21 @@ spec:
         - port: 8888
 ```
 
-## What Pipelock Mitigates
+## Controls for Mediated Traffic
 
-Mapped to the CVE-2026-25253 attack chain:
+These controls apply when the relevant traffic passes through Pipelock. They do not intercept an attacker's direct connection to the OpenClaw gateway in the CVE-2026-25253 attack chain.
 
-| Attack Step | Pipelock Defense | Layer |
+| Traffic or Operation | Pipelock Control | Layer |
 |---|---|---|
 | Token theft via WS handshake | Not mitigated by the MCP wrapper; no inbound WebSocket MCP listener | -- |
-| Sandbox disable via tool call | Tool policy blocks dangerous tool invocations | MCP proxy |
-| RCE via `node.invoke` | Tool policy deny rules for shell/exec tools | MCP proxy |
+| Sandbox disable via a mediated MCP tool call | Configured tool policy can deny matching tool invocations | MCP proxy |
+| Shell/exec operation via a mediated MCP tool call | Configured tool policy can deny matching tool names and arguments; direct gateway `node.invoke` calls bypass it | MCP proxy |
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |
 | Prompt injection in tool results | Response scanning detects injection attempts | MCP proxy |
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
 | Outbound HTTP exfiltration | Ordered URL scanning, DLP on request URLs | HTTP proxy |
 
-Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning the mediated traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
+Pipelock does not patch the CVE itself. The gateway needs its own origin validation fix. Pipelock scans traffic routed through its proxies; direct gateway connections remain outside that coverage.
 
 ## TLS Interception
 

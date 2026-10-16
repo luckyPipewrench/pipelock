@@ -17,7 +17,7 @@ The command does not make network requests. It checks local config, file readabi
 |---|---|---|
 | `http_proxy` | HTTP | Whether at least one fetch, forward, WebSocket, or reverse-proxy listener is configured and whether global `enforce` is blocking. |
 | `tls_interception` | HTTP | Whether TLS interception is enabled and the configured CA certificate/key are readable. |
-| `tls_interception_coverage` | HTTP | Whether CONNECT HTTPS content visibility matches the enabled content scanners, or HTTPS bodies stay tunnel-level only because TLS interception is off. |
+| `tls_interception_coverage` | HTTP | Warns when the forward proxy is enabled without TLS interception, because CONNECT HTTPS bodies remain opaque. This warning does not depend on content-scanner settings. |
 | `request_body_scanning` | HTTP | Whether request-body scanning is enabled with blocking action. |
 | `browser_shield` | HTTP | Whether Browser Shield is enabled and whether HTTPS body visibility depends on TLS interception. |
 | `mcp_wrapper_scanning` | MCP | Which wrapper-dependent MCP features are configured and need proof that the agent launches through `pipelock mcp proxy` or a Pipelock MCP listener. |
@@ -26,10 +26,10 @@ The command does not make network requests. It checks local config, file readabi
 | `mcp_identities` | MCP | How many verified local services are registered under `mcp_identities`, and for each one its name, what it matches (scheme, host, path), whether it declares a session header, how many mapped files and control-environment pins it carries, and the acknowledgment binding mode it produces (`verified-local-session`). On a non-Linux host this warns, because a launch whose upstream matches a registration refuses to start where the kernel owner of the connection cannot be verified. |
 | `file_sentry` | MCP | Whether every configured file_sentry watch subtree can be traversed by the current user, without installing watches. An access and traversal preflight, so it cannot see failures that appear only when a watch is registered, such as descriptor exhaustion. Strict incomplete coverage fails, as does a configuration where no root survives `ignore_patterns`; best-effort incomplete coverage and a budget-truncated traversal warn. |
 | `config_suppress_semantics` | Config | Whether each `suppress:` entry can actually affect an enabled scanner, or is inert (unknown pattern name, response-only pattern with response scanning off, or DLP pattern with no suppress-consulting scanner enabled). |
-| `config_exemption_semantics` | Config | Whether configured exemptions are inert or carry broader trust than intended. A response-scanning host exemption can still downgrade core findings when response scanning is disabled; see the details below. |
+| `config_exemption_semantics` | Config | Whether configured exemptions are inert or carry broader trust than intended. A response-scanning host exemption can still downgrade core findings when response scanning is disabled. |
 | `config_action_divergence` | Config | Whether an independently enabled sub-detector carries an action weaker than the section enclosing it, so findings from that sub-detector resolve to the weaker value. Advisory: a weaker child is often the right operational choice, and this changes no enforcement decision. |
 | `config_semantics` | Config | A semantic config finding whose category this release does not record a check name for. It names no specific knob, so read the detail rather than assuming which setting to edit. |
-| `flight_recorder` | Config | Whether the flight recorder is enabled, has a `dir`, and that directory is readable, writable, and within its evidence file-count health limit. A missing but potentially creatable directory warns; persistence remains unverified. |
+| `flight_recorder` | Config | Whether the flight recorder is enabled, has a `dir`, and that directory is readable, writable, and within its evidence file-count health limit. A missing but potentially creatable directory warns; persistence remains unverified. This check does not validate the signing key. |
 | `license_status` | Config | Whether a configured license key verifies. Expired or revoked keys fail; other verification errors warn, as do signatures that can't be verified without a public key. |
 | `available_unconfigured_knobs` | Config | Informational list of security-relevant optional settings that are available but not configured. |
 | `sentry` | Host | Whether Sentry telemetry is enabled and a DSN is present without printing the DSN value. |
@@ -59,11 +59,13 @@ These checks are deliberately conservative: a warning is emitted only when inert
 | 1 | At least one warning. The deployment may be usable, but the report found a claim that needs proof or tightening. |
 | 2 | Config load failed or at least one check failed. |
 
+Default settings can produce warnings, so a valid default config does not necessarily exit 0. Read each warning before using `doctor` as a CI gate.
+
 ## Operator Notes
 
 - Run without `sudo` when checking service-user file readability. When run as root, DAC checks reflect root's view and may make unreadable service files look reachable. The file-sentry check names the user it checked; run it as the service user before a restart.
 - `doctor` does not prove that an agent launcher has consumed `PIPELOCK_MCP_PROXY_URL` or `PIPELOCK_MCP_CONFIG`; it tells you that MCP wrapper-dependent protections require that proof.
 - `doctor` does not prove Kubernetes NetworkPolicy enforcement. Pair it with cluster smoke tests for direct-egress fail-closed behavior.
-- Use `--startup` on the host where Pipelock runs, with its mounted files present, for startup-equivalent checks that must open files. `pipelock check` validates config shape and path permissions, but not whether an existing file can be loaded.
+- Use `--startup` on the host where Pipelock runs, with its mounted files present. It adds secrets-file loading and TLS CA parsing checks; it does not test every runtime prerequisite. `pipelock check` validates config shape and path permissions, but not whether an existing file can be loaded.
 - Use `--no-color` to disable colored terminal output.
 - Use `--json` for CI gates and dashboards. The JSON report includes per-check `configured`, `reachable`, `enforcing`, `detail`, and `next` fields.

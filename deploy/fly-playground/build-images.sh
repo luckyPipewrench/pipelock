@@ -131,7 +131,7 @@ pipelock_has_unrecorded_context_file() {
 	# Go publishes the actual selected sources and embed inputs via go list.
 	if [ "${build_broker}" -eq 1 ]; then
 		local flags goroot modcache source_root sources input canonical
-		local -A ignored_paths=()
+		local -A recorded_paths=()
 		if ! flags="$(go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
 		case "${flags}" in
 		*-overlay*|*-modfile*) rm -f -- "${ignored}"; return 1 ;;
@@ -150,17 +150,19 @@ pipelock_has_unrecorded_context_file() {
 		if ! source_root="$(realpath -e -- "${REPO_ROOT}")" ||
 			! goroot="$(realpath -e -- "${goroot}")" ||
 			! modcache="$(realpath -m -- "${modcache}")"; then
+			echo "[build-images] cannot resolve the source tree, GOROOT or module cache; GNU realpath is required" >&2
 			rm -f -- "${ignored}"
 			return 2
 		fi
-		while IFS= read -r -d '' file; do
-			if ! canonical="$(realpath -m -- "${REPO_ROOT}/${file}")"; then
-				rm -f -- "${ignored}"
-				return 2
-			fi
-			ignored_paths["${canonical}"]=1
-		done < "${ignored}"
+		# A compiled file in this tree must be a HEAD path, whose bytes the
+		# tracked-tree comparison has checked. Git lists an ignored nested clone
+		# as one directory, so an ignored-file list cannot name its sources.
 		sources="$(mktemp)"
+		if ! git ls-tree -r -z --name-only HEAD > "${sources}"; then
+			rm -f -- "${sources}" "${ignored}"
+			return 2
+		fi
+		while IFS= read -r -d '' file; do recorded_paths["${file}"]=1; done < "${sources}"
 		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .HFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
 			rm -f -- "${sources}" "${ignored}"
 			return 2
@@ -169,15 +171,19 @@ pipelock_has_unrecorded_context_file() {
 		while IFS= read -r -d '' input; do
 			while [[ "${input}" == $'\n'* ]]; do input="${input#$'\n'}"; done
 			if ! canonical="$(realpath -e -- "${input}")"; then
+				echo "[build-images] cannot resolve browser verifier input ${input}" >&2
 				rm -f -- "${sources}" "${ignored}"
 				return 2
 			fi
-			if [ -n "${ignored_paths["${canonical}"]+x}" ]; then
-				rm -f -- "${sources}" "${ignored}"
-				return 1
-			fi
 			case "${canonical}" in
-			"${source_root}"/* | "${goroot}"/* | "${modcache}"/*) ;;
+			"${source_root}"/*)
+				if [ -z "${recorded_paths["${canonical#"${source_root}/"}"]+x}" ]; then
+					echo "[build-images] browser verifier compiles ${input}, which the recorded commit does not contain" >&2
+					rm -f -- "${sources}" "${ignored}"
+					return 1
+				fi
+				;;
+			"${goroot}"/* | "${modcache}"/*) ;;
 			*)
 				echo "[build-images] browser verifier compiles ${input}, outside the recorded tree and module cache" >&2
 				rm -f -- "${sources}" "${ignored}"

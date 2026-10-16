@@ -194,6 +194,18 @@ grep -q 'outside the recorded tree' "${tmp}/linked.out"
 PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1
 jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
 rm -f -- "${tmp}/source/docs/linked-dep"
+# Git lists an ignored nested clone as one directory, never its files, so a
+# dependency checked out there is inside the tree but not in the record.
+git init -q "${tmp}/source/docs/nested-dep"
+cp "${tmp}/elsewhere/dep/go.mod" "${tmp}/elsewhere/dep/dep.go" "${tmp}/source/docs/nested-dep/"
+printf '/docs/nested-dep/\n' >> "${tmp}/source/.git/info/exclude"
+printf 'replace dep.example => %s\n' "${tmp}/source/docs/nested-dep" | cat "${tmp}/own.work" - > "${tmp}/nested.work"
+if GOWORK="${tmp}/nested.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested.out" 2>&1; then
+	echo 'ignored nested clone in the tree was recorded as clean' >&2; exit 1
+fi
+PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/nested.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested.out" 2>&1
+jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+rm -rf -- "${tmp}/source/docs/nested-dep"
 # Equivalent physical roots remain clean, including a symlinked checkout.
 ln -s "${tmp}/source" "${tmp}/source-link"
 ln -s "$(go env GOROOT)" "${tmp}/goroot-link"

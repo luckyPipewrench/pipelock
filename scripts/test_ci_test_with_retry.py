@@ -833,11 +833,19 @@ wait
                     stderr=stderr_stream,
                 )
 
+                # Cleanups run after the temporary directory is removed, so
+                # the descendant's pid is kept in memory once it is known.
+                descendant_pids: list[int] = []
+
+                def remember_descendant() -> None:
+                    if not descendant_pids and descendant_file.exists():
+                        text = descendant_file.read_text(encoding="utf-8").strip()
+                        if text:
+                            descendant_pids.append(int(text))
+
                 def cleanup_processes() -> None:
-                    if descendant_file.exists():
-                        descendant_pid = int(
-                            descendant_file.read_text(encoding="utf-8")
-                        )
+                    remember_descendant()
+                    for descendant_pid in descendant_pids:
                         try:
                             os.kill(descendant_pid, signal.SIGKILL)
                         except ProcessLookupError:
@@ -849,10 +857,15 @@ wait
                 self.addCleanup(cleanup_processes)
                 deadline = time.monotonic() + 5
                 while not ready_file.exists():
+                    remember_descendant()
                     if process.poll() is not None:
                         self.fail("wrapper exited before the descendant became ready")
                     if time.monotonic() >= deadline:
                         self.fail("timed out waiting for the descendant to become ready")
+                    time.sleep(0.01)
+                deadline = time.monotonic() + 5
+                while not descendant_pids and time.monotonic() < deadline:
+                    remember_descendant()
                     time.sleep(0.01)
 
                 command_pid = int(command_pid_file.read_text(encoding="utf-8"))

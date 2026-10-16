@@ -2914,9 +2914,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
         ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
             pr_review, "_bounded_git_grep", side_effect=grep
-        ), mock.patch.object(pr_review, "_read_local_file", return_value="helper"), mock.patch.object(
-            pr_review, "_read_commit_file", return_value="helper"
-        ):
+        ), mock.patch.object(pr_review, "_read_commit_file", return_value="helper"):
             evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
             self.assertTrue(failed)
             self.assertIn("helper.go:1: helper", evidence)
@@ -2939,9 +2937,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
         ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
             pr_review, "MAX_EVIDENCE_SEARCHES", 1
-        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=(hits, False, False)) as grep, mock.patch.object(
-            pr_review, "_read_local_file", return_value="helper"
-        ):
+        ), mock.patch.object(pr_review, "_bounded_git_grep", return_value=(hits, False, False)) as grep:
             evidence, failed = pr_review.cross_file_evidence(binding, [finding], {})
         self.assertFalse(failed)
         self.assertEqual(grep.call_count, 1)
@@ -3882,13 +3878,6 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         self.assertEqual(signing.stdout.strip(), "false")
         self.assertEqual(hooks.stdout.strip(), "/dev/null")
 
-    def test_local_file_context_refuses_a_symlink_outside_the_checkout(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as outside:
-            root = pathlib.Path(directory).resolve()
-            outside_file = pathlib.Path(outside) / "outside.txt"
-            outside_file.write_text("must not be read")
-            (root / "link.txt").symlink_to(outside_file)
-            self.assertIsNone(pr_review._read_local_file(root, "link.txt"))
 
 
 class TimeoutStillPublishesLaterFindingsTest(OfflineReviewTestCase):
@@ -4486,7 +4475,7 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
             for index in range(2)
         ], "changes": [{"path": "a.go", "summary": "changed"}]}
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-        first = {"findings": [self._decision(0, citation="a.go:1"), self._decision(1, reason="x" * 301, citation="a.go:1")]}
+        first = {"findings": [self._decision(0, citation="a.go:2"), self._decision(1, reason="x" * 301, citation="a.go:2")]}
         for reason, expected_state in (("x" * 301, "partial"), ("Repository closes premise.", "clean")):
             with self.subTest(state=expected_state), mock.patch.object(
                 pr_review, "scan_status_comments", return_value=([], set(), True)
@@ -4495,11 +4484,11 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
             ), mock.patch.object(pr_review, "fetch_local_bound_diff", return_value=None), mock.patch.object(
                 pr_review, "fetch_bound_diff", return_value=diff
             ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None), mock.patch.object(
-                pr_review, "fetch_file_context", return_value="1: source"
+                pr_review, "fetch_file_context", return_value="1: source\nunchanged guard"
             ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("source", False)), mock.patch.object(
                 pr_review, "requested_repository_evidence", return_value=("", False)
             ), mock.patch.object(pr_review, "call_model", side_effect=[
-                discovery, {"findings": []}, first, {"findings": [self._decision(0, reason=reason, citation="a.go:1")]}
+                discovery, {"findings": []}, first, {"findings": [self._decision(0, reason=reason, citation="a.go:2")]}
             ]) as model, mock.patch.object(pr_review, "update_comment") as update:
                 state, progress = pr_review.run_review(
                     "owner/repo", "42", "dummy", "default", "c" * 40, binding=binding, status_comment_id=7
@@ -7004,7 +6993,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             if phase.startswith("judge"):
                 if judge_payload is not None:
                     return judge_payload
-                return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied", "citation": cite(item), "blocked_on": "external-system"} for item in json.loads(user)["candidates"]]}
+                return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied", "citation": f"{item['path']}:2", "blocked_on": "external-system"} for item in json.loads(user)["candidates"]]}
             index = int(phase.split("-")[2]) - 1
             return {"findings": [], "changes": [{"path": f"{index}.go", "summary": "changed"}]}
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
@@ -7015,7 +7004,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             pr_review, "fetch_local_bound_diff", return_value=diff
         ), mock.patch.object(pr_review, "head_has_moved", return_value=False), mock.patch.object(
             pr_review, "get_pull_binding", return_value=self.binding
-        ), mock.patch.object(pr_review, "fetch_file_context", return_value="deciding code\n"), mock.patch.object(
+        ), mock.patch.object(pr_review, "fetch_file_context", return_value="deciding code\nunchanged guard\n"), mock.patch.object(
             pr_review, "call_model", side_effect=model
         ), mock.patch.object(pr_review, "update_comment"):
             state, progress = pr_review.run_review("owner/repo", "42", "dummy", "default", "c" * 40, binding=self.binding, status_comment_id=7)
@@ -7334,7 +7323,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                     if phase.startswith("judge"):
                         items = json.loads(user)["candidates"]
                         judged.extend(items)
-                        return {"findings": [{"index": item["index"], "verdict": "keep" if all(item[key] == value for key, value in correction.items()) else "drop", "reason": "source checked", "citation": cite(item)} for item in items]}
+                        return {"findings": [{"index": item["index"], "verdict": "keep" if all(item[key] == value for key, value in correction.items()) else "drop", "reason": "source checked", "citation": "0.go:2" if item["line"] == 1 else "0.go:1"} for item in items]}
                     self.fail(f"unexpected phase: {phase}")
                 with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
                     pr_review, "scan_status_comments", return_value=([], set(), True)
@@ -7531,7 +7520,7 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["drop-without-citation"]}])
 
     def test_every_cited_drop_is_listed_in_the_comment(self) -> None:
-        candidates = [pr_review.Finding("medium", "a.go", 5, f"claim {n}", "premise", "fix") for n in range(2)]
+        candidates = [pr_review.Finding(severity, "a.go", 5, f"claim {n}", "premise", "fix") for n, severity in enumerate(("high", "low"))]
         dropped = [pr_review.DroppedCandidate(item, "a`b.go", 9, "**see** <i>line</i> @octocat") for item in candidates]
         progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, dropped_candidates=dropped)
         comment = pr_review.render_status(self.BINDING, "default", [], progress, "clean", [])
@@ -7539,7 +7528,8 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         section = comment.split("(2; not findings)</summary>", 1)[1].split("\n</details>", 1)[0]
         entries = [line for line in section.splitlines() if line.startswith("- ")]
         self.assertEqual(entries, [
-            f"- `a.go:5`: claim {n}. Cited `ab.go:9`. Reason: see (i)line(command) mention" for n in range(2)
+            f"- {severity} - `a.go:5`: claim {n}. Cited `ab.go:9`. Reason: see (i)line(command) mention"
+            for n, severity in enumerate(("high", "low"))
         ])
         self.assertEqual(comment.splitlines().count("<details>"), comment.splitlines().count("</details>"))
         self.assertNotIn("Dropped by the judge", pr_review.render_status(
@@ -7551,14 +7541,14 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
                                    "why": "premise", "fix": "verify", "needs_verification": False}],
                      "changes": [{"path": "a.go", "summary": "changed"}]}
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-        verdict = {"findings": [{"index": 0, "verdict": "drop", "reason": "guard closes it", "citation": "a.go:1"}]}
+        verdict = {"findings": [{"index": 0, "verdict": "drop", "reason": "guard closes it", "citation": "a.go:2"}]}
         with mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)), mock.patch.object(
             pr_review, "get_pull_binding", return_value=binding
         ), mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example", "dummy")), mock.patch.object(
             pr_review, "fetch_local_bound_diff", return_value=None
         ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
             pr_review, "compare_incompleteness", return_value=None
-        ), mock.patch.object(pr_review, "fetch_file_context", return_value="source"), mock.patch.object(
+        ), mock.patch.object(pr_review, "fetch_file_context", return_value="source\nunchanged guard"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review, "call_model", side_effect=[discovery, {"findings": []}, verdict]), mock.patch.object(
             pr_review, "update_comment"
@@ -7567,22 +7557,7 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         self.assertEqual(state, "clean")
         self.assertEqual([item.finding.title for item in progress.dropped_candidates], ["dropped claim"])
         comment = update.call_args.args[3]
-        self.assertIn("- `a.go:1`: dropped claim. Cited `a.go:1`. Reason: guard closes it", comment)
-
-    def test_a_symlink_loop_is_an_unreadable_file(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = pathlib.Path(directory).resolve()
-            (root / "ok.go").write_text("package ok\n", encoding="utf-8")
-            os.symlink("loop.go", root / "loop.go")
-            os.symlink("b.go", root / "a.go")
-            os.symlink("a.go", root / "b.go")
-            os.symlink("..", root / "up")
-            for name in ("loop.go", "a.go", "b.go", "up/x.go", "missing.go", "nul\x00.go"):
-                with self.subTest(path=name):
-                    self.assertIsNone(pr_review._read_local_file(root, name))
-            self.assertEqual(pr_review._read_local_file(root, "ok.go"), "package ok\n")
-            with mock.patch.object(pathlib.Path, "resolve", side_effect=RuntimeError("Symlink loop")):
-                self.assertIsNone(pr_review._read_local_file(root, "ok.go"))
+        self.assertIn("- medium - `a.go:1`: dropped claim. Cited `a.go:2`. Reason: guard closes it", comment)
 
     def test_a_symlink_loop_as_the_checkout_path_is_unreadable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -7685,6 +7660,123 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         pr_review._record_rendered(budget, "ab", "cd:12: t")
         self.assertEqual(pr_review._shown_locations("cd:12: t", budget), [])
         self.assertEqual(pr_review._shown_locations("a:12: b.go:5: x\nn.go:3: y\nother.go:4: z\nn.go:3: y-cut", budget), [("n.go", 3)])
+
+    def unresolved_omitted(self, *, content: str | None = "line\n" * 30, evidence: object = None, units: list | None = None) -> tuple:
+        candidate = pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit"}]}
+        options = pr_review.JudgeOptions(units=units or [])
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+            pr_review, "fetch_file_context", return_value=content
+        ), mock.patch.object(pr_review, "cross_file_evidence", side_effect=evidence or (lambda *_a, **_k: ("", False))), mock.patch.object(
+            pr_review, "call_model", side_effect=[reply, reply]
+        ):
+            result = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+        return result, options.evidence[pr_review.candidate_identifier(candidate)], candidate
+
+    def test_marker_text_in_shown_content_is_not_an_omission(self) -> None:
+        owner = pr_review.candidate_identifier(pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix"))
+        marker_lines = ['x := "<x-omitted>"', pr_review.EVIDENCE_TRUNCATED, "<repository-evidence-unavailable>", "<evidence-omitted>"]
+        content = "\n".join(["line"] * 4 + marker_lines + ["line"] * 20)
+        evidence_text = f"CANDIDATE {owner} REPOSITORY EVIDENCE\n" + "\n".join(f"b.go:{n}: {text}" for n, text in enumerate(marker_lines, 1))
+        for name, kwargs in (
+            ("shown content", {"content": content}),
+            ("shown evidence", {"evidence": rendered_evidence(evidence_text)}),
+        ):
+            with self.subTest(name):
+                (verified, _j, _b, _f, unresolved, _i), record, candidate = self.unresolved_omitted(**kwargs)
+                self.assertFalse(record.omitted)
+                self.assertEqual(unresolved, [])
+                self.assertEqual(verified, [pr_review._needs_verification(candidate)])
+
+    def test_omissions_the_runner_records_accept_omitted_unit(self) -> None:
+        def cut(*_args, budget=None, **_kwargs):
+            budget.cut_owners.add(pr_review.candidate_identifier(pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")))
+            return "", False
+        for name, kwargs in (
+            ("cross-file evidence cut for this candidate", {"evidence": cut}),
+            ("cross-file evidence unavailable", {"evidence": lambda *_a, **_k: ("", True)}),
+            ("own context truncated", {"content": "\n".join("x" * 4_000 for _ in range(30))}),
+            ("own context unavailable", {"content": None}),
+        ):
+            with self.subTest(name):
+                (verified, _j, _b, _f, unresolved, _i), _record, candidate = self.unresolved_omitted(**kwargs)
+                self.assertEqual((verified, unresolved), ([], [candidate]))
+
+    def test_another_candidates_cut_is_not_this_candidates_omission(self) -> None:
+        def cut(*_args, budget=None, **_kwargs):
+            budget.cut_owners.add("0" * 16)
+            return "", False
+        (verified, _j, _b, _f, unresolved, _i), record, candidate = self.unresolved_omitted(evidence=cut)
+        self.assertFalse(record.omitted)
+        self.assertEqual((verified, unresolved), ([pr_review._needs_verification(candidate)], []))
+
+    def test_cross_file_evidence_records_which_candidates_were_cut(self) -> None:
+        binding = self.BINDING
+        cut = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
+        whole = pr_review.Finding("medium", "other.go", 1, "other claim", "other premise", "fix other")
+        many = [f"{binding.head_sha}:helper{index:02}.go\x001\x00helper" for index in range(33)]
+        def grep(_root, term, *_args, **_kwargs):
+            return (many, False, False) if term == "helper" else ([], False, False)
+        budget = pr_review.EvidenceBudget()
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", side_effect=lambda item, _c: ["helper"] if item is cut else ["absent"]), mock.patch.object(
+            pr_review, "_bounded_git_grep", side_effect=grep
+        ), mock.patch.object(pr_review, "_read_commit_file", return_value="helper\n"):
+            pr_review.cross_file_evidence(binding, [cut, whole], {}, max_tokens=20_000, budget=budget)
+        self.assertEqual(budget.cut_owners, {pr_review.candidate_identifier(cut)})
+
+    def test_a_citation_over_400_characters_is_not_a_citation(self) -> None:
+        for length, dropped in ((400, True), (401, False)):
+            with self.subTest(length=length):
+                path = "p" * (length - len(".go:5")) + ".go"
+                candidate = pr_review.Finding("medium", path, 5, "claim", "premise", "fix")
+                citation = f"{path}:5"
+                self.assertEqual(len(citation), length)
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": citation}]}
+                (verified, *_rest), options, _model = self.judge(reply, reply, candidate=candidate)
+                self.assertEqual(len(options.dropped), int(dropped))
+                self.assertEqual(verified, [] if dropped else [pr_review._needs_verification(candidate)])
+
+    def test_a_drop_citing_a_line_this_change_adds_needs_verification(self) -> None:
+        diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -3,3 +3,4 @@\n ctx3\n-old\n+new4\n+new5\n ctx6\n"
+        units, _ = pr_review.parse_diff(diff)
+        self.assertEqual(pr_review._added_head_lines(units), {("a.go", 4), ("a.go", 5)})
+        candidate = pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        for line, dropped in ((3, True), (4, False), (5, False), (6, True)):
+            with self.subTest(line=line):
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": f"a.go:{line}"}]}
+                options = pr_review.JudgeOptions(units=units)
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                    pr_review, "fetch_file_context", return_value="line\n" * 30
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                    pr_review, "call_model", side_effect=[reply, reply]
+                ):
+                    verified, *_rest = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+                self.assertEqual(len(options.dropped), int(dropped))
+                self.assertEqual(verified, [] if dropped else [pr_review._needs_verification(candidate)])
+
+    def test_added_lines_follow_each_hunk_and_ignore_headers(self) -> None:
+        diff = ("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n-x\n+y\n z\n@@ -10 +10,2 @@\n w\n+v\n"
+                "diff --git a/gone.go b/gone.go\n--- a/gone.go\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n")
+        units, _ = pr_review.parse_diff(diff)
+        self.assertEqual(pr_review._added_head_lines(units), {("a.go", 1), ("a.go", 11)})
+
+    def test_a_judge_flag_reads_differently_from_a_reviewer_flag(self) -> None:
+        judged = pr_review.Finding("medium", "a.go", 5, "judge flagged", "premise", "fix", True)
+        reviewer = pr_review.Finding("medium", "b.go", 5, "reviewer flagged", "premise", "fix", True)
+        record = pr_review.CandidateEvidence(pr_review.candidate_identifier(judged), verdict="needs-verification")
+        kept = pr_review.CandidateEvidence(pr_review.candidate_identifier(reviewer), verdict="keep")
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, findings=[judged, reviewer],
+                                            candidate_evidence={record.identifier: record, kept.identifier: kept})
+        comment = pr_review.render_status(self.BINDING, "default", [], progress, "findings", [])
+        self.assertIn("`a.go:5` (needs verification: the judge gave no usable citation or outside reason)", comment)
+        self.assertIn("`b.go:5` (needs verification)\n", comment)
+
+    def test_both_profiles_name_the_judge_effort(self) -> None:
+        for mode in ("default", "deep"):
+            with self.subTest(mode=mode):
+                self.assertIn(f"candidate judge `{pr_review.model_for_phase(mode, 'judge')}` (`high` reasoning).", pr_review.review_profile(mode))
 
 
 if __name__ == "__main__":

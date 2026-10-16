@@ -82,16 +82,21 @@ reviewer marked it.
 The judge must back each verdict that removes or withholds a candidate:
 
 - A `drop` cites the deciding location as `path:line`, and that line must be
-  one the runner showed the judge for that candidate. Every cited drop is
-  listed in a collapsed "Dropped by the judge with a citation" section with
-  its cited location and reason. A drop with no citation, or one citing a line
-  the judge wasn't shown, is published as a finding marked
+  one the runner showed the judge for that candidate and not a line the pull
+  request adds. Every cited drop is listed in a collapsed "Dropped by the
+  judge with a citation" section with the candidate's severity, its cited
+  location and the reason. A drop with no citation, one citing a line the
+  judge wasn't shown, or one citing a line the change adds is published as a
+  finding marked `(needs verification: the judge gave no usable citation or
+  outside reason)`, which reads differently from a reviewer's own
   `(needs verification)`.
 - An `unresolved` verdict names its outside reason in `blocked_on`:
   `external-system`, `runtime-behaviour`, `published-artifact` or
-  `omitted-unit`. `omitted-unit` counts only when the runner really left
-  something out for that candidate, such as a fallback window, truncated or
-  unavailable evidence, or an unanswered request. Without a valid reason the
+  `omitted-unit`. `omitted-unit` counts only when the runner recorded that it
+  left something out for that candidate: a fallback window, a truncated
+  context, cut or unavailable cross-file evidence, failed requested evidence,
+  or an unanswered request. Text in the shown files is never read to decide
+  this. Without a valid reason the
   validation code is `unresolved-without-outside-reason`, and if the repair
   doesn't supply one the candidate is published as `(needs verification)`.
 - A `citation`, `blocked_on` or `requests` value of the wrong JSON type is
@@ -185,7 +190,7 @@ Values must name models available through the direct OpenAI API.
 - Uses explicit token budgets; deep mode splits an oversized hunk into complete
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
-- `/review deep` is opt-in for GPT-6 Sol at low reasoning; its judge runs at high reasoning, as in default mode
+- `/review deep` is opt-in for GPT-6 Sol at low reasoning; its judge runs at high reasoning, as in default mode, and both review profile lines name the judge
 - Re-running a command against an unchanged head does not review again; it
   links the review that already covered it
 

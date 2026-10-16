@@ -375,6 +375,9 @@ class CandidateEvidence:
     verdict: str = "not-admitted"
     locations: list[tuple[str, str, int, int]] = field(default_factory=list)
     requested_proofs: list[list[str]] = field(default_factory=list)
+    # Set by the runner when it cut, omitted or could not retrieve evidence
+    # for this candidate. Shown text is never read back to decide this.
+    omitted: bool = False
 
 
 @dataclass
@@ -389,6 +392,8 @@ class EvidenceBudget:
     # rendered it for. Locations are looked up here, never parsed back out of
     # text, so a filename containing ":12:" cannot add a location.
     rendered: dict[str, set[tuple[str, int]]] = field(default_factory=dict)
+    # Candidates whose cross-file evidence was cut, failed or left out.
+    cut_owners: set[str] = field(default_factory=set)
 
 
 @dataclass
@@ -516,10 +521,8 @@ def reasoning_for_phase(mode: str, phase: str) -> str:
 
 def review_profile(mode: str) -> str:
     primary = f"`{model_for_mode(mode)}` (`{reasoning_for_mode(mode)}` reasoning)"
-    if mode == "deep":
-        return f"`deep` with {primary}."
     judge = f"`{model_for_phase(mode, 'judge')}` (`{reasoning_for_phase(mode, 'judge')}` reasoning)"
-    return f"`default` with {primary}; candidate judge {judge}."
+    return f"`{'deep' if mode == 'deep' else 'default'}` with {primary}; candidate judge {judge}."
 
 
 def input_limits(mode: str) -> tuple[int, int]:
@@ -1135,8 +1138,23 @@ def _cited_location(citation: object) -> tuple[str, int] | None:
     return path, int(number)
 
 
-# A runner-written marker that some evidence was cut, omitted or unavailable.
-_OMISSION_MARKER = re.compile(r"<[a-z-]*(?:unavailable|truncated|omitted|exhausted|fallback)[^>\n]*>")
+def _added_head_lines(units: list[DiffUnit]) -> set[tuple[str, int]]:
+    """Every (path, head line) the reviewed diff adds."""
+    added: set[tuple[str, int]] = set()
+    for unit in units:
+        line: int | None = None
+        for row in unit.body.split("\n"):
+            header = HUNK_HEADER_RE.match(row)
+            if header:
+                line = int(header[3])
+            elif line is None:
+                continue
+            elif row.startswith("+"):
+                added.add((unit.path, line))
+                line += 1
+            elif row.startswith(" "):
+                line += 1
+    return added
 
 
 def _needs_verification(finding: Finding) -> Finding:
@@ -2529,23 +2547,6 @@ def _local_review_root(head_sha: str, correlation: str, deadline: float | None =
     return root
 
 
-def _read_local_file(root: Path, path: str) -> str | None:
-    """Read one file inside the checkout, or None when it cannot be read.
-
-    resolve() raises RuntimeError for a symlink loop on Python 3.12, and a path
-    outside the checkout raises ValueError. Both are an unreadable file that
-    the caller reports as unavailable, never an error that ends the run.
-    """
-    try:
-        candidate = (root / path).resolve()
-        candidate.relative_to(root)
-        if not candidate.is_file() or candidate.stat().st_size > 2_000_000:
-            return None
-        return candidate.read_text(encoding="utf-8", errors="replace")
-    except (OSError, RuntimeError, ValueError):
-        return None
-
-
 def _read_commit_file(root: Path, head_sha: str, path: str, deadline: float) -> str | None:
     """Read one bounded tracked blob from the immutable reviewed commit."""
     object_name = f"{head_sha}:{path}"
@@ -3059,9 +3060,15 @@ def cross_file_evidence(
             omitted = True
         else:
             text = header + ("\n".join(pieces) or "<no additional matches>")
-            text, _ = _bounded_evidence(text, allowance, cuts[index] or failures[index])
+            text, clipped = _bounded_evidence(text, allowance, cuts[index] or failures[index])
+            if clipped or cuts[index] or failures[index]:
+                budget.cut_owners.add(candidate_identifier(finding))
+        if text.endswith("<evidence-omitted>"):
+            budget.cut_owners.add(candidate_identifier(finding))
         rendered.append(text)
     evidence, cut = _bounded_evidence("\n\n".join(rendered), max_tokens, False)
+    if cut:
+        budget.cut_owners.update(candidate_identifier(item) for item in candidates)
     return evidence, omitted or cut or any(failures) or not evidence.strip()
 
 
@@ -3403,6 +3410,9 @@ def judge_findings(
                 diff_context = _bounded_evidence(context, max(80, context_cap // 2), False)[0]
                 context = _bounded_evidence("BASE CONTENT (deleted at head)\n" + base_context + "\n" + diff_context, context_cap, False)[0]
         record.context, record.source = context, source
+        # _bounded_evidence appends its marker as a line of its own; shown
+        # file lines always carry a number prefix, so they cannot match it.
+        record.omitted = context.rsplit("\n", 1)[-1] == EVIDENCE_TRUNCATED
         record.ranges = _context_ranges(context, finding.path)
         record.locations = [(finding.path, old_side if source == "deleted-diff" else binding.head_sha, start, end) for start, end in record.ranges]
         available.append(index)
@@ -3447,6 +3457,7 @@ def judge_findings(
         evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=evidence_budget, budget=shared, deadline=automatic_deadline)
         if unavailable:
             evidence += "\n<some-candidate-repository-evidence-unavailable>"
+        clipped = unavailable
         requested = ""
         if requested_budget:
             requested, _ = requested_repository_evidence(binding, repair_decisions, max_tokens=requested_budget, deadline=retrieval_deadline, budget=shared, owners={index: candidate_identifier(candidates[index]) for index in selected}, records=options.evidence)
@@ -3459,8 +3470,11 @@ def judge_findings(
         while evidence and serialized_prompt_tokens(system, user, mode, phase) > token_budget:
             evidence = _bounded_evidence(evidence, max(0, estimate_tokens(evidence) - 100), True)[0]
             system, user = build_judge_prompt(items, contexts, summaries, evidence, **kwargs)
+            clipped = True
         for index in selected:
             record = options.evidence[candidate_identifier(candidates[index])]
+            if clipped or record.identifier in shared.cut_owners:
+                record.omitted = True
             # Save only the evidence actually sent, including its owner.
             evidence_by_index[index] = evidence
             sections = re.split(r"(?m)(?=^CANDIDATE [0-9a-f]{16} )", evidence)
@@ -3495,6 +3509,8 @@ def judge_findings(
         finally:
             record_judge_validation("judge", validation, options, binding.correlation)
     def cited(index: int, decision: JudgeDecision) -> tuple[str, int] | None:
+        # The revision side of a shown location is not compared: a deleted
+        # candidate's base-side lines are what it was shown, so they count.
         location = _cited_location(decision.citation)
         record = options.evidence[candidate_identifier(candidates[index])]
         if location is None or not any(
@@ -3509,7 +3525,7 @@ def judge_findings(
             bool(decision.requests)
             or record.source in {"unavailable", "changed-hunk-fallback", "file-start-fallback"}
             or record.retrieval in {"unavailable-or-exhausted", "unavailable-or-truncated"}
-            or bool(_OMISSION_MARKER.search(record.context + "\n" + evidence_by_index.get(index, "")))
+            or record.omitted
         )
 
     # An uncited drop or an unresolved verdict joins the one repair; neither
@@ -3563,6 +3579,7 @@ def judge_findings(
     invalid: list[Finding] = []
     over_budget: list[Finding] = []
     dropped: list[DroppedCandidate] = []
+    added_lines = _added_head_lines(options.units)
     for index in available:
         finding = candidates[index]
         record = options.evidence[candidate_identifier(finding)]
@@ -3590,8 +3607,10 @@ def judge_findings(
                 flagged = True
             elif decision.verdict == "drop":
                 location = cited(index, decision)
-                if location is None:
-                    # The judge said false but cited no line it was shown.
+                if location is None or location in added_lines:
+                    # The judge said false but cited no line it was shown, or
+                    # cited a line this change adds, which cannot by itself
+                    # show that the change is correct.
                     flagged = True
                 else:
                     dropped.append(DroppedCandidate(finding, location[0], location[1], decision.reason))
@@ -3881,6 +3900,10 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         for index, finding in enumerate(findings, 1):
             location = display_path(finding.path) + (f":{finding.line}" if finding.line else "")
             marker = " (needs verification)" if finding.needs_verification else ""
+            judged = progress.candidate_evidence.get(candidate_identifier(finding))
+            if judged is not None and judged.verdict == "needs-verification":
+                # Set by the judge's own verdict, not by the discovery reviewer.
+                marker = " (needs verification: the judge gave no usable citation or outside reason)"
             # "Re-raised", not "reported before". The judge found this in the
             # CURRENT code, so a match against an earlier review means the
             # problem survived whatever was done since. That deserves more
@@ -3954,7 +3977,7 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
         for dropped in progress.dropped_candidates:
             location = display_path(dropped.finding.path) + (f":{dropped.finding.line}" if dropped.finding.line else "")
             lines.append(
-                f"- `{location}`: {sanitize_public_text(dropped.finding.title, limit=180)}. "
+                f"- {dropped.finding.severity} - `{location}`: {sanitize_public_text(dropped.finding.title, limit=180)}. "
                 f"Cited `{display_path(dropped.path)}:{dropped.line}`. "
                 f"Reason: {sanitize_public_text(dropped.reason, limit=300)}"
             )

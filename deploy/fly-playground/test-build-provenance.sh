@@ -337,6 +337,11 @@ if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/ch
 	exit 1
 fi
 mv "${PLAYGROUND_UI_DIR}/extra.txt" "${tmp}/extra.txt"
+ln -s "asset file.txt" "${PLAYGROUND_UI_DIR}/extra-link"
+if "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then
+	echo 'local-only symlink was accepted as matching source' >&2; exit 1
+fi
+rm -f -- "${PLAYGROUND_UI_DIR}/extra-link"
 git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit --allow-empty -qm moved
 # A site commit that leaves the viewer untouched is not drift; the files decide.
 if ! "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}" > "${tmp}/check.out" 2>&1; then

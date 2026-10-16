@@ -141,6 +141,10 @@ if [ -n "${site_dir}" ] && [ "${site_dir}" != - ]; then
 		echo "[check-live] ERROR: cannot inspect local viewer directory" >&2
 		exit 1
 	fi
+	if [ -n "$(find "${site_dir}" -type l -print -quit)" ]; then
+		echo "[check-live] ERROR: local viewer contains symlinks; build staging refuses them" >&2
+		exit 1
+	fi
 	while IFS= read -r -d '' local_file; do
 		local_path="${local_file#"${site_dir}"/}"
 		if viewer_file_is_generated "${local_path}"; then continue; fi

@@ -19,7 +19,7 @@ jobs:
   # This local helper may come from a PR, so give it no permissions or secrets.
   pr-review-source:
     needs: security-scan
-    if: github.repository == 'luckyPipewrench/pipelock'
+    if: github.repository == 'pipelab-org/pipelock'
     permissions: {}
     uses: ./.github/workflows/pr-review-source.yaml
 
@@ -1706,7 +1706,7 @@ jobs:
           # Only the canonical repository can prove its own reusable source
           # identity. Fork CI intentionally skips that credential-free probe.
           if [ "$REVIEW_SOURCE_RESULT" != success ]; then
-            if [ "$REPOSITORY" = luckyPipewrench/pipelock ] || [ "$REVIEW_SOURCE_RESULT" != skipped ]; then
+            if [ "$REPOSITORY" = pipelab-org/pipelock ] || [ "$REVIEW_SOURCE_RESULT" != skipped ]; then
               echo "review source identity was not verified" >&2
               exit 1
             fi

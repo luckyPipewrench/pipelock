@@ -127,7 +127,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         sha = "c" * 40
         identity = {
             "WORKFLOW_SHA": sha,
-            "WORKFLOW_REPOSITORY": "luckyPipewrench/pipelock",
+            "WORKFLOW_REPOSITORY": "pipelab-org/pipelock",
             "WORKFLOW_FILE_PATH": ".github/workflows/pr-review-source.yaml",
             "REVIEWER_SHA": "",
         }
@@ -205,7 +205,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
             self.assertIn("source", needs, f"{name} must wait for identity validation")
             for step in job.get("steps", []):
                 with_values = step.get("with", {})
-                if with_values.get("repository") == "luckyPipewrench/pipelock":
+                if with_values.get("repository") == "pipelab-org/pipelock":
                     self.assertEqual(with_values["ref"], "${{ needs.source.outputs.reviewer_sha }}")
                     self.assertEqual(with_values["persist-credentials"], "false")
                     consumers.append((name, "checkout"))
@@ -225,7 +225,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         ci = load_yaml(ROOT / ".github" / "workflows" / "ci.yaml")
         self.assertEqual(ci["jobs"]["pr-review-source"], {
             "needs": "security-scan",
-            "if": "github.repository == 'luckyPipewrench/pipelock'",
+            "if": "github.repository == 'pipelab-org/pipelock'",
             "permissions": {},
             "uses": "./.github/workflows/pr-review-source.yaml",
         })
@@ -347,7 +347,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         # and would say nothing about a third provider added later.
         self.assertEqual(set(review["env"]), {"HAS_OPENAI"})
         checkout = review["steps"][0]
-        self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
+        self.assertEqual(checkout["with"]["repository"], "pipelab-org/pipelock")
         self.assertEqual(checkout["with"]["ref"], "${{ needs.source.outputs.reviewer_sha }}")
         target_checkout = next(
             step for step in review["steps"] if step.get("name") == "Check out immutable reviewed repository head"

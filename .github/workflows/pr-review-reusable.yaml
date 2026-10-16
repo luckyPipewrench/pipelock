@@ -72,7 +72,7 @@ jobs:
       - name: Check out immutable Pipelock review source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: luckyPipewrench/pipelock
+          repository: pipelab-org/pipelock
           ref: ${{ needs.source.outputs.reviewer_sha }}
           path: trusted-pr-review
           persist-credentials: false
@@ -107,7 +107,7 @@ jobs:
       - name: Check out immutable Pipelock review source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          repository: luckyPipewrench/pipelock
+          repository: pipelab-org/pipelock
           ref: ${{ needs.source.outputs.reviewer_sha }}
           path: trusted-pr-review
           persist-credentials: false

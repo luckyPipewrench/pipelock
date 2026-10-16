@@ -39,7 +39,7 @@ jobs:
             echo "loaded workflow must have a full lowercase commit SHA" >&2
             exit 1
           fi
-          if [[ "${WORKFLOW_REPOSITORY}" != luckyPipewrench/pipelock ||
+          if [[ "${WORKFLOW_REPOSITORY}" != pipelab-org/pipelock ||
                 "${WORKFLOW_FILE_PATH}" != .github/workflows/pr-review-source.yaml ]]; then
             echo "loaded workflow must be the Pipelock review source helper" >&2
             exit 1

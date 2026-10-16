@@ -22,8 +22,8 @@ jobs:
     # The login checks and the numeric user id together pin the commenter to the
     # maintainer's account; a login can be renamed and reused, an id cannot.
     # Inside the organization GitHub reports the maintainer as MEMBER. A re-run
-    # keeps the original comment but changes the triggering actor, so only the
-    # first attempt is admitted.
+    # keeps the original comment but may change the triggering actor, so only
+    # the first attempt is admitted.
     if: >-
       github.actor == 'luckyPipewrench' &&
       github.actor_id == '142104046' &&

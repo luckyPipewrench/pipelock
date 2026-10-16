@@ -411,7 +411,7 @@ jobs:
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')
-    uses: luckyPipewrench/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
+    uses: pipelab-org/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     with:
       pr_number: ${{ github.event.issue.number }}
       review_mode: >-

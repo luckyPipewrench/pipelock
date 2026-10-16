@@ -76,15 +76,26 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Run WASM verifier parity harness
         run: make test-wasm-verifier
 
   typescript:
-    name: TypeScript verifier
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Retain the published engine floor until a verifier release raises it.
+          - node: '20'
+            name: TypeScript verifier (Node 20 compatibility)
+          - node: '22'
+            name: TypeScript verifier
+          - node: '24'
+            name: TypeScript verifier (Node 24)
     defaults:
       run:
         working-directory: sdk/verifiers/ts
@@ -96,7 +107,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: ${{ matrix.node }}
           cache: 'npm'
           cache-dependency-path: sdk/verifiers/ts/package-lock.json
 
@@ -136,7 +147,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: sdk/verifiers/ts/package-lock.json
 
@@ -259,7 +270,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: sdk/verifiers/ts/package-lock.json
 
@@ -352,7 +363,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: sdk/verifiers/ts/package-lock.json
 

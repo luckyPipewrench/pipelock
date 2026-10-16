@@ -72,8 +72,8 @@ jobs:
       # https://github.com/actions/runner-images/issues/10936
       # GID 1001 deliberately excludes the runner's docker group, so the mounted
       # Docker socket stays unreachable. Don't add that group or return to root.
-      # If checkout fails with EACCES, the hosted runner UID changed: set --user
-      # to the runner's `id -u` and keep a group other than docker.
+      # If checkout fails with EACCES, check `id -u` on the hosted runner. If it
+      # changed, update the UID in --user and keep a group other than docker.
       options: --user 1001:1001 --cap-drop=ALL --security-opt=no-new-privileges
     steps:
       - name: Check out the loaded default-branch workflow revision

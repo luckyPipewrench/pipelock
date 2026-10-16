@@ -1003,7 +1003,7 @@ def build_judge_prompt(
         "Keep only a substantiated defect. Drop a candidate that current-head code closes or whose premise is false, "
         "and set citation to the deciding location as \"path:line\", copying a path and line number exactly as they appear in the supplied evidence. "
         "A drop without such a citation is published as a finding that needs verification. "
-        "The cited line must be current-head code shown in the supplied evidence. Base-side content, such as the BASE CONTENT of a file this pull request deletes, "
+        "The cited line must be current-head code shown in the supplied evidence, and shown whole: a line the evidence cut short or clipped cannot be cited. Base-side content, such as the BASE CONTENT of a file this pull request deletes, "
         "explains the candidate but cannot be cited, so cite unchanged current-head code that replaces or consumes it; a drop citing base-side content is published the same way. "
         "The cited line must not be a line this pull request adds, because added code cannot by itself show the change is correct; "
         "a drop citing one is published the same way, and prior_response_validation reports it as drop-cites-added-line. "
@@ -2739,12 +2739,32 @@ def _context_key(finding: Finding, candidates: list[Finding]) -> str:
     return finding.path if sum(item.path == finding.path for item in candidates) == 1 else candidate_identifier(finding)
 
 
-def _context_ranges(context: str, path: str = "") -> list[tuple[int, int]]:
+def _source_text(source: list[str] | dict[int, str], number: int) -> str | None:
+    """The whole text of one source line, numbered from 1; None when there is none."""
+    if isinstance(source, dict):
+        return source.get(number)
+    return source[number - 1] if 1 <= number <= len(source) else None
+
+
+def _whole_row(row: str, path: str, number: int, source: list[str] | dict[int, str]) -> bool:
+    """Whether a rendered row is "N: text" or "path:N: text" with the source line's whole text."""
+    text = _source_text(source, number)
+    return text is not None and row in (f"{number}: {text}", f"{path}:{number}: {text}")
+
+
+def _context_ranges(context: str, path: str = "", source: list[str] | dict[int, str] | None = None) -> list[tuple[int, int]]:
     # Context lines are "N: text", or "path:N: text" for this candidate's own
     # path. Matching that known prefix, rather than any text before a colon,
     # keeps a ":12:" inside a path or a line from being read as a location.
+    # With `source`, a line counts only if it is shown as the whole source
+    # line: a row cut by a clip or by the evidence bound names a line whose end
+    # the judge never saw.
     prefix = re.escape(path + ":") if path else "(?!)"
-    numbers = sorted({int(hit) for hit in re.findall(rf"(?m)^(?:{prefix})?([0-9]+): ", context)})
+    found = (
+        int(hit[1]) for hit in re.findall(rf"(?m)^((?:{prefix})?([0-9]+): .*)$", context)
+        if source is None or _whole_row(hit[0], path, int(hit[1]), source)
+    )
+    numbers = sorted(set(found))
     ranges: list[tuple[int, int]] = []
     for number in numbers:
         if ranges and number == ranges[-1][1] + 1:
@@ -3108,10 +3128,12 @@ def cross_file_evidence(
                 texts = {line: text for _, hit_path, line, text in matches if hit_path == path}
                 piece = "\n".join(f"{path}:{line}: {texts[line][:500]}" for line in anchors)
                 cuts[index] = True
+                source: list[str] | dict[int, str] = texts
             else:
                 piece, cut = _render_evidence_window(path, content, anchors)
                 cuts[index] |= cut
-            _record_rendered(budget, path, piece)
+                source = _text_lines(content)
+            _record_rendered(budget, path, piece, source)
             pieces.append(piece)
             if estimate_tokens("\n".join(pieces)) > allowance:
                 cuts[index] = True
@@ -3211,6 +3233,10 @@ def _bounded_git_grep(
         process.stdout.close()
     if process.returncode not in {0, 1, -9}:
         return [], truncated, True
+    if truncated and not data.endswith(b"\n"):
+        # The byte cap cut the record git was writing. What is left of it is a
+        # prefix of a match, not a match: it can read as a short or empty line.
+        del data[data.rfind(b"\n") + 1:]
     # Records end in a newline; -z puts NUL after the path and the line number.
     return [raw for raw in data.decode("utf-8", errors="replace").split("\n") if raw], truncated, False
 
@@ -3228,13 +3254,19 @@ def _grep_hit(raw: str, treeish: str) -> tuple[str, int, str] | None:
     return parts[0], int(parts[1]), parts[2]
 
 
-def _record_rendered(budget: EvidenceBudget, path: str, text: str) -> None:
-    """Remember each "path:N: " line rendered for path, as rendered."""
+def _record_rendered(budget: EvidenceBudget, path: str, text: str, source: list[str] | dict[int, str]) -> None:
+    """Remember each "path:N: " line rendered for path, as rendered.
+
+    Only a row carrying the whole text of source line N is remembered. A row
+    clipped at the render cap, or cut short of its source, shows a prefix of
+    the line and cannot be cited. `source` is the file's lines, or for a hit
+    whose blob could not be read, the whole text of each line git reported.
+    """
     prefix = path + ":"
     for line in text.split("\n"):
         if line.startswith(prefix):
             number = re.match(r"([0-9]+): ", line[len(prefix):])
-            if number:
+            if number and _whole_row(line, path, int(number[1]), source):
                 budget.rendered.setdefault(line, set()).add((path, int(number[1])))
 
 
@@ -3337,7 +3369,7 @@ def requested_repository_evidence(
                     # The window marks its own cuts; a cut read is truncated retrieval.
                     cut = EVIDENCE_TRUNCATED in context.split("\n")
                     labelled = re.sub(r"(?m)^(\d+): ", lambda match: f"{request.path}:{match[1]}: ", context)
-                    _record_rendered(budget, request.path, labelled)
+                    _record_rendered(budget, request.path, labelled, _text_lines(content))
                     piece = f"REQUESTED PATH {request.path}\n{labelled}"
                     failed = context.startswith("<file-context-unavailable:")
             else:
@@ -3362,13 +3394,14 @@ def requested_repository_evidence(
                 for path, anchors in _evidence_windows(matches)[:12]:
                     content = _cached_evidence_read(root, binding, path, budget, evidence_deadline)
                     if content is None:
-                        fallback = [f"{path}:{line}: {text[:500]}" for _, hit_path, line, text in matches if hit_path == path and line in anchors]
-                        _record_rendered(budget, path, "\n".join(fallback))
+                        texts = {line: text for _, hit_path, line, text in matches if hit_path == path and line in anchors}
+                        fallback = [f"{path}:{line}: {text[:500]}" for line, text in texts.items()]
+                        _record_rendered(budget, path, "\n".join(fallback), texts)
                         pieces.extend(fallback)
                         cut = True
                     else:
                         context, extra_cut = _render_evidence_window(path, content, anchors)
-                        _record_rendered(budget, path, context)
+                        _record_rendered(budget, path, context, _text_lines(content))
                         pieces.append(context)
                         cut |= extra_cut
                 empty = "<requested-search-incomplete-or-not-run>" if cut or failed else "<no matches>"
@@ -3441,6 +3474,8 @@ def judge_findings(
     root = _local_review_root(binding.head_sha, binding.correlation, retrieval_deadline) if os.environ.get("REVIEWED_REPOSITORY_PATH") else None
     over_files: list[Finding] = []
     available: list[int] = []
+    # What each candidate's own context shows whole, before any evidence call.
+    context_locations: dict[str, list[tuple[str, str, int, int]]] = {}
     # Metadata is never semantically clipped to make room for evidence.
     skeleton_system, skeleton_user = build_judge_prompt(candidates, {}, [], "")
     metadata_cost = serialized_prompt_tokens(skeleton_system, skeleton_user, mode, "judge")
@@ -3465,6 +3500,8 @@ def judge_findings(
             shared.contents[key] = content
         content = shared.contents[key]
         context, source = _candidate_context(finding, content, options.units, context_cap)
+        # The file whose lines the context shows; no lines are citable without it.
+        shown_lines = _text_lines(content) if content is not None else []
         old_side = options.old_side or os.environ.get("REVIEWED_MERGE_BASE_SHA") or binding.base_sha
         if source == "deleted-diff" and root is not None:
             base_key = (old_side, finding.path)
@@ -3473,6 +3510,7 @@ def judge_findings(
                 shared.contents[base_key] = _read_commit_file(root, old_side, finding.path, retrieval_deadline)
             base = shared.contents.get(base_key)
             if base is not None:
+                shown_lines = _text_lines(base)
                 base_context = _line_context(base, finding.line, max(80, context_cap // 2))
                 diff_context = _bounded_evidence(context, max(80, context_cap // 2), False)[0]
                 context = _bounded_evidence("BASE CONTENT (deleted at head)\n" + base_context + "\n" + diff_context, context_cap, False)[0]
@@ -3481,8 +3519,11 @@ def judge_findings(
         # file lines always carry a number prefix, so they cannot match it. A
         # deleted file's base-side window can carry its marker mid-context.
         record.omitted = EVIDENCE_TRUNCATED in context.split("\n")
-        record.ranges = _context_ranges(context, finding.path)
+        # A line clipped at the context budget, or cut by its bound, was not
+        # shown whole; only whole lines are ranges a citation can land in.
+        record.ranges = _context_ranges(context, finding.path, shown_lines)
         record.locations = [(finding.path, old_side if source == "deleted-diff" else binding.head_sha, start, end) for start, end in record.ranges]
+        context_locations[identifier] = list(record.locations)
         available.append(index)
     shared.seconds_remaining = max(0, shared.seconds_remaining - (time.monotonic() - reads_started))
 
@@ -3562,6 +3603,9 @@ def judge_findings(
             evidence_by_index[index] = evidence
             sections = re.split(r"(?m)(?=^CANDIDATE [0-9a-f]{16} )", evidence)
             owned = "\n".join(section for section in sections if section.startswith(f"CANDIDATE {record.identifier} "))
+            # A call can cite only what that call's prompt carried, so the
+            # evidence an earlier call showed is not kept for this one.
+            record.locations = list(context_locations[record.identifier])
             for path, number in _shown_locations(owned, shared):
                 location = (path, binding.head_sha, number, number)
                 if location not in record.locations:

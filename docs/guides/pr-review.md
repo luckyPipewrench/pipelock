@@ -93,7 +93,11 @@ The judge must back each verdict that removes or withholds a candidate:
   first eight with the candidate's severity, its cited location and the
   reason, then how many more. A drop with no citation, one citing a line the
   judge wasn't shown at the reviewed head, or one citing a line the change adds
-  goes to the one repair. When the lines the whole pull request adds can't be established,
+  goes to the one repair. A line counts as shown only if its whole text reached
+  that call's prompt: a line clipped at the context or search-row cap, cut by
+  an evidence bound, or cut short by the byte cap on a repository search is
+  not citable, even though the rest of its window is, and a line only an
+  earlier call showed is not citable in the repair. When the lines the whole pull request adds can't be established,
   because its diff was unreadable, oversized, unparseable or possibly
   truncated, no drop is trusted and each such candidate is published as
   needing verification. The prompt states the rule, and a drop citing an added line is
@@ -116,7 +120,9 @@ The judge must back each verdict that removes or withholds a candidate:
   rejected as `invalid-field-type` and goes to the repair.
 
 Shown locations come from what the runner rendered, not from reading the
-prompt text back. Line numbers count `\n` only, as git does, so a form feed
+prompt text back, and a rendered row counts only when it equals the whole
+source line it names, so text in a shown file that imitates a `path:N:` row
+adds nothing. Line numbers count `\n` only, as git does, so a form feed
 or Unicode line separator in a file doesn't shift them. Search results use
 `git grep -z`, so a filename containing `:12:` can't add a location the judge
 never saw. A checkout or file path that can't be resolved, such as a symlink

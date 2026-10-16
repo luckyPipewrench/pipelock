@@ -82,14 +82,18 @@ reviewer marked it.
 The judge must back each verdict that removes or withholds a candidate:
 
 - A `drop` cites the deciding location as `path:line`, and that line must be
-  one the runner showed the judge for that candidate and not a line the pull
-  request adds, counting every commit of the pull request and not only the
-  change since an earlier review. The count of cited drops is stated in a
+  current-head code the runner showed the judge for that candidate and not a
+  line the pull request adds, counting every commit of the pull request and
+  not only the change since an earlier review. For a file the pull request
+  deletes, the runner still shows the base-side text so the judge can see what
+  the candidate was about, but that text is not current-head evidence and
+  can't be cited; the drop has to cite unchanged head code that replaces or
+  consumes the deleted code. The count of cited drops is stated in a
   collapsed "Dropped by the judge with a citation" section, which lists the
   first eight with the candidate's severity, its cited location and the
   reason, then how many more. A drop with no citation, one citing a line the
-  judge wasn't shown, or one citing a line the change adds goes to the one
-  repair. When the lines the whole pull request adds can't be established,
+  judge wasn't shown at the reviewed head, or one citing a line the change adds
+  goes to the one repair. When the lines the whole pull request adds can't be established,
   because its diff was unreadable, oversized, unparseable or possibly
   truncated, no drop is trusted and each such candidate is published as
   needing verification. The prompt states the rule, and a drop citing an added line is
@@ -282,7 +286,7 @@ time. Nothing here claims a finding was resolved.
   remains two judge calls, with a 16,384-token output cap and a 210-second
   timeout for the repair, which reasons at the judge's high effort.
 
-Each candidate has a stable ID and its own evidence window, even if several candidates name the same file. The runner prefers a valid head line, then a named definition or relevant changed hunk. File-start and changed-hunk fallbacks are labelled. Deleted paths use the bound diff and available base content. Content reads are cached by immutable commit and path. Searches can find more code in the same file outside the supplied ranges. Failed reads and searches affect the candidate that needs them; they don't cancel judgment of its siblings.
+Each candidate has a stable ID and its own evidence window, even if several candidates name the same file. The runner prefers a valid head line, then a named definition or relevant changed hunk. File-start and changed-hunk fallbacks are labelled. Deleted paths use the bound diff and available base content, which explains the candidate but is not citable evidence for a drop. Content reads are cached by immutable commit and path. Searches can find more code in the same file outside the supplied ranges. Failed reads and searches affect the candidate that needs them; they don't cancel judgment of its siblings.
 
 The comment retains each unsettled candidate's sanitized reason, evidence source and retrieval outcome. Missing evidence can't dismiss a candidate. Truncated surrounding evidence can still contain the fact that decides a premise. The repair uses the remaining prompt allowance for unresolved candidates, invalid decisions and overflow candidates that fit. Candidates that still don't fit remain visibly incomplete. Prompt accounting includes labels, escaped strings, summaries and truncation notices without shortening candidate claims.
 

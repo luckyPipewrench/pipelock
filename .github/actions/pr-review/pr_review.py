@@ -1003,6 +1003,8 @@ def build_judge_prompt(
         "Keep only a substantiated defect. Drop a candidate that current-head code closes or whose premise is false, "
         "and set citation to the deciding location as \"path:line\", copying a path and line number exactly as they appear in the supplied evidence. "
         "A drop without such a citation is published as a finding that needs verification. "
+        "The cited line must be current-head code shown in the supplied evidence. Base-side content, such as the BASE CONTENT of a file this pull request deletes, "
+        "explains the candidate but cannot be cited, so cite unchanged current-head code that replaces or consumes it; a drop citing base-side content is published the same way. "
         "The cited line must not be a line this pull request adds, because added code cannot by itself show the change is correct; "
         "a drop citing one is published the same way, and prior_response_validation reports it as drop-cites-added-line. "
         "A marked fallback window is not proof that a file-level premise was covered; absence from an excerpt is not decisive evidence. "
@@ -3592,17 +3594,21 @@ def judge_findings(
         finally:
             record_judge_validation("judge", validation, options, binding.correlation)
     def cited(index: int, decision: JudgeDecision) -> tuple[str, int] | None:
-        # The revision side of a shown location is not compared: a deleted
-        # candidate's base-side lines are what it was shown, so they count.
+        # Only a line of the reviewed head that the judge was shown can decide
+        # a drop. A deleted candidate's base-side lines are shown for
+        # diagnosis, but they are not current-head evidence: the head holds
+        # nothing at that path, so a citation of one closes nothing there.
+        # Unchanged head code that replaces or consumes it still can.
         # A line this change adds cannot by itself show that the change is
         # correct, so it is not a usable citation, here or at the final guard.
         # When the lines the whole pull request adds are unproved, a citation
         # cannot be shown to predate it, so none is usable.
         location = _cited_location(decision.citation)
         record = options.evidence[candidate_identifier(candidates[index])]
-        if location is None or (added := added_lines()) is None or location in added or not any(
-            location[0] == path and start <= location[1] <= end for path, _, start, end in record.locations
-        ):
+        if location is None or not any(
+            location[0] == path and revision == binding.head_sha and start <= location[1] <= end
+            for path, revision, start, end in record.locations
+        ) or (added := added_lines()) is None or location in added:
             return None
         return location
 
@@ -3615,8 +3621,8 @@ def judge_findings(
             or record.omitted
         )
 
-    # A drop without a usable citation (none, unshown, an added line, or a
-    # range whose added lines could not be proved) or an
+    # A drop without a usable citation (none, unshown, base-side only, an
+    # added line, or a range whose added lines could not be proved) or an
     # unresolved verdict joins the one repair; neither can settle a candidate
     # without the citation or outside reason it lacks.
     pending = [
@@ -3698,8 +3704,8 @@ def judge_findings(
             elif decision.verdict == "drop":
                 location = cited(index, decision)
                 if location is None:
-                    # The judge said false but cited no line it was shown, or
-                    # cited a line this change adds (see cited above).
+                    # The judge said false but cited no current-head line it
+                    # was shown, or cited a line this change adds (see cited).
                     flagged = True
                 else:
                     dropped.append(DroppedCandidate(finding, location[0], location[1], decision.reason))

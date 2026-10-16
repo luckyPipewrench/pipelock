@@ -6910,7 +6910,10 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                 pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "drop", "reason": "deletion decides the premise", "citation": "sample.go:90"}]}
             ) as model:
                 result = pr_review.judge_findings("owner/repo", "dummy", binding, "default", [candidate], options=options)
-            self.assertEqual(result, ([], True, [], [], [], []))
+            # The base text is shown and recorded for diagnosis, but base-side
+            # text is not current-head evidence, so this drop is not accepted.
+            self.assertEqual(result, ([pr_review._needs_verification(candidate)], True, [], [], [], []))
+            self.assertEqual(options.dropped, [])
             context = json.loads(model.call_args.args[1])["actual_head_context"][candidate.path]
             self.assertIn("90: base_90", context)
             self.assertIn("deleted", context)
@@ -8285,13 +8288,140 @@ class FullRangeAddedLinesTest(OfflineReviewTestCase):
                     return pr_review.run_review("owner/repo", "42", "token", self.MODE, "e" * 40, binding=current, status_comment_id=7)[1]
 
             self.assertEqual([item.line for item in run("a.go:2", full_diff, None).dropped_candidates], [2])
-            self.assertEqual(run("a.go:4", full_diff, None).dropped_candidates, [])
+            self.assertKeptForVerification(run("a.go:4", full_diff, None))
             for name, diff, truncation in (
                 ("truncated-compare", full_diff, "the comparison reached the 300-file API limit, so the diff may be truncated"),
                 ("preamble", "stray preamble\n" + full_diff, None),
             ):
                 with self.subTest(name):
                     self.assertKeptForVerification(run("a.go:2", diff, truncation))
+
+
+class DeletedCandidateHeadEvidenceTest(OfflineReviewTestCase):
+    """A drop is decided by current-head code; the deleted base-side text only explains the candidate."""
+
+    CONSUMER = "caller.go:2: use_replacement()"
+
+    def history(self, root: pathlib.Path) -> tuple[pr_review.PullBinding, list]:
+        """Real history: sample.go (100 lines) and an untouched caller.go, then sample.go is deleted."""
+        init_git_fixture(root)
+        (root / "sample.go").write_text("\n".join(f"base_{n}" for n in range(1, 101)), encoding="utf-8")
+        (root / "caller.go").write_text("package main\nuse_replacement()\n", encoding="utf-8")
+        git_output(root, "add", ".")
+        git_output(root, "commit", "-qm", "base")
+        base = git_output(root, "rev-parse", "HEAD").strip()
+        git_output(root, "rm", "-q", "sample.go")
+        git_output(root, "commit", "-qm", "delete")
+        head = git_output(root, "rev-parse", "HEAD").strip()
+        return pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION), pr_review.parse_diff(git_output(root, "diff", base, head))[0]
+
+    @staticmethod
+    def drop(citation: str) -> dict:
+        return {"findings": [{"index": 0, "verdict": "drop", "reason": "the premise is closed", "citation": citation}]}
+
+    def judge(self, root, mode, replies, *, shown="", options=None, repair_allowed=True):
+        binding, units = self.history(root)
+        self.binding = binding
+        candidate = pr_review.Finding("medium", "sample.go", 90, "guard claim", "Check GuardValue against current consumers.", "fix")
+        options = options or pr_review.JudgeOptions()
+        options.units = units
+        # The runner renders each candidate's own evidence under its header.
+        evidence = f"CANDIDATE {pr_review.candidate_identifier(candidate)} REPOSITORY EVIDENCE\n{shown}" if shown else ""
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+            pr_review, "call_model", side_effect=list(replies)
+        ) as model, mock.patch.object(pr_review, "cross_file_evidence", side_effect=rendered_evidence(evidence)), mock.patch.object(
+            pr_review, "budget_allows", return_value=repair_allowed
+        ):
+            result = pr_review.judge_findings("owner/repo", "dummy", binding, mode, [candidate], options=options)
+        return result, options, model, candidate
+
+    def test_a_drop_citing_only_the_deleted_base_side_line_is_not_accepted(self) -> None:
+        for mode in ("default", "deep"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                reply = self.drop("sample.go:90")
+                result, options, model, candidate = self.judge(pathlib.Path(directory), mode, [reply, reply])
+                self.assertEqual(model.call_count, 2, "the base-only citation joins the one repair")
+                self.assertEqual(result, ([pr_review._needs_verification(candidate)], True, [], [], [], []))
+                self.assertEqual(options.dropped, [])
+                record = options.evidence[pr_review.candidate_identifier(candidate)]
+                self.assertEqual(record.verdict, "needs-verification")
+                # The base text is still shown, and still recorded, for diagnosis.
+                self.assertIn("90: base_90", json.loads(model.call_args_list[0].args[1])["actual_head_context"][candidate.path])
+                self.assertEqual({location[1] for location in record.locations}, {self.binding.base_sha})
+
+    def test_the_repair_may_settle_a_deleted_candidate_with_unchanged_current_head_code(self) -> None:
+        for mode in ("default", "deep"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                result, options, model, candidate = self.judge(
+                    pathlib.Path(directory), mode, [self.drop("sample.go:90"), self.drop("caller.go:2")], shown=self.CONSUMER)
+                self.assertEqual(model.call_count, 2)
+                self.assertEqual(result, ([], True, [], [], [], []))
+                self.assertEqual(options.dropped, [pr_review.DroppedCandidate(candidate, "caller.go", 2, "the premise is closed")])
+
+    def test_a_first_pass_drop_citing_shown_current_head_code_needs_no_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            result, options, model, candidate = self.judge(pathlib.Path(directory), "default", [self.drop("caller.go:2")], shown=self.CONSUMER)
+        self.assertEqual(model.call_count, 1)
+        self.assertEqual(result, ([], True, [], [], [], []))
+        self.assertEqual([(item.path, item.line) for item in options.dropped], [("caller.go", 2)])
+
+    def test_a_current_head_line_the_judge_was_not_shown_is_not_a_usable_citation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            reply = self.drop("caller.go:1")
+            result, options, model, candidate = self.judge(pathlib.Path(directory), "default", [reply, reply], shown=self.CONSUMER)
+        self.assertEqual(result[0], [pr_review._needs_verification(candidate)])
+        self.assertEqual(options.dropped, [])
+
+    def test_a_base_only_drop_without_a_usable_repair_never_becomes_a_drop(self) -> None:
+        base_only = self.drop("sample.go:90")
+        with self.subTest("repair returns no decision"), tempfile.TemporaryDirectory() as directory:
+            result, options, model, candidate = self.judge(pathlib.Path(directory), "default", [base_only, {"findings": []}])
+            self.assertEqual(model.call_count, 2)
+            self.assertEqual((result[0], result[5]), ([], [candidate]))
+            self.assertEqual(options.dropped, [])
+            self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].verdict, "invalid")
+        with self.subTest("repair is not attempted"), tempfile.TemporaryDirectory() as directory:
+            result, options, model, candidate = self.judge(
+                pathlib.Path(directory), "default", [base_only], options=pr_review.JudgeOptions(deadline=time.monotonic() + 3600),
+                repair_allowed=False)
+            self.assertEqual(model.call_count, 1)
+            self.assertEqual(result[0], [pr_review._needs_verification(candidate)])
+            self.assertEqual(options.dropped, [])
+
+    def test_a_modified_file_cites_its_own_head_numbering_not_the_replaced_base_line(self) -> None:
+        # Line 90 exists in both revisions with different text. The judge is
+        # shown the head's line 90 (which this change adds, so unusable) and the
+        # unchanged head line 89; the base's text at 90 is never a citation.
+        for citation, dropped in (("mod.go:90", False), ("mod.go:89", True)):
+            with self.subTest(citation=citation), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                init_git_fixture(root)
+                (root / "mod.go").write_text("\n".join(f"base_{n}" for n in range(1, 101)) + "\n", encoding="utf-8")
+                git_output(root, "add", ".")
+                git_output(root, "commit", "-qm", "base")
+                base = git_output(root, "rev-parse", "HEAD").strip()
+                (root / "mod.go").write_text("\n".join("replaced_90" if n == 90 else f"base_{n}" for n in range(1, 101)) + "\n", encoding="utf-8")
+                git_output(root, "commit", "-qam", "replace")
+                head = git_output(root, "rev-parse", "HEAD").strip()
+                binding = pr_review.PullBinding(base, head, "c" * 40, pr_review.RUBRIC_VERSION)
+                units = pr_review.parse_diff(git_output(root, "diff", base, head))[0]
+                candidate = pr_review.Finding("medium", "mod.go", 90, "guard claim", "Check GuardValue against current consumers.", "fix")
+                options = pr_review.JudgeOptions(units=units)
+                reply = self.drop(citation)
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+                    pr_review, "call_model", side_effect=[reply, reply]
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)):
+                    result = pr_review.judge_findings("owner/repo", "dummy", binding, "default", [candidate], options=options)
+                record = options.evidence[pr_review.candidate_identifier(candidate)]
+                self.assertEqual({location[1] for location in record.locations}, {head})
+                self.assertEqual([item.line for item in options.dropped], [89] if dropped else [])
+                self.assertEqual(result[0], [] if dropped else [pr_review._needs_verification(candidate)])
+
+    def test_the_prompt_says_base_side_content_cannot_be_cited(self) -> None:
+        system, _ = pr_review.build_judge_prompt([pr_review.Finding("medium", "a.go", 1, "c", "w", "f")], {}, [], "")
+        self.assertIn("current-head code shown in the supplied evidence", system)
+        self.assertIn("BASE CONTENT", system)
+        self.assertIn("cannot be cited", system)
 
 
 class CommittedSymlinkTest(OfflineReviewTestCase):

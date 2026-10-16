@@ -8482,6 +8482,63 @@ class DeletedCandidateHeadEvidenceTest(OfflineReviewTestCase):
                     record = options.evidence[pr_review.candidate_identifier(candidate)]
                     self.assertEqual(any(path == "caller.go" for path, *_ in record.locations), dropped)
 
+    def test_restoring_unsent_repair_evidence_keeps_the_callers_registry_current(self) -> None:
+        # The runner hands judge_findings its progress registry and renders the
+        # comment from that same dict, so a restore must write back into it.
+        for mode in ("default", "deep"):
+            for budgets, dropped in (([False], False), ([True, False], False), ([True, True], True)):
+                with self.subTest(mode=mode, budgets=budgets), tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    binding, units = self.history(root)
+                    candidate = pr_review.Finding("medium", "sample.go", 90, "guard claim", "Check GuardValue against current consumers.", "fix")
+                    identifier = pr_review.candidate_identifier(candidate)
+                    registry: dict[str, pr_review.CandidateEvidence] = {}
+                    options = pr_review.JudgeOptions(units=units, deadline=time.monotonic() + 3600, evidence=registry)
+                    retrieved = iter(("", f"CANDIDATE {identifier} REPOSITORY EVIDENCE\n{self.CONSUMER}"))
+
+                    def retrieve(*args, **kwargs):
+                        return rendered_evidence(next(retrieved))(*args, **kwargs)
+
+                    with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+                        pr_review, "call_model", return_value=self.drop("caller.go:2")
+                    ), mock.patch.object(pr_review, "cross_file_evidence", side_effect=retrieve), mock.patch.object(
+                        pr_review, "budget_allows", side_effect=budgets
+                    ):
+                        result = pr_review.judge_findings("owner/repo", "dummy", binding, mode, [candidate], options=options)
+                    self.assertIs(options.evidence, registry)
+                    self.assertEqual(registry[identifier].verdict, "drop" if dropped else "needs-verification")
+                    progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, findings=result[0], candidate_evidence=registry)
+                    comment = pr_review.render_status(binding, mode, [], progress, "findings", [])
+                    self.assertEqual("needs verification: the judge gave no usable citation" in comment, not dropped)
+
+    def test_unsent_repair_omission_cannot_justify_an_omitted_unit_claim(self) -> None:
+        reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "needs the omitted unit", "blocked_on": "omitted-unit"}]}
+        for budgets, calls, unresolved in (([True, False], 1, False), ([True, True], 2, True)):
+            with self.subTest(budgets=budgets), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                binding, units = self.history(root)
+                candidate = pr_review.Finding("medium", "sample.go", 90, "guard claim", "Check GuardValue against current consumers.", "fix")
+                identifier = pr_review.candidate_identifier(candidate)
+                options = pr_review.JudgeOptions(units=units, deadline=time.monotonic() + 3600)
+                prompts = iter((False, True))
+
+                def retrieve(*_args, budget=None, **_kwargs):
+                    # Only the repair's retrieval cuts evidence; the primary call saw all of its own.
+                    if next(prompts):
+                        budget.cut_owners.add(identifier)
+                    return "", False
+
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+                    pr_review, "call_model", return_value=reply
+                ) as model, mock.patch.object(pr_review, "cross_file_evidence", side_effect=retrieve), mock.patch.object(
+                    pr_review, "budget_allows", side_effect=budgets
+                ):
+                    result = pr_review.judge_findings("owner/repo", "dummy", binding, "default", [candidate], options=options)
+                self.assertEqual(model.call_count, calls)
+                self.assertEqual(result[4], [candidate] if unresolved else [])
+                self.assertEqual(result[0], [] if unresolved else [pr_review._needs_verification(candidate)])
+                self.assertEqual(options.evidence[identifier].omitted, unresolved)
+
     def test_a_current_head_line_the_judge_was_not_shown_is_not_a_usable_citation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reply = self.drop("caller.go:1")

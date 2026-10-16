@@ -3708,7 +3708,8 @@ def judge_findings(
         # Preparation can change citation locations and omission/request state.
         # If dispatch cannot start, the primary response must still be judged
         # against the evidence its own call received.
-        sent_evidence = copy.deepcopy((options.evidence, evidence_by_index, shared.rendered))
+        sent_records = copy.deepcopy(options.evidence)
+        sent_evidence = copy.deepcopy((evidence_by_index, shared.rendered))
         repair, system, user = prepare(pending, "judge-repair", feedback)
         if repair and (deadline is None or budget_allows(deadline, mode, "judge-repair")):
             validation = JudgeValidation()
@@ -3734,7 +3735,11 @@ def judge_findings(
             finally:
                 record_judge_validation("judge-repair", validation, options, binding.correlation)
         else:
-            options.evidence, evidence_by_index, shared.rendered = sent_evidence
+            # The caller renders its comment from the registry it passed in,
+            # so each record is restored in place, never replaced.
+            for identifier, saved in sent_records.items():
+                vars(options.evidence[identifier]).update(vars(saved))
+            evidence_by_index, shared.rendered = sent_evidence
     verified: list[Finding] = []
     unresolved: list[Finding] = []
     invalid: list[Finding] = []

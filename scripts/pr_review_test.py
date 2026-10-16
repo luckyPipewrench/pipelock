@@ -8455,6 +8455,33 @@ class DeletedCandidateHeadEvidenceTest(OfflineReviewTestCase):
         self.assertEqual(result, ([], True, [], [], [], []))
         self.assertEqual([(item.path, item.line) for item in options.dropped], [("caller.go", 2)])
 
+    def test_unsent_repair_evidence_cannot_authorize_a_first_pass_drop(self) -> None:
+        for mode in ("default", "deep"):
+            for budgets, calls, dropped in (([False], 1, False), ([True, False], 1, False), ([True, True], 2, True)):
+                with self.subTest(mode=mode, budgets=budgets), tempfile.TemporaryDirectory() as directory:
+                    root = pathlib.Path(directory)
+                    binding, units = self.history(root)
+                    candidate = pr_review.Finding("medium", "sample.go", 90, "guard claim", "Check GuardValue against current consumers.", "fix")
+                    options = pr_review.JudgeOptions(units=units, deadline=time.monotonic() + 3600)
+                    evidence = f"CANDIDATE {pr_review.candidate_identifier(candidate)} REPOSITORY EVIDENCE\n{self.CONSUMER}"
+                    retrieved = iter(("", evidence))
+
+                    def retrieve(*args, **kwargs):
+                        return rendered_evidence(next(retrieved))(*args, **kwargs)
+
+                    with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
+                        pr_review, "call_model", return_value=self.drop("caller.go:2")
+                    ) as model, mock.patch.object(pr_review, "cross_file_evidence", side_effect=retrieve), mock.patch.object(
+                        pr_review, "budget_allows", side_effect=budgets
+                    ):
+                        result = pr_review.judge_findings("owner/repo", "dummy", binding, mode, [candidate], options=options)
+                    self.assertEqual(model.call_count, calls)
+                    self.assertNotIn("use_replacement()", model.call_args_list[0].args[1])
+                    self.assertEqual(result[0], [] if dropped else [pr_review._needs_verification(candidate)])
+                    self.assertEqual([(item.path, item.line) for item in options.dropped], [("caller.go", 2)] if dropped else [])
+                    record = options.evidence[pr_review.candidate_identifier(candidate)]
+                    self.assertEqual(any(path == "caller.go" for path, *_ in record.locations), dropped)
+
     def test_a_current_head_line_the_judge_was_not_shown_is_not_a_usable_citation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             reply = self.drop("caller.go:1")

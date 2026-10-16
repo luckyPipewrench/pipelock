@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import datetime
 import hashlib
 import hmac
@@ -3704,6 +3705,10 @@ def judge_findings(
     if pending and calls and (deadline is None or budget_allows(deadline, mode, "judge-repair")):
         # Release the primary reserve. Retrieval shares a ten-second active
         # allowance (provider waiting is excluded) and global read/search caps.
+        # Preparation can change citation locations and omission/request state.
+        # If dispatch cannot start, the primary response must still be judged
+        # against the evidence its own call received.
+        sent_evidence = copy.deepcopy((options.evidence, evidence_by_index, shared.rendered))
         repair, system, user = prepare(pending, "judge-repair", feedback)
         if repair and (deadline is None or budget_allows(deadline, mode, "judge-repair")):
             validation = JudgeValidation()
@@ -3728,6 +3733,8 @@ def judge_findings(
                     decisions.pop(index, None)
             finally:
                 record_judge_validation("judge-repair", validation, options, binding.correlation)
+        else:
+            options.evidence, evidence_by_index, shared.rendered = sent_evidence
     verified: list[Finding] = []
     unresolved: list[Finding] = []
     invalid: list[Finding] = []

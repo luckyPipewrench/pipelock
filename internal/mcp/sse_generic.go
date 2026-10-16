@@ -230,7 +230,7 @@ func ScanGenericSSEStreamWithOptions(
 		// prompt-injection content placed in the metadata fields
 		// rides through unscanned (external review finding #2).
 		text := canonicalSSEEventText(event, reader)
-		cardPayloadText := jsonnumber.CardView(string(event), extract.MaxExtractDepth)
+		cardPayloadText := jsonnumber.StructuredCardView(string(event), extract.MaxExtractDepth)
 		cardText := canonicalSSEEventText([]byte(cardPayloadText), reader)
 		rollingText := sseRollingEventText(text, "")
 		cardRollingText := sseRollingEventText(cardText, "")

@@ -2850,7 +2850,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			prevCardTail := crossMsgCardTail
 			// Only the complete original message establishes numeric provenance.
 			// Retained suffixes and incomplete text are never parsed as numbers.
-			cardMsg := []byte(jsonnumber.CardView(string(msg), extract.MaxExtractDepth))
+			cardMsg := []byte(jsonnumber.StructuredCardView(string(msg), extract.MaxExtractDepth))
 			var scanInput []byte
 			var cardInput []byte
 			if !redactionEnabled {

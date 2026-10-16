@@ -105,6 +105,9 @@ func TestGenericSSEJSONCardNumberContext(t *testing.T) {
 		{"dash key", `{"-": [` + groups + `]}`, true},
 		{"prefix key", `{"x-": [` + groups + `]}`, true},
 		{"fraction", `{"n":0.` + card + `}`, true},
+		{"structured fraction with whitespace", "  {\"n\":0." + card + `}`, true},
+		{"scalar decimal", "0." + card, false},
+		{"scalar decimal with whitespace", " 0." + card, false},
 		{"card string", `{"n":"` + card + `"}`, false},
 		{"card integer", `{"n":` + card + `}`, false},
 		{"integer component", `{"n":` + card + `.1}`, false},
@@ -116,7 +119,7 @@ func TestGenericSSEJSONCardNumberContext(t *testing.T) {
 			var out bytes.Buffer
 			err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg())
 			if (err == nil) != tt.clean {
-				t.Fatalf("event=%s error=%v want clean=%v", tt.event, err, tt.clean)
+				t.Fatalf("case=%s error=%v want clean=%v", tt.name, err, tt.clean)
 			}
 			if tt.clean && out.String() != stream {
 				t.Fatalf("clean event changed: %q", out.String())

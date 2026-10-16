@@ -1313,13 +1313,6 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 	}
 }
 
-// extractTextFromEvent extracts scannable text from an SSE event payload.
-// The payload is JSON - extract all string values for the rolling tail.
-func extractTextFromEvent(event []byte) (string, bool) {
-	text, _, _, _, truncated := extractTextViewsFromEvent(event)
-	return text, truncated
-}
-
 func extractTextViewsFromEvent(event []byte) (string, string, bool, bool, bool) {
 	if len(event) == 0 {
 		return "", "", false, false, false

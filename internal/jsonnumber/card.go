@@ -80,3 +80,13 @@ func CardView(text string, maxDepth int) string {
 	}
 	return string(view)
 }
+
+// StructuredCardView applies the numeric policy only to complete JSON objects
+// and arrays. Text transports retain ordinary card scanning for scalar payloads.
+func StructuredCardView(text string, maxDepth int) string {
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return text
+	}
+	return CardView(text, maxDepth)
+}

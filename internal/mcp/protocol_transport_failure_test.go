@@ -514,11 +514,11 @@ func TestA2AEmptyAndDefaultLimitBoundaries(t *testing.T) {
 	})
 
 	t.Run("empty extracted event", func(t *testing.T) {
-		if text, truncated := extractTextFromEvent(nil); text != "" || truncated {
-			t.Fatalf("nil event = (%q, %v)", text, truncated)
+		if text, card, first, last, truncated := extractTextViewsFromEvent(nil); text != "" || card != "" || first || last || truncated {
+			t.Fatal("nil event produced extracted text")
 		}
-		if text, truncated := extractTextFromEvent([]byte(`{}`)); text != "" || truncated {
-			t.Fatalf("empty object event = (%q, %v)", text, truncated)
+		if text, card, first, last, truncated := extractTextViewsFromEvent([]byte(`{}`)); text != "" || card != "" || first || last || truncated {
+			t.Fatal("empty object event produced extracted text")
 		}
 	})
 

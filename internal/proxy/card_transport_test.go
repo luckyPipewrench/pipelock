@@ -27,11 +27,13 @@ func cardTransportCases() []struct {
 	clean      bool
 } {
 	card := "41111111" + "11111111"
+	groups := "4111,1111" + ",1111,1111"
 	return []struct {
 		name, body string
 		clean      bool
 	}{
 		{"metric", `{"n":0.` + card + `}`, true},
+		{"root integer array", `[` + groups + `]`, true},
 		{"integer", `{"n":` + card + `}`, false},
 		{"integer part", `{"n":-` + card + `.1}`, false},
 		{"string", `{"n":"0.` + card + `"}`, false},
@@ -91,7 +93,12 @@ func TestCardJSONHTTPRequests(t *testing.T) {
 }
 
 func TestCardJSONWebSocketRequests(t *testing.T) {
-	for _, tt := range cardTransportCases() {
+	cases := cardTransportCases()
+	cases = append(cases, struct {
+		name, body string
+		clean      bool
+	}{"scalar decimal", "0." + "41111111" + "11111111", false})
+	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := testScannerConfig()
 			cfg.DLP.ScanEnv = false

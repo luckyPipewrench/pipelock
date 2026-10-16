@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -73,9 +74,11 @@ func TestTrustedRootRelativePathBoundary(t *testing.T) {
 }
 
 func TestPathWithinBoundary(t *testing.T) {
-	// pathWithin is purely lexical (Abs/Rel, no filesystem lookups), so the
-	// case-only row holds on case-insensitive filesystems too: nothing is
-	// created on disk under "Profiles" for it to alias.
+	// pathWithin is purely lexical (Abs/Rel, no filesystem lookups), but
+	// filepath.Rel compares path elements with the platform's sameWord:
+	// strings.EqualFold on Windows, byte equality elsewhere (including macOS,
+	// whose filesystem is case-insensitive but whose Rel is not). So a
+	// case-only sibling is inside only on Windows.
 	dir := filepath.Join(t.TempDir(), "profiles")
 	tests := []struct {
 		name string
@@ -87,7 +90,7 @@ func TestPathWithinBoundary(t *testing.T) {
 		{name: "dot-dot named child", path: filepath.Join(dir, "..hidden"), want: true},
 		{name: "parent", path: filepath.Dir(dir), want: false},
 		{name: "shared-prefix sibling", path: dir + "-other", want: false},
-		{name: "case-only sibling", path: filepath.Join(filepath.Dir(dir), "Profiles", "x"), want: false},
+		{name: "case-only sibling", path: filepath.Join(filepath.Dir(dir), "Profiles", "x"), want: runtime.GOOS == "windows"},
 		{name: "traversal out", path: dir + string(os.PathSeparator) + filepath.Join("..", "..", "etc"), want: false},
 	}
 	for _, tt := range tests {

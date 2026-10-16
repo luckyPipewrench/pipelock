@@ -44,7 +44,7 @@ func TestInboundEnvelopeTrustConfigurationBoundaries(t *testing.T) {
 		{name: "blank trust domain", edit: func(c *Config) { c.MediationEnvelope.VerifyInbound.TrustList[0].TrustDomains = []string{" "} }, want: "trust_domains[0] must not be empty"},
 		{name: "trust domain with port", edit: func(c *Config) {
 			c.MediationEnvelope.VerifyInbound.TrustList[0].TrustDomains = []string{"partner.example:443"}
-		}, want: "trust_domains[0]"},
+		}, want: "trust_domains[0] \"partner.example:443\" must be a DNS-shaped label"},
 		{name: "invalid replay duration", edit: func(c *Config) { c.MediationEnvelope.VerifyInbound.ReplayCache.Window = "invalid" }, want: "replay_cache.window:"},
 		{name: "zero replay duration", edit: func(c *Config) { c.MediationEnvelope.VerifyInbound.ReplayCache.Window = "0s" }, want: "replay_cache.window must be > 0"},
 		{name: "negative replay capacity", edit: func(c *Config) { c.MediationEnvelope.VerifyInbound.ReplayCache.MaxEntries = -1 }, want: "replay_cache.max_entries must be >= 0"},

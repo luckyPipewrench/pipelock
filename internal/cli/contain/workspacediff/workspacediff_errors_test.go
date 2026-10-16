@@ -17,6 +17,25 @@ import (
 	"testing"
 )
 
+// readOnlyDir creates dir and then drops its write bits. Cleanup restores the
+// mode the directory was created with (not a literal) so TempDir can remove it.
+func readOnlyDir(t *testing.T, dir string) string {
+	t.Helper()
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := info.Mode().Perm()
+	if err := os.Chmod(dir, orig&^0o222); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, orig) })
+	return dir
+}
+
 func TestSignRejectsMalformedInputs(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
@@ -90,12 +109,7 @@ func TestWriteJSONFailsClosedOnUnwritableDestination(t *testing.T) {
 			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 				t.Skip("directory write permission is not enforced here")
 			}
-			dir := filepath.Join(t.TempDir(), "ro")
-			if err := os.Mkdir(dir, 0o500); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore so TempDir cleanup can remove it
-			return dir
+			return readOnlyDir(t, filepath.Join(t.TempDir(), "ro"))
 		}, want: "create temp file", is: func(err error) bool { return errors.Is(err, fs.ErrPermission) }},
 	}
 	for _, tt := range tests {

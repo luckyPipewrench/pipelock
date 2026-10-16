@@ -39,10 +39,18 @@ func TestSaveManifestFailsClosed(t *testing.T) {
 				t.Skip("directory write permission is not enforced here")
 			}
 			dir := filepath.Join(t.TempDir(), "ro")
-			if err := os.Mkdir(dir, 0o500); err != nil {
+			if err := os.Mkdir(dir, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore so TempDir cleanup can remove it
+			info, err := os.Stat(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			orig := info.Mode().Perm() // restored, not a literal, so TempDir can remove it
+			if err := os.Chmod(dir, orig&^0o222); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, orig) })
 			return dir
 		}, want: "creating temp file", is: func(err error) bool { return errors.Is(err, fs.ErrPermission) }},
 	}

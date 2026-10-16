@@ -105,10 +105,15 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 			if err := os.WriteFile(target+backupSuffix, backupBytes, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Chmod(dir, 0o500); err != nil { //nolint:gosec // test makes the dir read-only on purpose
+			info, err := os.Stat(dir)
+			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = os.Chmod(dir, 0o700) }) //nolint:gosec // restore so TempDir cleanup can remove it
+			orig := info.Mode().Perm() // restored, not a literal, so TempDir can remove it
+			if err := os.Chmod(dir, orig&^0o222); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, orig) })
 			return target
 		}, want: "creating temp file", is: func(err error) bool { return errors.Is(err, fs.ErrPermission) }},
 	}

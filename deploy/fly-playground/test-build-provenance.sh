@@ -13,6 +13,8 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${tmp}/source/deploy/fly-playground" "${tmp}/source/deploy/wasm-verify" "${tmp}/source/scripts" "${tmp}/site/static/playground/demo" "${tmp}/bin" "${tmp}/capture"
+printf '.git\npipelock\n' > "${tmp}/source/.dockerignore"
+cp "${script_dir}/viewer-generated.sh" "${tmp}/source/deploy/fly-playground/viewer-generated.sh"
 cp "${script_dir}/build-images.sh" "${tmp}/source/deploy/fly-playground/build-images.sh"
 cat > "${tmp}/source/scripts/git-version.sh" <<'SCRIPT'
 #!/usr/bin/env bash
@@ -29,6 +31,16 @@ cat > "${tmp}/bin/docker" <<'SCRIPT'
 set -eu
 printf '%s\n' "$*" >> "${DOCKER_LOG}"
 if [ "$1" = build ]; then
+	for arg in "$@"; do
+		case "${arg}" in
+		type=local,dest=*)
+			context="${arg#type=local,dest=}"
+			mkdir -p "${context}"
+			cp -a . "${context}/"
+			rm -rf -- "${context}/.git" "${context}/pipelock"
+			exit 0 ;;
+		esac
+	done
 	while [ "$#" -gt 0 ]; do
 		if [ "$1" = --build-context ]; then
 			shift
@@ -90,6 +102,48 @@ for label in org.opencontainers.image.revision org.opencontainers.image.version 
 		exit 1
 	fi
 done
+
+# A hidden executable-bit change is still a change to the recorded tree.
+for hide in skip-worktree assume-unchanged; do
+	for tree_path in "source/scripts/git-version.sh" "site/static/playground/demo/asset file.txt"; do
+		tree="${tree_path%%/*}"; path="${tree_path#*/}"
+		cp -p "${tmp}/${tree_path}" "${tmp}/mode-original"
+		git -C "${tmp}/${tree}" update-index "--${hide}" -- "${path}"
+		if [ -x "${tmp}/${tree_path}" ]; then chmod -x "${tmp}/${tree_path}"; else chmod +x "${tmp}/${tree_path}"; fi
+		if bash "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/mode.out" 2>&1; then
+			echo "hidden mode change accepted: ${tree_path}/${hide}" >&2; exit 1
+		fi
+		cp -p "${tmp}/mode-original" "${tmp}/${tree_path}"
+		git -C "${tmp}/${tree}" update-index "--no-${hide}" -- "${path}"
+	done
+done
+# Git's clean conversion must not hide raw bytes copied into the image.
+mkdir -p "${tmp}/site/.git/info"
+printf '*.txt text\n' > "${tmp}/site/.git/info/attributes"
+git -C "${tmp}/site" update-index --skip-worktree -- "static/playground/demo/asset file.txt"
+printf 'viewer asset\r\n' > "${PLAYGROUND_UI_DIR}/asset file.txt"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/filters.out" 2>&1; then
+	echo 'Git clean conversion hid copied CRLF bytes' >&2; exit 1
+fi
+printf 'viewer asset\n' > "${PLAYGROUND_UI_DIR}/asset file.txt"
+git -C "${tmp}/site" update-index --no-skip-worktree -- "static/playground/demo/asset file.txt"
+rm -f -- "${tmp}/site/.git/info/attributes"
+
+mkdir -p "${tmp}/source/configs" "${tmp}/source/.git/info"
+printf '/ignored.go\n/configs/extra.yaml\n/pipelock\n' >> "${tmp}/source/.git/info/exclude"
+for input in ignored.go configs/extra.yaml; do
+	printf 'unrecorded build input\n' > "${tmp}/source/${input}"
+	if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/context.out" 2>&1; then
+		echo "ignored Docker input accepted as clean: ${input}" >&2; exit 1
+	fi
+	PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/context.out" 2>&1
+	jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+	rm -f -- "${tmp}/source/${input}"
+done
+printf 'excluded binary\n' > "${tmp}/source/pipelock"
+"${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/excluded.out" 2>&1
+jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+rm -f -- "${tmp}/source/pipelock"
 
 # Ignored files are still copied into the viewer image and need dirty provenance.
 mkdir -p "${tmp}/site/.git/info"

@@ -27,6 +27,8 @@
 #   deploy/fly-playground/build-images.sh --only broker
 set -euo pipefail
 
+source "$(dirname "$0")/viewer-generated.sh"
+
 # git status hides skip-worktree and assume-unchanged edits, and the image
 # still copies or compiles those bytes. Return 0 when every committed blob
 # under prefix matches the work tree, 1 when it does not, and 2 when the
@@ -57,9 +59,7 @@ worktree_matches_head() {
 			rel="${path#"${prefix}/"}"
 		fi
 		if [ "${exclude_generated}" = 1 ]; then
-			case "${rel}" in
-			pipelock-verifier.wasm|wasm_exec.js|build-info.json) continue ;;
-			esac
+			if viewer_file_is_generated "${rel}"; then continue; fi
 		fi
 		# A gitlink or symlink is not the blob this record would be claiming.
 		if [ "${mode}" = 120000 ] || [ "${mode}" = 160000 ]; then
@@ -71,11 +71,13 @@ worktree_matches_head() {
 			differs=1
 			break
 		fi
-		if ! file_oid="$(git -C "${root}" hash-object -- "${work}")"; then
+		if ! file_oid="$(git -C "${root}" hash-object --no-filters -- "${work}")"; then
 			rm -f -- "${list}"
 			return 2
 		fi
-		if [ "${file_oid}" != "${oid}" ]; then
+		if [ "${file_oid}" != "${oid}" ] ||
+			{ [ "${mode}" = 100755 ] && [ ! -x "${work}" ]; } ||
+			{ [ "${mode}" = 100644 ] && [ -x "${work}" ]; }; then
 			differs=1
 			break
 		fi
@@ -105,15 +107,52 @@ viewer_has_unrecorded_file() {
 	while IFS= read -r -d '' extra || [ -n "${extra}" ]; do
 		[ -n "${extra}" ] || continue
 		rel="${extra#"${PLAYGROUND_UI_DIR}/"}"
-		case "${rel}" in
-		pipelock-verifier.wasm|wasm_exec.js|build-info.json) continue ;;
-		esac
+		if viewer_file_is_generated "${rel}"; then continue; fi
 		if [ -z "${recorded["${VIEWER_PATH}/${rel}"]+x}" ]; then
 			rm -f -- "${list}"
 			return 1
 		fi
 	done < "${list}"
 	rm -f -- "${list}"
+	return 0
+}
+
+# Docker applies its own ignore grammar, including per-Dockerfile overrides.
+# A scratch export has no RUN or external image and exposes exactly what COPY
+# consumes. Ignored Git files excluded by Docker are not unrecorded inputs.
+pipelock_has_unrecorded_context_file() {
+	local ignored snapshot recipe context file
+	ignored="$(mktemp)"
+	if ! git ls-files --others --ignored --exclude-standard -z > "${ignored}"; then
+		rm -f -- "${ignored}"
+		return 2
+	fi
+	if [ ! -s "${ignored}" ]; then rm -f -- "${ignored}"; return 0; fi
+	snapshot="$(mktemp -d)"
+	printf 'FROM scratch\nCOPY . /\n' > "${snapshot}/Dockerfile"
+	for recipe in "${CONTEXT_RECIPES[@]}"; do
+		context="${snapshot}/context"
+		if [ -f "${recipe}.dockerignore" ]; then
+			cp "${recipe}.dockerignore" "${snapshot}/Dockerfile.dockerignore"
+		else
+			rm -f -- "${snapshot}/Dockerfile.dockerignore"
+		fi
+		if ! docker build --network none --output "type=local,dest=${context}" -f "${snapshot}/Dockerfile" . >&2; then
+			rm -rf -- "${snapshot}"
+			rm -f -- "${ignored}"
+			return 2
+		fi
+		while IFS= read -r -d '' file; do
+			if [ -e "${context}/${file}" ] || [ -L "${context}/${file}" ]; then
+				rm -rf -- "${snapshot}"
+				rm -f -- "${ignored}"
+				return 1
+			fi
+		done < "${ignored}"
+		rm -rf -- "${context}"
+	done
+	rm -rf -- "${snapshot}"
+	rm -f -- "${ignored}"
 	return 0
 }
 
@@ -165,6 +204,16 @@ fi
 if [ "${pipelock_match}" -ne 0 ]; then
 	PIPELOCK_DIRTY=true
 fi
+CONTEXT_RECIPES=()
+if [ "${build_vm}" -eq 1 ]; then CONTEXT_RECIPES+=(deploy/fly-playground/Dockerfile); fi
+if [ "${build_broker}" -eq 1 ]; then CONTEXT_RECIPES+=(deploy/fly-playground/Dockerfile.broker); fi
+context_match=0
+pipelock_has_unrecorded_context_file || context_match=$?
+if [ "${context_match}" -eq 2 ]; then
+	echo "[build-images] ERROR: cannot inspect Docker build context" >&2
+	exit 1
+fi
+if [ "${context_match}" -ne 0 ]; then PIPELOCK_DIRTY=true; fi
 SITE_DIRTY=false
 if [ "${build_broker}" -eq 1 ]; then
 	if ! SITE_ROOT="$(git -C "${PLAYGROUND_UI_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
@@ -182,19 +231,7 @@ if [ "${build_broker}" -eq 1 ]; then
 		echo "[build-images] ERROR: cannot inspect site viewer work tree" >&2
 		exit 1
 	fi
-	# The image copies ignored files too. Only these three generated outputs are
-	# replaced in staging; other ignored inputs are not described by SITE_COMMIT.
-	if ! ignored_site_files="$(git -C "${SITE_ROOT}" ls-files --others --ignored --exclude-standard -- \
-		":(literal)${VIEWER_PATH}" \
-		":(exclude,literal)${VIEWER_PATH}/pipelock-verifier.wasm" \
-		":(exclude,literal)${VIEWER_PATH}/wasm_exec.js" \
-		":(exclude,literal)${VIEWER_PATH}/build-info.json")"; then
-		echo "[build-images] ERROR: cannot inspect ignored site viewer files" >&2
-		exit 1
-	fi
-	if [ -n "${site_status}" ] || [ -n "${ignored_site_files}" ]; then
-		SITE_DIRTY=true
-	fi
+	if [ -n "${site_status}" ]; then SITE_DIRTY=true; fi
 	site_match=0
 	worktree_matches_head "${SITE_ROOT}" "${VIEWER_PATH}" 1 || site_match=$?
 	if [ "${site_match}" -eq 2 ]; then

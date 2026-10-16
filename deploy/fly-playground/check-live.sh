@@ -5,6 +5,8 @@
 # Check that a served playground viewer matches its baked build record.
 set -euo pipefail
 
+source "$(dirname "$0")/viewer-generated.sh"
+
 if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
 	echo "usage: $0 <public-origin> [site-viewer-dir|-] [expected-pipelock-version]" >&2
 	exit 2
@@ -124,9 +126,7 @@ while IFS= read -r path; do
 	fi
 	checked=$((checked + 1))
 	if [ -n "${site_dir}" ] && [ "${site_dir}" != - ]; then
-		case "${path}" in
-		pipelock-verifier.wasm|wasm_exec.js) continue ;;
-		esac
+		if viewer_file_is_generated "${path}"; then continue; fi
 		if [ ! -f "${site_dir}/${path}" ]; then
 			echo "[check-live] local file missing: ${path}" >&2
 			failures=$((failures + 1))
@@ -143,9 +143,7 @@ if [ -n "${site_dir}" ] && [ "${site_dir}" != - ]; then
 	fi
 	while IFS= read -r -d '' local_file; do
 		local_path="${local_file#"${site_dir}"/}"
-		case "${local_path}" in
-		build-info.json|pipelock-verifier.wasm|wasm_exec.js) continue ;;
-		esac
+		if viewer_file_is_generated "${local_path}"; then continue; fi
 		if ! jq -e --arg path "${local_path}" '.files | has($path)' >/dev/null <<< "${info}"; then
 			echo "[check-live] local file absent from build: ${local_path}" >&2
 			failures=$((failures + 1))

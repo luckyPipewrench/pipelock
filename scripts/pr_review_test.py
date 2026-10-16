@@ -8080,5 +8080,299 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
                 self.assertEqual(result[4], [candidate] if omitted else [])
 
 
+def git_output(root: pathlib.Path, *args: str) -> str:
+    return subprocess.run(["git", "-C", str(root), *args], check=True, text=True, capture_output=True).stdout
+
+
+class FullRangeAddedLinesTest(OfflineReviewTestCase):
+    """A drop may not cite a line this pull request adds, however early it was added."""
+
+    MODE = "deep"
+    FINDING = pr_review.Finding("high", "a.go", 4, "Existing deny bypass", "why", "fix")
+
+    def history(self, root: pathlib.Path) -> tuple[str, str, str]:
+        """Base, a commit that adds a line, then a later unrelated edit."""
+        init_git_fixture(root)
+
+        def commit(text: str, message: str) -> str:
+            (root / "a.go").write_text(text, encoding="utf-8")
+            git_output(root, "add", "a.go")
+            git_output(root, "commit", "-qm", message)
+            return git_output(root, "rev-parse", "HEAD").strip()
+
+        base = commit("l1\nl2\nl3\nl4\nl5\nl6\n", "base")
+        added = commit("l1\nl2\nl3\nPR_ADDED_GUARD\nl4\nl5\nl6\n", "add a guard")
+        head = commit("l1\nl2\nl3\nPR_ADDED_GUARD\nl4\nl5\nlater unrelated edit\n", "edit later")
+        return base, added, head
+
+    def diff(self, root: pathlib.Path, old: str, new: str) -> str:
+        return git_output(root, "-c", "core.quotepath=false", "diff", "--no-ext-diff", "--no-textconv",
+                          "--find-renames", f"{old}..{new}", "--")
+
+    def carried_marker(self, base: str, added: str) -> dict[str, object]:
+        binding = pr_review.PullBinding(base, added, "e" * 40, pr_review.RUBRIC_VERSION)
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, findings=[self.FINDING])
+        with mock.patch.dict(pr_review.os.environ, {"OPENAI_API_KEY": "ledger-test-key"}, clear=False):
+            body = pr_review.render_status(binding, self.MODE, [], progress, "findings", [], repository="owner/repo", pr_number="42")
+            marker = pr_review.parse_status_marker(body)
+            marker["ledger"] = pr_review.parse_ledger(body)
+        return marker
+
+    @staticmethod
+    def judge_model(citation: str):
+        def model(_system, _user, _mode, phase, *_args, **_kwargs):
+            if phase.startswith("review-chunk"):
+                return {"findings": [], "changes": [{"path": "a.go", "summary": "changed"}]}
+            if phase == "cross-file-synthesis":
+                return {"findings": []}
+            return {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": citation}]}
+        return model
+
+    def run_delta(self, root, base, added, head, citation, full_range=None, extra=None, compare=None):
+        """Production run_review as a delta over `added..head` of a real multi-commit history."""
+        current = pr_review.PullBinding(base, head, "e" * 40, pr_review.RUBRIC_VERSION)
+        real_local = pr_review.fetch_local_bound_diff
+        delta_diff = self.diff(root, added, head)
+        full_diff = self.diff(root, base, head)
+
+        def local(binding):
+            if binding.base_sha == base and full_range is not None:
+                return full_range(binding)
+            return real_local(binding)
+
+        def api(_repo, binding, _token):
+            return full_diff if binding.base_sha == base else delta_diff
+
+        environment = {
+            "OPENAI_API_KEY": "ledger-test-key", "REVIEWED_REPOSITORY_PATH": str(root),
+            "REVIEWED_MERGE_BASE_SHA": base, "BASE_SHA": base, **(extra or {}),
+        }
+        with mock.patch.dict(pr_review.os.environ, environment, clear=False), mock.patch.object(
+            pr_review, "provider_configuration", return_value=("u", "ledger-test-key")
+        ), mock.patch.object(
+            pr_review, "scan_status_comments", return_value=([self.carried_marker(base, added)], set(), True)
+        ), mock.patch.object(pr_review, "is_ancestor", return_value=True), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=current
+        ), mock.patch.object(pr_review, "fetch_local_bound_diff", side_effect=local), mock.patch.object(
+            pr_review, "fetch_bound_diff", side_effect=api
+        ), mock.patch.object(
+            pr_review, "compare_incompleteness", side_effect=compare or (lambda *_args: None)
+        ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+            pr_review, "call_model", side_effect=self.judge_model(citation)
+        ), mock.patch.object(pr_review, "update_comment"):
+            state, progress = pr_review.run_review("owner/repo", "42", "token", self.MODE, "e" * 40, binding=current, status_comment_id=7)
+        self.assertEqual(progress.scope, "delta")
+        return state, progress
+
+    def assertKeptForVerification(self, progress) -> None:
+        self.assertEqual(progress.dropped_candidates, [])
+        self.assertEqual([(item.title, item.needs_verification) for item in progress.findings],
+                         [(self.FINDING.title, True)])
+
+    def test_the_delta_alone_cannot_see_a_line_an_earlier_commit_added(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            base, added, head = self.history(root)
+            delta_units, _ = pr_review.parse_diff(self.diff(root, added, head))
+            self.assertNotIn(("a.go", 4), pr_review._added_head_lines(delta_units))
+            full_units, _ = pr_review.parse_diff(self.diff(root, base, head))
+            self.assertEqual(pr_review._added_head_lines(full_units), {("a.go", 4), ("a.go", 7)})
+
+    def test_a_delta_rejects_a_drop_citing_a_line_an_earlier_commit_of_the_pull_request_added(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            base, added, head = self.history(root)
+            _state, progress = self.run_delta(root, base, added, head, "a.go:4")
+        self.assertKeptForVerification(progress)
+
+    def test_a_delta_still_honors_a_drop_citing_an_unchanged_line(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            base, added, head = self.history(root)
+            _state, progress = self.run_delta(root, base, added, head, "a.go:2")
+        self.assertEqual([(item.finding.title, item.path, item.line) for item in progress.dropped_candidates],
+                         [(self.FINDING.title, "a.go", 2)])
+        self.assertEqual(progress.findings, [])
+
+    def test_a_delta_whose_whole_range_cannot_be_proved_trusts_no_drop(self) -> None:
+        def unreadable(_binding):
+            raise pr_review.FetchError("immutable local diff could not be read")
+
+        for name, full_range, extra in (
+            ("unreadable", unreadable, None),
+            ("unparseable", lambda _binding: "no file headers in this text\n", None),
+        ):
+            with self.subTest(name), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                base, added, head = self.history(root)
+                _state, progress = self.run_delta(root, base, added, head, "a.go:2", full_range, extra)
+                self.assertKeptForVerification(progress)
+        with self.subTest("oversized"), tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            pr_review, "MAX_LOCAL_DIFF_BYTES", 64
+        ):
+            root = pathlib.Path(directory)
+            base, added, head = self.history(root)
+            _state, progress = self.run_delta(root, base, added, head, "a.go:2")
+            self.assertKeptForVerification(progress)
+
+    def test_a_delta_without_a_checkout_trusts_the_compare_only_when_it_is_complete(self) -> None:
+        for reason, dropped in ((None, True), ("the comparison reached the 300-file API limit, so the diff may be truncated", False)):
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                root = pathlib.Path(directory)
+                base, added, head = self.history(root)
+                # The direct composite path has no checkout: the full range
+                # comes from the compare API and the judge reads file context
+                # through the API stand-in.
+                with mock.patch.object(
+                    pr_review, "fetch_file_context", return_value="l1\nl2\nl3\nPR_ADDED_GUARD\nl4\nl5\nlater unrelated edit\n"
+                ):
+                    _state, progress = self.run_delta(
+                        root, base, added, head, "a.go:2", full_range=lambda _binding: None,
+                        extra={"REVIEWED_REPOSITORY_PATH": ""},
+                        compare=lambda _repo, binding, _token, reason=reason, base=base: reason if binding.base_sha == base else None,
+                    )
+                if dropped:
+                    self.assertEqual([item.line for item in progress.dropped_candidates], [2])
+                else:
+                    self.assertKeptForVerification(progress)
+
+    def test_the_whole_range_counts_added_lines_from_hunks_the_review_could_not_fit(self) -> None:
+        huge = "x" * (pr_review.input_limits(self.MODE)[0] * 8)
+        diff = (
+            "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n l1\n+small\n l2\n"
+            f"@@ -500,1 +501,2 @@\n ctx\n+{huge}\n"
+        )
+        units, errors = pr_review.parse_diff(diff, self.MODE)
+        self.assertEqual(errors, [])
+        _chunks, omitted = pr_review.plan_chunks(units, self.MODE)
+        self.assertEqual([unit.omission_reason for unit in omitted], ["hunk-exceeds-token-budget"])
+        binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+        with mock.patch.object(pr_review, "fetch_local_bound_diff", return_value=None), mock.patch.object(
+            pr_review, "fetch_bound_diff", return_value=diff
+        ), mock.patch.object(pr_review, "compare_incompleteness", return_value=None):
+            added = pr_review.full_range_added_lines("owner/repo", "token", binding, self.MODE)
+        self.assertEqual(added, {("a.go", 2), ("a.go", 502)})
+
+    def test_a_full_review_trusts_its_own_diff_only_when_that_diff_is_proved_whole(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            base, _added, head = self.history(root)
+            full_diff = self.diff(root, base, head)
+            current = pr_review.PullBinding(base, head, "e" * 40, pr_review.RUBRIC_VERSION)
+            discovery = {"findings": [{"severity": "high", "path": "a.go", "line": 4, "title": "Existing deny bypass",
+                                       "why": "why", "fix": "fix", "needs_verification": False}],
+                         "changes": [{"path": "a.go", "summary": "changed"}]}
+            file_text = "l1\nl2\nl3\nPR_ADDED_GUARD\nl4\nl5\nlater unrelated edit\n"
+
+            def run(citation, diff, truncation):
+                def model(_system, _user, _mode, phase, *_args, **_kwargs):
+                    if phase.startswith("review-chunk"):
+                        return discovery
+                    if phase == "cross-file-synthesis":
+                        return {"findings": []}
+                    return {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": citation}]}
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}, clear=False), mock.patch.object(
+                    pr_review, "provider_configuration", return_value=("u", "k")
+                ), mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)), mock.patch.object(
+                    pr_review, "get_pull_binding", return_value=current
+                ), mock.patch.object(pr_review, "fetch_local_bound_diff", return_value=None), mock.patch.object(
+                    pr_review, "fetch_bound_diff", return_value=diff
+                ), mock.patch.object(pr_review, "compare_incompleteness", return_value=truncation), mock.patch.object(
+                    pr_review, "fetch_file_context", return_value=file_text
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                    pr_review, "call_model", side_effect=model
+                ), mock.patch.object(pr_review, "update_comment"):
+                    return pr_review.run_review("owner/repo", "42", "token", self.MODE, "e" * 40, binding=current, status_comment_id=7)[1]
+
+            self.assertEqual([item.line for item in run("a.go:2", full_diff, None).dropped_candidates], [2])
+            self.assertEqual(run("a.go:4", full_diff, None).dropped_candidates, [])
+            for name, diff, truncation in (
+                ("truncated-compare", full_diff, "the comparison reached the 300-file API limit, so the diff may be truncated"),
+                ("preamble", "stray preamble\n" + full_diff, None),
+            ):
+                with self.subTest(name):
+                    self.assertKeptForVerification(run("a.go:2", diff, truncation))
+
+
+class CommittedSymlinkTest(OfflineReviewTestCase):
+    """The judge reads committed blobs, so a committed symlink cannot reach outside the checkout."""
+
+    def test_a_committed_symlink_to_a_file_outside_the_checkout_reads_only_its_target_text(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            outside = pathlib.Path(directory) / "outside"
+            outside.mkdir()
+            sentinel = "OUTSIDE-SENTINEL-CONTENT"
+            (outside / "secret.txt").write_text(sentinel + "\n", encoding="utf-8")
+            root = pathlib.Path(directory) / "checkout"
+            root.mkdir()
+            init_git_fixture(root)
+            os.symlink(outside / "secret.txt", root / "link.txt")
+            os.symlink(outside, root / "linkdir")
+            (root / "real.txt").write_text("inside\n", encoding="utf-8")
+            git_output(root, "add", ".")
+            git_output(root, "commit", "-qm", "fixture")
+            head = git_output(root, "rev-parse", "HEAD").strip()
+            deadline = time.monotonic() + 30
+            self.assertEqual(pr_review._read_commit_file(root, head, "real.txt", deadline), "inside\n")
+            link = pr_review._read_commit_file(root, head, "link.txt", deadline)
+            self.assertEqual(link, str(outside / "secret.txt"))
+            self.assertNotIn(sentinel, link)
+            self.assertIsNone(pr_review._read_commit_file(root, head, "linkdir/secret.txt", deadline))
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            decisions = {0: pr_review.JudgeDecision("unresolved", (
+                pr_review.EvidenceRequest(path="link.txt"), pr_review.EvidenceRequest(path="linkdir/secret.txt"),
+            ))}
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}, clear=False):
+                evidence, _unavailable = pr_review.requested_repository_evidence(binding, decisions)
+        self.assertNotIn(sentinel, evidence)
+
+
+class DroppedListBoundTest(OfflineReviewTestCase):
+    """The dropped-candidate list keeps the comment under GitHub's size limit."""
+
+    BINDING = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+
+    def dropped(self, count: int, long: bool = False) -> list[object]:
+        path = ("d" * 200 + "/") * 2 + "f.go" if long else "a.go"
+        return [pr_review.DroppedCandidate(
+            pr_review.Finding("low", path, n + 1, f"claim {n}" + (" t" * 400 if long else ""), "w", "f"),
+            path, n + 1, "reason " + ("r" * 900 if long else str(n)),
+        ) for n in range(count)]
+
+    def render(self, count: int, long: bool = False) -> str:
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, dropped_candidates=self.dropped(count, long))
+        return pr_review.render_status(self.BINDING, "default", [], progress, "clean", [])
+
+    def section(self, comment: str) -> tuple[str, list[str]]:
+        _head, rest = comment.split("<summary>Dropped by the judge with a citation", 1)
+        body = rest.split("\n</details>", 1)[0]
+        return rest.split("</summary>", 1)[0], [line for line in body.splitlines() if line.startswith("- ")]
+
+    def test_the_list_shows_the_existing_manifest_bound_and_counts_the_rest(self) -> None:
+        bound = pr_review.MAX_RENDERED_MANIFEST_ENTRIES
+        for count in (1, bound - 1, bound, bound + 1, bound * 5):
+            with self.subTest(count=count):
+                comment = self.render(count)
+                summary, entries = self.section(comment)
+                self.assertEqual(summary, f" ({count}; not findings)")
+                shown = min(count, bound)
+                self.assertEqual(len(entries), shown + (1 if count > bound else 0))
+                self.assertEqual(entries[:shown], [
+                    f"- low - `a.go:{n + 1}`: claim {n}. Cited `a.go:{n + 1}`. Reason: reason {n}" for n in range(shown)
+                ])
+                if count > bound:
+                    self.assertEqual(entries[-1], f"- and {count - bound} more")
+                else:
+                    self.assertNotIn("more", entries[-1])
+                self.assertNotIn("workflow log", comment.lower())
+                self.assertEqual(comment.splitlines().count("<details>"), comment.splitlines().count("</details>"))
+
+    def test_an_unbounded_run_of_long_drops_cannot_outgrow_a_comment(self) -> None:
+        comment = self.render(400, long=True)
+        self.assertLess(len(comment), 65_536)
+        _summary, entries = self.section(comment)
+        self.assertEqual(len(entries), pr_review.MAX_RENDERED_MANIFEST_ENTRIES + 1)
+
+
 if __name__ == "__main__":
     unittest.main()

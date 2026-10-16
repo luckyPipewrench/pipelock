@@ -83,11 +83,16 @@ The judge must back each verdict that removes or withholds a candidate:
 
 - A `drop` cites the deciding location as `path:line`, and that line must be
   one the runner showed the judge for that candidate and not a line the pull
-  request adds. Every cited drop is listed in a collapsed "Dropped by the
-  judge with a citation" section with the candidate's severity, its cited
-  location and the reason. A drop with no citation, one citing a line the
+  request adds, counting every commit of the pull request and not only the
+  change since an earlier review. The count of cited drops is stated in a
+  collapsed "Dropped by the judge with a citation" section, which lists the
+  first eight with the candidate's severity, its cited location and the
+  reason, then how many more. A drop with no citation, one citing a line the
   judge wasn't shown, or one citing a line the change adds goes to the one
-  repair. The prompt states the rule, and a drop citing an added line is
+  repair. When the lines the whole pull request adds can't be established,
+  because its diff was unreadable, oversized, unparseable or possibly
+  truncated, no drop is trusted and each such candidate is published as
+  needing verification. The prompt states the rule, and a drop citing an added line is
   reported to the repair as `drop-cites-added-line`. If the repair still
   doesn't cite a usable line, the candidate is published as a finding marked
   `(needs verification: the judge gave no usable citation or outside reason)`,

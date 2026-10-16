@@ -417,6 +417,12 @@ class JudgeOptions:
     diagnostics: dict[str, dict[str, int]] = field(default_factory=dict)
     evidence: dict[str, CandidateEvidence] = field(default_factory=dict)
     units: list[DiffUnit] = field(default_factory=list)
+    # Every (path, head line) the WHOLE pull request adds, or None when that
+    # could not be proved. A delta's units cover only the change since the
+    # prior review, so they cannot say what an earlier commit of the same pull
+    # request added. Read only when a drop needs it. Left unset, the units
+    # stand in, which is right for a full review of a complete diff.
+    added_lines: Callable[[], set[tuple[str, int]] | None] | None = None
     # Delta reviews use the prior reviewed head, not the full PR merge base.
     old_side: str | None = None
     # Candidates dropped with a citation to a shown location, listed in the comment.
@@ -1171,6 +1177,37 @@ def _added_head_lines(units: list[DiffUnit]) -> set[tuple[str, int]]:
                 # Some diff settings write an empty context row with no space.
                 line += 1
     return added
+
+
+def full_range_added_lines(repo: str, token: str, binding: PullBinding, mode: str) -> set[tuple[str, int]] | None:
+    """Every (path, head line) the whole pull request adds, or None when unproved.
+
+    A delta review parses only the change since the prior review, so a line an
+    earlier commit of the same pull request added is invisible to it. This reads
+    the effective base..head range through the two readers the full review
+    already trusts: the bounded local checkout diff, or the compare API with
+    its completeness check. Every unit is parsed, including those the review
+    could not fit into a chunk, because an omitted hunk still adds lines.
+
+    An unreadable, oversized, truncated or unparseable range returns None, and
+    the caller then trusts no drop, since it cannot show a citation predates
+    the change.
+    """
+    try:
+        diff = fetch_local_bound_diff(binding)
+        if diff is None:
+            diff = fetch_bound_diff(repo, binding, token)
+            if compare_incompleteness(repo, binding, token):
+                log_phase("added-lines", status="compare-incomplete", correlation=binding.correlation)
+                return None
+    except FetchError:
+        log_phase("added-lines", status="range-unreadable", correlation=binding.correlation)
+        return None
+    units, errors = parse_diff(diff, mode)
+    if errors:
+        log_phase("added-lines", status="range-unparsed", correlation=binding.correlation)
+        return None
+    return _added_head_lines(units)
 
 
 def _flag_added_line_drops(
@@ -3451,7 +3488,18 @@ def judge_findings(
     decisions: dict[int, JudgeDecision] = {}
     admitted: set[int] = set()
     primary_validation = JudgeValidation()
-    added_lines = _added_head_lines(options.units)
+    resolved: list[set[tuple[str, int]] | None] = []
+
+    def added_lines() -> set[tuple[str, int]] | None:
+        """The lines the whole pull request adds, read once and only if a drop needs it.
+
+        None means unproved. A drop can then show nothing about whether its
+        citation predates the change, so none is trusted.
+        """
+        if not resolved:
+            resolved.append(options.added_lines() if options.added_lines is not None else _added_head_lines(options.units))
+        return resolved[0]
+
     calls = 0
     evidence_by_index: dict[int, str] = {}
 
@@ -3528,7 +3576,8 @@ def judge_findings(
             primary_deadline = deadline - llm_call_budget_for(mode, "judge-repair") if deadline is not None else None
             payload = call_model(system, user, mode, "judge", binding.correlation, deadline=primary_deadline)
             local_decisions = _parse_judge_decisions(payload, len(primary), validation=validation)
-            _flag_added_line_drops(local_decisions, added_lines, validation)
+            if any(decision.verdict == "drop" for decision in local_decisions.values()) and (added := added_lines()) is not None:
+                _flag_added_line_drops(local_decisions, added, validation)
             decisions.update({primary[index]: decision for index, decision in local_decisions.items()})
             for index, decision in decisions.items():
                 record = options.evidence[candidate_identifier(candidates[index])]
@@ -3547,9 +3596,11 @@ def judge_findings(
         # candidate's base-side lines are what it was shown, so they count.
         # A line this change adds cannot by itself show that the change is
         # correct, so it is not a usable citation, here or at the final guard.
+        # When the lines the whole pull request adds are unproved, a citation
+        # cannot be shown to predate it, so none is usable.
         location = _cited_location(decision.citation)
         record = options.evidence[candidate_identifier(candidates[index])]
-        if location is None or location in added_lines or not any(
+        if location is None or (added := added_lines()) is None or location in added or not any(
             location[0] == path and start <= location[1] <= end for path, _, start, end in record.locations
         ):
             return None
@@ -3564,7 +3615,8 @@ def judge_findings(
             or record.omitted
         )
 
-    # A drop without a usable citation (none, unshown, or an added line) or an
+    # A drop without a usable citation (none, unshown, an added line, or a
+    # range whose added lines could not be proved) or an
     # unresolved verdict joins the one repair; neither can settle a candidate
     # without the citation or outside reason it lacks.
     pending = [
@@ -3597,7 +3649,8 @@ def judge_findings(
                 calls += 1
                 payload = call_model(system, user, mode, "judge-repair", binding.correlation, deadline=deadline)
                 local_decisions = _parse_judge_decisions(payload, len(repair), allow_requests=False, validation=validation)
-                _flag_added_line_drops(local_decisions, added_lines, validation)
+                if any(decision.verdict == "drop" for decision in local_decisions.values()) and (added := added_lines()) is not None:
+                    _flag_added_line_drops(local_decisions, added, validation)
                 for local, index in enumerate(repair):
                     if local in local_decisions:
                         decisions[index] = local_decisions[local]
@@ -3999,8 +4052,9 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
             lines.append(f"- and {remaining} more")
         lines.extend(["", "</details>"])
     if progress.dropped_candidates:
-        # Listed in full so no candidate disappears from the comment. They are
-        # not findings and do not change the verdict.
+        # They are not findings and do not change the verdict. The count is
+        # the whole list, and the entries follow the bound every other list in
+        # this comment uses, so a long run of drops cannot outgrow the comment.
         lines.extend(
             [
                 "",
@@ -4010,13 +4064,16 @@ def render_status(binding: PullBinding, mode: str, classification: list[str], pr
                 "The judge cited a location it was shown as closing each candidate or showing its premise false.",
             ]
         )
-        for dropped in progress.dropped_candidates:
+        shown_drops = progress.dropped_candidates[:MAX_RENDERED_MANIFEST_ENTRIES]
+        for dropped in shown_drops:
             location = display_path(dropped.finding.path) + (f":{dropped.finding.line}" if dropped.finding.line else "")
             lines.append(
                 f"- {dropped.finding.severity} - `{location}`: {sanitize_public_text(dropped.finding.title, limit=180)}. "
                 f"Cited `{display_path(dropped.path)}:{dropped.line}`. "
                 f"Reason: {sanitize_public_text(dropped.reason, limit=300)}"
             )
+        if remaining := len(progress.dropped_candidates) - len(shown_drops):
+            lines.append(f"- and {remaining} more")
         lines.extend(["", "</details>"])
     lines.extend(
         [
@@ -4552,11 +4609,23 @@ def run_review(
         # The local diff has no 300-file or 250-commit API ceiling. Direct users
         # without that checkout still fail closed when GitHub cannot prove its
         # compare response whole.
-        if local_diff is None:
-            truncation = compare_incompleteness(repo, fetch_binding, token)
-            if truncation:
-                progress.incomplete_reasons.append(truncation)
+        truncation = compare_incompleteness(repo, fetch_binding, token) if local_diff is None else None
+        if truncation:
+            progress.incomplete_reasons.append(truncation)
         units, parse_errors = parse_diff(diff, mode)
+        # The judge refuses a drop that cites a line this pull request adds, so
+        # it needs the lines the WHOLE pull request adds. A full review already
+        # read that range; it is trusted only when it was read whole. A delta
+        # read only the change since the prior review, so the full range is
+        # read on demand through the same two readers.
+        if scope == "delta":
+            def pull_added_lines() -> set[tuple[str, int]] | None:
+                return full_range_added_lines(repo, token, binding, mode)
+        else:
+            whole_diff_added = None if parse_errors or truncation else _added_head_lines(units)
+
+            def pull_added_lines() -> set[tuple[str, int]] | None:
+                return whole_diff_added
         classification = classify_units(units)
         progress.expected_units = sum(1 for unit in units if unit.representable)
         chunks, omitted = plan_chunks(units, mode)
@@ -4770,6 +4839,7 @@ def run_review(
                     repo, token, binding, mode, candidates, reviewed_changes,
                     JudgeOptions(
                         provider_deadline, progress.judge_diagnostics, progress.candidate_evidence, units,
+                        added_lines=pull_added_lines,
                         old_side=scope_base if scope == "delta" else None,
                         dropped=progress.dropped_candidates,
                     ),

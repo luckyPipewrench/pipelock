@@ -1742,9 +1742,10 @@ type SyslogConfig struct {
 	Format      string `yaml:"format" json:"-"` // json (default), cef, or ocsf
 }
 
-// MCPWSListener configures the MCP WebSocket listener for inbound connections.
-// When the MCP proxy is running in listener mode with a ws:// or wss:// upstream,
-// this controls origin validation and connection limits for inbound WS clients.
+// MCPWSListener holds reserved settings for an inbound MCP WebSocket listener.
+// The current CLI has no such listener: mcp proxy rejects --listen with a ws://
+// or wss:// upstream, which runs only in stdio mode. The fields are validated
+// and defaulted at load but no runtime path reads them.
 type MCPWSListener struct {
 	AllowedOrigins []string `yaml:"allowed_origins"` // additional browser origins to allow (loopback always allowed)
 	MaxConnections int      `yaml:"max_connections"` // max concurrent inbound WS connections (default 100)

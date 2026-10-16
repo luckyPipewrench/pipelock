@@ -30,7 +30,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	readability "github.com/go-shiori/go-readability"
 	"golang.org/x/net/html"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
@@ -4061,6 +4060,8 @@ func (p *Proxy) blockShieldPartialResponse(resp *http.Response, body []byte, hos
 }
 
 type shieldResponseContext struct {
+	scanOriginal                                   func([]byte, http.Header) *scanner.ResponseScanResult
+	retainedScan                                   *scanner.ResponseScanResult
 	hostname                                       string
 	actx                                           audit.LogContext
 	clientIP, requestID, transport, parentActionID string
@@ -4099,6 +4100,10 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 		p.metrics.RecordShieldSkipped("non_shieldable_content")
 		return body, nil, false, nil
 	}
+	var originalHeaders http.Header
+	if response.scanOriginal != nil {
+		originalHeaders = respHeaders.Clone()
+	}
 	// Max shield bytes: enforce oversize action. A size-exempt response already
 	// admitted to the bounded whole-buffer path can reuse that path's larger
 	// ceiling. Over-cap bodies retain the inflight reservation until this work
@@ -4124,6 +4129,9 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 				summary = partialShieldSummary(nil, body[:shieldMaxBytes], contentType, len(body), shieldMaxBytes)
 			}
 			if summary != nil {
+				if response.scanOriginal != nil && !bytes.Equal(body[:shieldMaxBytes], head) {
+					response.retainedScan = response.scanOriginal(body, originalHeaders)
+				}
 				summary.BodyBytes = len(body)
 				summary.ScannedBytes = shieldMaxBytes
 				summary.Partial = true
@@ -4164,6 +4172,9 @@ func (p *Proxy) applyShieldResponse(body []byte, contentType string, respHeaders
 	}
 	p.logShieldRewriteSummary(result.summary, actx, clientIP, requestID, transport)
 	rewritten, summary := result.body, result.summary
+	if response.scanOriginal != nil && !bytes.Equal(body, rewritten) {
+		response.retainedScan = response.scanOriginal(body, originalHeaders)
+	}
 	if summary != nil {
 		summary.BodyBytes = len(body)
 		summary.ScannedBytes = len(body)
@@ -4455,7 +4466,7 @@ func (p *Proxy) confirmShieldIntervention(summary *receipt.ShieldSummary, cfg *c
 		ParentActionID: parentActionID,
 		Verdict:        config.ActionAllow,
 		Layer:          browserShieldLayer,
-		Pattern:        browserShieldPattern,
+		Pattern:        shieldReceiptPattern(response.retainedScan),
 		Severity:       browserShieldSeverity,
 		Shield:         summary,
 		Transport:      transport,
@@ -6555,7 +6566,15 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contentType := responseContentType(resp.Header)
-	title := ""
+	var preShieldScan *fetchResponseScan
+	scanOriginal := func(original []byte, headers http.Header) *scanner.ResponseScanResult {
+		if !sc.ResponseScanningEnabled() {
+			return nil
+		}
+		scanned := scanFetchBeforeShield(r.Context(), sc, cfg, original, headers, resp.Request.URL)
+		preShieldScan = &scanned
+		return &scanned.result
+	}
 
 	// Browser Shield: strip fingerprinting, extension probing, and agent traps
 	// before the content reaches readability extraction and response scanning.
@@ -6567,7 +6586,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	var shieldSummary *receipt.ShieldSummary
 	svgShielded := false
 	if shieldBlocked == nil {
-		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
+		body, shieldSummary, svgShielded, shieldBlocked = p.applyShieldResponse(body, contentType, resp.Header, cfg, shieldResponseContext{scanOriginal: scanOriginal, hostname: shieldHost, actx: actx, clientIP: clientIP, requestID: requestID, transport: TransportFetch, parentActionID: actionID, shard: selectedReceiptShard})
 	}
 	if shieldBlocked != nil {
 		reason := shieldBlocked.reason
@@ -6595,8 +6614,6 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	contentType = responseContentType(resp.Header)
-	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
-	isHTML := validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
 
 	// Media policy on fetched responses. Runs after shield so HTML passes
 	// through unchanged and image/audio/video responses get transport-
@@ -6653,25 +6670,11 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	if mediaVerdict.StripResult != nil && mediaVerdict.StripResult.Changed() {
 		body = mediaVerdict.Body
 	}
-	scanAsHTML := isHTML && !scanner.IsVerifiedImageResponseBody(body)
-	content := string(body)
-	if scanAsHTML && shieldSummary == nil {
-		decoded, utf16, err := decodeShieldUTF16(body, contentType, shield.PipelineHTML)
-		if err != nil {
-			// Keep malformed bytes on the raw scanner path, which reports
-			// incomplete inspection as a failure rather than scanning markup.
-			scanAsHTML = false
-		} else if utf16 {
-			content = decoded
-		}
+	surface := deriveFetchResponse(body, contentType, resp.Request.URL)
+	content, title := surface.content, surface.title
+	if surface.extractionErr != nil {
+		log.LogAnomaly(actx, "", fmt.Sprintf("readability extraction failed: %v", surface.extractionErr), 0.3)
 	}
-
-	// Extract text from HTML hiding spots that readability strips (comments,
-	// non-executable data scripts, style, hidden elements). Scan only those
-	// fragments for injection, not the full HTML markup / executable JS
-	// bundles, to avoid false positives on legitimate tags and SPA payloads.
-	// Use the final response origin after redirects, not the original request
-	// URL. An exempt origin that 302s to a non-exempt host must still be scanned.
 	finalHost := resp.Request.URL.Hostname()
 	finalResponseURL := resp.Request.URL.String()
 	responseScanExempt := isResponseScanExempt(finalHost, cfg.ResponseScanning.ExemptDomains)
@@ -6679,79 +6682,60 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		log.LogResponseScanExempt(actx, finalHost)
 		p.metrics.RecordResponseScanExempt(ExemptReasonDomain, TransportFetch)
 	}
-	var hiddenInjectionFound bool
-	if sc.ResponseScanningEnabled() && scanAsHTML {
-		hidden := extractHiddenContent(content)
-		if hidden != "" {
-			rawResult := sc.ScanResponseWithSuppress(r.Context(), hidden, finalResponseURL, cfg.Suppress)
-			recordSuppressedResponseScanExempts(p.metrics, rawResult.SuppressedMatches, TransportFetch)
-			recordDroppedResponseScanMatches(p.metrics, log, actx, rawResult.SuppressedMatches, TransportFetch)
-			recordObservedCoreResponseMatches(p.metrics, log, actx, rawResult.ObservedCoreMatches, TransportFetch)
-			// Use live escalation level so mid-request CEE escalations are reflected.
-			// Exempt domains: scan for visibility but pin to warn, no adaptive scoring.
-			blocked, _, found, scanFailureLayer := p.filterAndActOnResponseScan(responseScanContext{
-				requestContext: r.Context(),
-				shard:          selectedReceiptShard,
-				writer:         w,
-				result:         rawResult,
-				content:        content,
-				displayURL:     displayURL,
-				responseURL:    finalResponseURL,
-				agent:          agent,
-				actorAuth:      id.Auth,
-				clientIP:       clientIP,
-				requestID:      requestID,
-				actionID:       actionID,
-				scanner:        sc,
-				config:         cfg,
-				logger:         log,
-				sessionLevel:   recEscalationLevel(fetchRec),
-				exempt:         responseScanExempt,
-			})
-			if blocked {
-				outcomeLayer := responseScanLayer
-				outcomeCode := http.StatusForbidden
-				if scanFailureLayer != "" {
-					outcomeLayer = scanFailureLayer
-					if scanFailureLayer == "response_scan_error" {
-						outcomeCode = http.StatusServiceUnavailable
-					}
-				}
-				p.metrics.RecordBlocked(parsed.Hostname(), outcomeLayer, time.Since(start), agentLabel)
-				outcomeStatus = strconv.Itoa(outcomeCode)
-				outcomeBytes = int64(len(body))
-				outcomeReason = outcomeLayer
-				return
+	scanned := fetchResponseScan{}
+	if sc.ResponseScanningEnabled() {
+		scanned = scanFetchResponse(r.Context(), sc, cfg, surface, finalResponseURL)
+		if preShieldScan != nil {
+			scanned.result = retainShieldScan(&preShieldScan.result, scanned.result, []byte(content))
+			hidden := scanner.ResponseScanResult{Clean: true}
+			if scanned.hidden != nil {
+				hidden = *scanned.hidden
 			}
-			if found {
-				hasFinding = true
-			}
-			hiddenInjectionFound = found
-			responsePromptHit = responsePromptHit || found
+			hidden = retainShieldScan(preShieldScan.hidden, hidden, nil)
+			scanned.hidden = &hidden
 		}
 	}
-
-	// Use go-readability for HTML content extraction.
-	readabilityOK := false
-	if scanAsHTML {
-		article, err := readability.FromReader(strings.NewReader(content), parsed)
-		if err != nil {
-			log.LogAnomaly(actx, "", fmt.Sprintf("readability extraction failed: %v", err), 0.3)
-		} else if article.TextContent != "" {
-			title = article.Title
-			content = article.TextContent
-			readabilityOK = true
-		}
-	}
+	hiddenScanResult := scanned.hidden
+	hiddenInjectionFound := hiddenScanResult != nil && !hiddenScanResult.Clean && !hiddenScanResult.Failed()
 
 	// Fail-closed: if hidden injection was detected in comments/data-scripts/
 	// style/hidden elements but readability failed to strip them, block rather
 	// than delivering raw HTML with embedded injection. The pre-scan's
 	// TransformedContent cannot map back to the full HTML (it operates on
 	// concatenated fragments), so strip cannot function here.
-	if hiddenInjectionFound && !readabilityOK {
+	if hiddenInjectionFound && !surface.readabilityOK {
 		responsePromptHit = true
-		reason := "hidden injection detected and readability extraction failed (fail-closed)"
+		// Preserve scoring and named audit/receipt evidence when readability
+		// cannot produce a deliverable representation. Discard strip output:
+		// hidden-fragment offsets do not address the full HTML.
+		recordSuppressedResponseScanExempts(p.metrics, hiddenScanResult.SuppressedMatches, TransportFetch)
+		recordDroppedResponseScanMatches(p.metrics, log, actx, hiddenScanResult.SuppressedMatches, TransportFetch)
+		recordObservedCoreResponseMatches(p.metrics, log, actx, hiddenScanResult.ObservedCoreMatches, TransportFetch)
+		p.filterAndActOnResponseScan(responseScanContext{
+			requestContext: r.Context(),
+			shard:          selectedReceiptShard,
+			writer:         w,
+			result:         *hiddenScanResult,
+			content:        content,
+			displayURL:     displayURL,
+			responseURL:    finalResponseURL,
+			agent:          agent,
+			actorAuth:      id.Auth,
+			clientIP:       clientIP,
+			requestID:      requestID,
+			actionID:       actionID,
+			scanner:        sc,
+			config:         cfg,
+			logger:         log,
+			sessionLevel:   recEscalationLevel(fetchRec),
+			exempt:         responseScanExempt,
+			refusing:       true,
+		})
+		patternNames := make([]string, len(hiddenScanResult.Matches))
+		for i, match := range hiddenScanResult.Matches {
+			patternNames[i] = match.PatternName
+		}
+		reason := "hidden injection detected and readability extraction failed (fail-closed): " + strings.Join(patternNames, ", ")
 		log.LogBlocked(actx, responseScanLayer, reason)
 		p.metrics.RecordBlocked(parsed.Hostname(), responseScanLayer, time.Since(start), agentLabel)
 		emitFetchReceipt(receipt.EmitOpts{
@@ -6779,27 +6763,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 	// Exempt domains are still scanned for visibility (findings logged as warn)
 	// but adaptive scoring is skipped and actions are not upgraded.
 	if sc.ResponseScanningEnabled() {
-		var scanResult scanner.ResponseScanResult
-		if scanAsHTML {
-			scanResult = sc.ScanResponseWithSuppress(r.Context(), content, finalResponseURL, cfg.Suppress)
-		} else {
-			scanResult = sc.ScanResponseBodyWithSuppress(r.Context(), []byte(content), finalResponseURL, cfg.Suppress)
-		}
-		if title != "" && !responseScanExempt && !scanResult.Failed() && (sc.ResponseAction() == config.ActionStrip || sc.ResponseAction() == config.ActionAsk) {
-			// The title is forwarded separately and is not a strip target.
-			// Check it together with the candidate body before claiming strip.
-			candidate := content
-			if scanResult.TransformedContent != "" {
-				candidate = scanResult.TransformedContent
-			}
-			checked := sc.ScanResponseWithSuppress(r.Context(), title+"\n"+candidate, finalResponseURL, cfg.Suppress)
-			if !checked.Clean || checked.Failed() {
-				scanResult.Clean = false
-				scanResult.Matches = append(scanResult.Matches, checked.Matches...)
-				scanResult.ScanError = checked.ScanError
-				scanResult.TransformedContent = ""
-			}
-		}
+		scanResult := scanned.result
 		recordSuppressedResponseScanExempts(p.metrics, scanResult.SuppressedMatches, TransportFetch)
 		recordDroppedResponseScanMatches(p.metrics, log, actx, scanResult.SuppressedMatches, TransportFetch)
 		recordObservedCoreResponseMatches(p.metrics, log, actx, scanResult.ObservedCoreMatches, TransportFetch)
@@ -6997,6 +6961,10 @@ type responseScanContext struct {
 	logger         *audit.Logger
 	sessionLevel   int
 	exempt         bool
+	// refusing marks a caller that refuses delivery whatever the action
+	// decides. The helper records the hard-block signal and leaves the
+	// single refusal receipt and response to that caller.
+	refusing bool
 }
 
 // filterAndActOnResponseScan applies suppression filtering and the configured
@@ -7060,19 +7028,21 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	// overrides adaptive escalation. This prevents death spirals where LLM
 	// responses naturally contain instruction-like text.
 	action := sc.ResponseAction()
-	if exempt {
-		action = config.ActionWarn
-	}
-	originalAction := action
-	if !exempt {
-		action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
-	}
-	if action != originalAction {
-		sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
-	}
-	if action == config.ActionStrip && result.TransformedContent == "" {
-		action = config.ActionBlock
+	if !in.refusing {
+		if exempt {
+			action = config.ActionWarn
+		}
+		originalAction := action
+		if !exempt {
+			action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+		}
+		if action != originalAction {
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
+		}
+		if action == config.ActionStrip && result.TransformedContent == "" {
+			action = config.ActionBlock
+		}
 	}
 
 	// recordResponseSignal records an adaptive enforcement signal for the
@@ -7098,6 +7068,13 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				RequestID: requestID,
 			})
 		}
+	}
+	if in.refusing {
+		// SignalBlock is the hard-block signal in session.SignalPoints.
+		// Warn, strip, and an exempt warn pin describe deliveries this
+		// caller does not make, so none of those verdicts is signed.
+		recordResponseSignal(session.SignalBlock)
+		return false, "", true, ""
 	}
 
 	switch action {

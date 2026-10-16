@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1215,7 +1216,7 @@ func listenHold(t *testing.T) net.Listener {
 func doGet(t *testing.T, client *http.Client, targetURL string) *http.Response {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -1230,7 +1231,7 @@ func doGet(t *testing.T, client *http.Client, targetURL string) *http.Response {
 func doPost(t *testing.T, client *http.Client, targetURL string, body string) *http.Response {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -6760,6 +6761,35 @@ func TestConnectRejectsNonNumericPort(t *testing.T) {
 			t.Parallel()
 			if _, _, _, scanURL, ok := normalizeConnectTarget(target); ok {
 				t.Fatalf("normalizeConnectTarget(%q) accepted a bad port and produced %q", target, scanURL)
+			}
+		})
+	}
+}
+
+func TestRequestHelpersKeepBodyContext(t *testing.T) {
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		t.Run(method, func(t *testing.T) {
+			release := make(chan struct{})
+			var once sync.Once
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				w.(http.Flusher).Flush()
+				<-release
+				_, _ = io.WriteString(w, "delayed response body")
+			}))
+			t.Cleanup(upstream.Close)
+			t.Cleanup(func() { once.Do(func() { close(release) }) })
+			var resp *http.Response
+			if method == http.MethodGet {
+				resp = doGet(t, upstream.Client(), upstream.URL)
+			} else {
+				resp = doPost(t, upstream.Client(), upstream.URL, "request")
+			}
+			defer func() { _ = resp.Body.Close() }()
+			once.Do(func() { close(release) })
+			body, err := io.ReadAll(resp.Body)
+			if err != nil || string(body) != "delayed response body" {
+				t.Fatalf("response body=%q error=%v", body, err)
 			}
 		})
 	}

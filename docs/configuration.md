@@ -1892,7 +1892,7 @@ The registry holds at most 4,096 client states. Idle principal and legacy compat
 
 ## MCP WebSocket Listener
 
-Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.
+These fields are reserved for an inbound WebSocket listener that the current CLI doesn't provide. `pipelock mcp proxy` refuses `--listen` with a `ws://` or `wss://` upstream, so a WebSocket upstream runs only in stdio mode (`pipelock mcp proxy --upstream wss://...`). Pipelock validates the fields at load and fills in the default below, but no listener reads them, and setting them doesn't change runtime behavior.
 
 ```yaml
 mcp_ws_listener:
@@ -4193,6 +4193,8 @@ On fetch, other response policies also preserve byte-range integrity: a partial 
 
 When Browser Shield rewrites a response, Pipelock adds `X-Pipelock-Shield-Rewrite` before sending it to the client. Its value lists non-zero rewrite categories in fixed order, for example `extension=1,tracking=1,trap=2`; clean and unchanged responses omit the header. `extension` counts stripped extension URLs plus the opt-in fingerprint shim when it is injected, and `trap` includes hidden traps plus SVG active-content removals. The fetch endpoint also returns the same value in its `shield_rewrite` JSON field. The header is available on buffered fetch, forward-proxy, TLS-intercepted CONNECT, and reverse-proxy responses; streaming responses are not rewritten and therefore never carry it.
 
+Response injection findings survive Browser Shield rewriting and still follow the configured response action. Fetch scans the title and readable text together, plus hidden content. When Shield changes the body, fetch also scans those original representations, including its existing raw HTML fallback when readability yields no text. Forward, CONNECT and reverse proxy paths scan response bytes. Successful readability extraction excludes executable inline JavaScript and markup. Images are scanned as the existing media policy leaves them: metadata and trailing bytes that policy removes are not retained, while metadata it keeps (policy off, metadata stripping off, or a shipped challenge host) is. Fetch continues to refuse a response when it detects hidden injection and can't extract readable content. That refusal is one block receipt and, except on an exempt domain, the hard-block adaptive signal, including when the configured action is warn, strip, or ask. An exempt domain still does not escalate, and it still does not deliver the response. Each response produces one combined response-scanning decision for adaptive enforcement. Scanner stripping operates on the rewritten content, so it can't restore bytes Shield removed. Fetch strips content only when the separately delivered title remains safe. The `browser_shield_rewrite` receipt's pattern field includes retained injection classifications.
+
 ## Media Policy (v2.1)
 
 Controls how media responses (image, audio, video Content-Type) are handled. Pipelock cannot inspect pixels or audio frames for embedded instructions, so this section reduces exposure by stripping unused media types, enforcing size limits, surgically removing metadata from allowed images, and emitting exposure events.
@@ -4328,7 +4330,7 @@ The following are enforced at startup:
 
 - Strict mode requires a non-empty `api_allowlist`
 - All DLP and response patterns must compile as valid regex
-- `secrets_file` must exist and not be world-readable (mode 0600 or stricter)
+- `secrets_file` must exist and be a regular file. On Unix it must not grant group write or execute, or any access to other users. Modes 0600 and 0640 pass, and group read is allowed for Kubernetes Secret volumes. Windows doesn't check its permissions.
 - MCP tool policy requires at least one rule if enabled
 - Kill switch `api_listen` must differ from the main proxy listen address
 - WebSocket `strip_compression` must be true when scanning is enabled

@@ -2423,6 +2423,7 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 		return true
 	}
 
+	var preShieldScan *scanner.ResponseScanResult
 	applyShieldOversize := func(body []byte, complete bool, shieldMaxBytes int) reverseShieldOversizeDecision {
 		if blockShieldPartial(body, complete) {
 			return reverseShieldOversizeDecision{shieldable: true, blocked: true, outcomeReason: shieldUninspectableLayer}
@@ -2481,14 +2482,18 @@ func (rp *ReverseProxyHandler) modifyResponse(resp *http.Response) error {
 			rp.metrics.RecordShieldOversizeScanHead(TransportReverse)
 			rp.logger.LogAnomaly(actx, "shield_oversize_scan_head", reason, 0)
 			scanned := body[:shieldMaxBytes]
+			originalHeaders := resp.Header.Clone()
 			head, summary := runShieldPipelineSharedResult(rp.shieldEngine, scanned, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
+			if !bytes.Equal(scanned, head) {
+				preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, body, originalHeaders, resp.Request.URL.String(), TransportReverse)
+			}
 			summary = partialShieldSummary(summary, scanned, responseContentType(resp.Header), bodyBytes, shieldMaxBytes)
 			if !confirmReverseDecision(receipt.EmitOpts{
 				ActionID:       receipt.NewActionID(),
 				ParentActionID: requestActionID,
 				Verdict:        config.ActionAllow,
 				Layer:          browserShieldLayer,
-				Pattern:        browserShieldPattern,
+				Pattern:        shieldReceiptPattern(preShieldScan),
 				Severity:       browserShieldSeverity,
 				Shield:         summary,
 				Transport:      TransportReverse,
@@ -3353,6 +3358,7 @@ responseScanning:
 			}
 		} else {
 			originalBodyBytes := len(body)
+			originalBody, originalHeaders := body, resp.Header.Clone()
 			shieldResult := runShieldPipelineWithEncoding(rp.shieldEngine, body, responseContentType(resp.Header), resp.Header, &cfg.BrowserShield, rp.metrics, TransportReverse)
 			if shieldResult.uninspectableReason != "" {
 				rp.logger.LogBlocked(newHTTPAuditContext(reverseRequestContext(resp), rp.logger, httpAuditEvent{Method: resp.Request.Method, TargetURL: resp.Request.URL.String(), ClientIP: clientIP, RequestID: requestID, Agent: ""}), shieldUninspectableLayer, shieldResult.uninspectableReason)
@@ -3366,6 +3372,9 @@ responseScanning:
 			}
 			svgShielded, svgRefusal = shieldResult.svgValidated, shieldResult.svgRefusal
 			body, shieldSummary = shieldResult.body, shieldResult.summary
+			if !bytes.Equal(originalBody, body) {
+				preShieldScan = scanBeforeShield(resp.Request.Context(), sc, cfg, originalBody, originalHeaders, resp.Request.URL.String(), TransportReverse)
+			}
 			if shieldSummary != nil {
 				shieldChanged = true
 				shieldSummary.BodyBytes = originalBodyBytes
@@ -3380,7 +3389,7 @@ responseScanning:
 					ParentActionID: requestActionID,
 					Verdict:        config.ActionAllow,
 					Layer:          browserShieldLayer,
-					Pattern:        browserShieldPattern,
+					Pattern:        shieldReceiptPattern(preShieldScan),
 					Severity:       browserShieldSeverity,
 					Shield:         shieldSummary,
 					Transport:      "reverse",
@@ -3428,6 +3437,7 @@ responseScanning:
 
 	// Scan the response text for injection patterns.
 	result := sc.ScanResponseBodyWithSuppress(resp.Request.Context(), body, resp.Request.URL.String(), cfg.Suppress)
+	result = retainShieldScan(preShieldScan, result, body)
 	recordSuppressedResponseScanExempts(rp.metrics, result.SuppressedMatches, TransportReverse)
 	// A response injection match is a taint source; the deferred taint
 	// observation above reads this flag when the response completes.

@@ -44,7 +44,7 @@
     "@unicode/unicode-15.0.0": "2.0.2",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
-    "he": "1.2.0"
+    "he": "2.0.0"
   },
   "devDependencies": {
     "@types/he": "1.2.3",

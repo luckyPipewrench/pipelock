@@ -891,8 +891,9 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 	entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
+	numberOnlyDecision := verdict.IsNumberOnlyCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	originalAction := effectiveAction
-	if rec != nil && !entropyOnlyDecision {
+	if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 	}
 	if effectiveAction != originalAction {
@@ -1243,7 +1244,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 	default: // warn
 		if len(reasons) > 0 {
 			_, _ = fmt.Fprintf(logW, "pipelock: input: warning (%s)\n", joinStrings(reasons))
-			if !entropyOnlyDecision {
+			if !entropyOnlyDecision && !numberOnlyDecision {
 				recordAdaptiveFinding(session.SignalNearMiss, "mcp_input", joinStrings(reasons))
 			}
 		}

@@ -565,11 +565,16 @@ func shouldHardBlockBodyCriticalDLP(result BodyScanResult, hostname string, cfg 
 }
 
 func isBodyAdaptiveExempt(scannerLabel string, result BodyScanResult, hostname string, cfg *config.Config) bool {
-	if result.IsEntropyOnly() {
+	if result.IsEntropyOnly() || result.IsNumberOnlyCardRuns() {
 		return true
 	}
 	return scannerLabel == scannerLabelBodyDLP && len(result.DLPMatches) > 0 && cfg != nil &&
 		isAdaptiveExempt(hostname, cfg.AdaptiveEnforcement.ExemptDomains)
+}
+
+// IsNumberOnlyCardRuns excludes other evidence and incomplete inspection.
+func (r BodyScanResult) IsNumberOnlyCardRuns() bool {
+	return scanner.OnlyNumberOnlyCardRuns(r.DLPMatches) && len(r.InjectionMatches) == 0 && len(r.AddressFindings) == 0 && r.EntropyFinding == nil && r.Reason == "" && r.RedactionBlockReason == "" && r.CredentialAudienceReceiptErr == nil
 }
 
 // IsEntropyOnly requires an actual entropy finding and no other body evidence.
@@ -1470,7 +1475,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			if allowEmbeddedSigV4 {
 				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, atoms, bodyDLPJoinSeparator)
 			} else {
-				ordered = sc.ScanTextForDLPWithCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
+				ordered = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
 			}
 			if !ordered.Clean {
 				allMatches = append(allMatches, filterMatches(ordered.Matches)...)
@@ -1492,7 +1497,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	if allowEmbeddedSigV4 {
 		result = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, sortedAtoms, bodyDLPJoinSeparator)
 	} else {
-		result = sc.ScanTextForDLPWithCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(sortedAtoms, bodyDLPJoinSeparator))
+		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(sortedAtoms, bodyDLPJoinSeparator))
 	}
 	if !result.Clean {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {
@@ -1725,6 +1730,10 @@ func bodyDLPMatchKey(match scanner.TextDLPMatch) string {
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
 	action := ""
 	for _, match := range matches {
+		if match.IsNumberOnlyCardRun() {
+			action = config.ActionWarn
+			continue
+		}
 		matchAction := defaultAction
 		if override := patternActions[match.PatternName]; override != "" &&
 			!config.IsCoreDLPPatternName(match.PatternName) {

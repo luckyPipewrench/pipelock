@@ -313,14 +313,15 @@ func isLowConfidenceInboundAWSAccessID(ctx inboundAWSAccessIDContext, match Text
 
 // TextDLPMatch describes a single DLP pattern match in arbitrary text.
 type TextDLPMatch struct {
-	genericCard    bool
-	PatternName    string `json:"pattern_name"`
-	Severity       string `json:"severity"`
-	Encoded        string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain", "whitespace"
-	Bundle         string `json:"bundle,omitempty"`
-	BundleVersion  string `json:"bundle_version,omitempty"`
-	Warn           bool   `json:"warn,omitempty"`            // true for warn-mode patterns (informational only)
-	ProviderOpaque bool   `json:"provider_opaque,omitempty"` // true when proxy scoped this match to trusted provider opaque ciphertext
+	genericCard       bool
+	numberOnlyCardRun bool
+	PatternName       string `json:"pattern_name"`
+	Severity          string `json:"severity"`
+	Encoded           string `json:"encoded,omitempty"` // "", "base64", "hex", "base32", "env", "url", "subdomain", "whitespace"
+	Bundle            string `json:"bundle,omitempty"`
+	BundleVersion     string `json:"bundle_version,omitempty"`
+	Warn              bool   `json:"warn,omitempty"`            // true for warn-mode patterns (informational only)
+	ProviderOpaque    bool   `json:"provider_opaque,omitempty"` // true when proxy scoped this match to trusted provider opaque ciphertext
 	// PartialLen is the number of contiguous bytes of a known value (canary or
 	// environment/file secret) found when the whole value was absent. Zero
 	// means a whole-value match. It lives in its own field so PatternName stays
@@ -354,6 +355,32 @@ func (m TextDLPMatch) ValueIdentity() ([32]byte, bool) {
 	return m.valueIdentity, m.hasValueIdentity
 }
 
+// IsNumberOnlyCardRun reports a card match assembled solely from two or more
+// typed JSON number integer components. It is evidence, never a block trigger.
+func (m TextDLPMatch) IsNumberOnlyCardRun() bool { return m.numberOnlyCardRun }
+
+// OnlyNumberOnlyCardRuns reports a nonempty set containing only that warn class.
+// A string card, known-value match or inspection refusal keeps normal enforcement.
+func OnlyNumberOnlyCardRuns(matches []TextDLPMatch) bool {
+	if len(matches) == 0 {
+		return false
+	}
+	for _, m := range matches {
+		if !m.numberOnlyCardRun {
+			return false
+		}
+	}
+	return true
+}
+
+// CardRunAction keeps number-only evidence out of transport action escalation.
+func CardRunAction(matches []TextDLPMatch, action string) string {
+	if OnlyNumberOnlyCardRuns(matches) {
+		return config.ActionWarn
+	}
+	return action
+}
+
 // TextDLPResult describes the outcome of scanning text for DLP patterns.
 type TextDLPResult struct {
 	Clean                bool           `json:"clean"`
@@ -372,6 +399,7 @@ type TextDLPResult struct {
 // (regex patterns, seed phrases, canary tokens, hostname-exfil) are unaffected
 // and run in both directions.
 type textDLPOptions struct {
+	typedCardView  bool // only extractor-produced boundaries carry numeric provenance
 	emitWarns      bool
 	scanSecretLeak bool
 	patterns       textDLPPatternSet
@@ -460,7 +488,7 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, ato
 		scrubbedParts = append(scrubbedParts, scrubbed)
 		detections = append(detections, partDetections...)
 	}
-	result := s.scanTextDLPViews(ctx, strings.Join(scrubbedParts, separator), extract.JoinCardAtoms(scrubbedCards, separator), textDLPOptions{emitWarns: true, scanSecretLeak: true})
+	result := s.scanTextDLPViews(ctx, strings.Join(scrubbedParts, separator), extract.JoinCardAtoms(scrubbedCards, separator), textDLPOptions{emitWarns: true, scanSecretLeak: true, typedCardView: true})
 
 	for _, detection := range detections {
 		if detection.Expires <= sigV4LongExpiryThreshold {
@@ -537,6 +565,22 @@ func (s *Scanner) ScanTextForDLPInboundWithCardView(ctx context.Context, text, c
 	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{emitWarns: true})
 }
 
+// ScanTextForDLPWithTypedCardView accepts only extractor-produced card joins.
+// Raw content must use WithCardView: control bytes in input are not type evidence.
+func (s *Scanner) ScanTextForDLPWithTypedCardView(ctx context.Context, text, cardView string) TextDLPResult {
+	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{emitWarns: true, scanSecretLeak: true, typedCardView: true})
+}
+
+// ScanTextForDLPInboundWithTypedCardView preserves inbound known-value semantics.
+func (s *Scanner) ScanTextForDLPInboundWithTypedCardView(ctx context.Context, text, cardView string) TextDLPResult {
+	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{emitWarns: true, typedCardView: true})
+}
+
+// ScanTextForDLPQuietWithTypedCardView compares extractor-produced joins quietly.
+func (s *Scanner) ScanTextForDLPQuietWithTypedCardView(ctx context.Context, text, cardView string) TextDLPResult {
+	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{scanSecretLeak: true, typedCardView: true})
+}
+
 // ScanJSONCardRuns checks adjacent scalar pieces in a typed JSON document
 // without admitting its numeric leaves to prompt or non-card pattern scans.
 func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMatch {
@@ -549,17 +593,20 @@ func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMa
 		return []TextDLPMatch{uninspectableJSONNumberMatch()}
 	}
 	for _, run := range runs {
-		if !jsonnumber.ValidCardNumber(run) {
-			continue
-		}
 		var memo decodingMemo
-		result := s.scanTextForDLPWithDecodes(ctx, run, textDLPOptions{patterns: textDLPCardPatterns}, &memo)
+		result := s.scanTextForDLPWithDecodes(ctx, run.Digits, textDLPOptions{patterns: textDLPCardPatterns}, &memo)
 		for i := range result.Matches {
-			result.Matches[i].span.ViewLabel = spanViewLabel("json_number_run", result.Matches[i].span.ViewLabel)
+			classifyCardRun(&result.Matches[i], run.NumberOnly)
 		}
 		matches = append(matches, result.Matches...)
 	}
 	return matches
+}
+
+func classifyCardRun(match *TextDLPMatch, numberOnly bool) {
+	match.span.ViewLabel = spanViewLabel("json_number_run", match.span.ViewLabel)
+	match.numberOnlyCardRun = numberOnly
+	match.Warn = match.Warn || numberOnly
 }
 
 // UninspectableJSONNumberPattern identifies a valid JSON number that exceeds
@@ -604,23 +651,31 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	}
 	// The ordinary view keeps typed number boundaries apart. Inspect each
 	// adjacent scalar run separately with the configured card rules.
-	seenRuns := make(map[string]struct{})
-	runs, limit := jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+	seenRuns := make(map[jsonnumber.CardRun]struct{})
+	var runs []jsonnumber.CardRun
+	var limit jsonnumber.CardRunLimit
+	// Extracted text may concatenate several numbers into one scalar spelling;
+	// only the typed boundaries can classify that synthetic view.
+	trimmed := strings.TrimSpace(text)
+	if !opts.typedCardView || (len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')) {
+		runs, limit = jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+	}
 	if limit != jsonnumber.CardRunWithinBudget {
 		original.Matches = append(original.Matches, uninspectableJSONNumberMatch())
 	}
-	for _, run := range append(runs, jsonnumber.BoundaryCardRuns(cardView)...) {
-		if !jsonnumber.ValidCardNumber(run) {
-			continue
-		}
+	boundaryRuns := jsonnumber.BoundaryCardRuns(cardView)
+	for i := range boundaryRuns {
+		boundaryRuns[i].NumberOnly = boundaryRuns[i].NumberOnly && opts.typedCardView
+	}
+	for _, run := range append(runs, boundaryRuns...) {
 		if _, seen := seenRuns[run]; seen {
 			continue
 		}
 		seenRuns[run] = struct{}{}
 		var runDecodes decodingMemo
-		runResult := s.scanTextForDLPWithDecodes(ctx, run, opts, &runDecodes)
+		runResult := s.scanTextForDLPWithDecodes(ctx, run.Digits, opts, &runDecodes)
 		for i := range runResult.Matches {
-			runResult.Matches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.Matches[i].span.ViewLabel)
+			classifyCardRun(&runResult.Matches[i], run.NumberOnly)
 		}
 		for i := range runResult.InformationalMatches {
 			runResult.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.InformationalMatches[i].span.ViewLabel)
@@ -630,7 +685,7 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	}
 	original.Clean = len(original.Matches) == 0
 	if emit {
-		s.EmitTextDLPWarnMatches(ctx, original.InformationalMatches)
+		s.EmitTextDLPWarnMatches(ctx, append(original.InformationalMatches[:len(original.InformationalMatches):len(original.InformationalMatches)], original.Matches...))
 	}
 	return original
 }

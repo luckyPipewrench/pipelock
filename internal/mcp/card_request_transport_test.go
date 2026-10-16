@@ -34,6 +34,9 @@ func TestCardJSONRequestTransports(t *testing.T) {
 				clean      bool
 			}{
 				{"metric", metric, true},
+				{"number-only run", `{"ids":[4111,1111,1111,1111]}`, true},
+				{"number-only decimal run", `{"ids":[4111.0,1111.0,1111.0,1111.0]}`, true},
+				{"mixed run", `{"ids":["4111",1111,1111,1111]}`, false},
 				{"integer component", `{"n":-` + card + `.1}`, false},
 				{"written exponent", `{"n":` + card + `e-2}`, false},
 				{"card string", cardString, false},

@@ -311,6 +311,12 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
 		for _, raw := range []json.RawMessage{rpc.Result, rpc.Error, rpc.Params} {
 			dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, sc.ScanJSONCardRuns(context.Background(), string(raw)))
+			for _, leaf := range jsonrpc.ExtractStringsFromJSONResult(raw).Strings {
+				trimmedLeaf := strings.TrimSpace(leaf)
+				if len(trimmedLeaf) > 0 && (trimmedLeaf[0] == '{' || trimmedLeaf[0] == '[') {
+					dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, sc.ScanJSONCardRuns(context.Background(), leaf))
+				}
+			}
 		}
 	}
 	if result.Clean && len(dlpMatches) == 0 {
@@ -320,7 +326,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	return jsonrpc.ScanVerdict{
 		ID:         rpc.ID,
 		Clean:      false,
-		Action:     responseScanAction(sc, opts),
+		Action:     responseFindingAction(sc, opts, result.Matches, dlpMatches),
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
 	}
@@ -450,6 +456,14 @@ func toolsListEnvelopeText(trimmed []byte, budget *jsonrpc.MediaTextBudget) (str
 		return "", false
 	}
 	return strings.Join(append(values.Strings, keys.Keys...), "\n"), true
+}
+
+// responseFindingAction excludes number-only card evidence from escalation.
+func responseFindingAction(sc *scanner.Scanner, opts ResponseScanOptions, injection []scanner.ResponseMatch, dlp []scanner.TextDLPMatch) string {
+	if len(injection) == 0 && scanner.OnlyNumberOnlyCardRuns(dlp) {
+		return config.ActionWarn
+	}
+	return responseScanAction(sc, opts)
 }
 
 // responseScanAction resolves the effective response-scan action. A per-server
@@ -830,7 +844,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	return jsonrpc.ScanVerdict{
 		ID:         rpc.ID,
 		Clean:      false,
-		Action:     responseScanAction(sc, opts),
+		Action:     responseFindingAction(sc, opts, result.Matches, dlpMatches),
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
 	}
@@ -1228,7 +1242,8 @@ func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts)
 			return verdict
 		}
 		verdict, injection := scanA2AResponseDispatchClass(line, sc, a2aOpts)
-		if !verdict.Clean {
+		numberOnly := verdict.Action == config.ActionWarn && verdict.Error == "" && len(verdict.Matches) == 0 && scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches)
+		if !verdict.Clean && !numberOnly {
 			verdict.Action = config.StricterAction(a2aDefaultAction(a2aOpts.Cfg), verdict.Action)
 			// This path replaces the response scan, so the response action
 			// still applies. Without the optional layer, that action is the

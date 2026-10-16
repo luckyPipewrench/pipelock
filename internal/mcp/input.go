@@ -183,6 +183,11 @@ type InputVerdict struct {
 	RedactedDLPOnly bool `json:"redacted_dlp_only,omitempty"`
 }
 
+// IsNumberOnlyCardRuns excludes other findings and incomplete inspection.
+func (v InputVerdict) IsNumberOnlyCardRuns() bool {
+	return scanner.OnlyNumberOnlyCardRuns(v.Matches) && len(v.Inject) == 0 && len(v.URLFindings) == 0 && len(v.AddressFindings) == 0 && v.Error == "" && !v.RedactedDLPOnly
+}
+
 // IsEntropyOnly checks the findings rather than the transport's generic label.
 func (v InputVerdict) IsEntropyOnly() bool {
 	if len(v.URLFindings) == 0 || len(v.Matches) > 0 || len(v.Inject) > 0 ||
@@ -1194,7 +1199,8 @@ func ForwardScannedInput(
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 		entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		originalAction := effectiveAction
-		if rec != nil && !entropyOnlyDecision {
+		numberOnlyDecision := verdict.IsNumberOnlyCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
+		if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 		}
 		if effectiveAction != originalAction {
@@ -1756,8 +1762,8 @@ func ForwardScannedInput(
 		// Signal recording: record after action is taken.
 		// Successful redirects are clean (not a block). Failed redirects escalate.
 		switch {
-		case entropyOnlyDecision:
-			// Heuristic URL entropy does not affect the adaptive score.
+		case entropyOnlyDecision || numberOnlyDecision:
+			// Heuristic findings do not affect the adaptive score.
 		case effectiveAction == config.ActionBlock:
 			recordAdaptiveFinding(session.SignalBlock, "mcp_input", joinStrings(reasons))
 		case effectiveAction == config.ActionRedirect && !redirectSucceeded:

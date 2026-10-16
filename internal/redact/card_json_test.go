@@ -47,8 +47,8 @@ func TestRewriteJSONSplitCardNumbers(t *testing.T) {
 		name, body string
 		block      bool
 	}{
-		{"array", `{"ids":[4111,1111,1111,1111]}`, true},
-		{"sibling fields", `{"a":4111,"b":1111,"c":1111,"d":1111}`, true},
+		{"array", `{"ids":[4111,1111,1111,1111]}`, false},
+		{"sibling fields", `{"a":4111,"b":1111,"c":1111,"d":1111}`, false},
 		{"mixed pieces", `{"a":"4111","b":1111,"c":1111,"d":1111}`, true},
 		{"ordinary telemetry", `{"bbox":[1200.21,3400.22,5600.23,7800.24]}`, false},
 	} {
@@ -79,10 +79,10 @@ func TestRewriteJSONSharedCardCorpus(t *testing.T) {
 	for _, tt := range cardtest.JSONCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			_, report, err := RewriteJSON([]byte(tt.Body), NewDefaultMatcher(), NewRedactor(), Limits{})
-			if tt.Clean && err != nil {
+			if (tt.Clean || tt.Warn) && err != nil {
 				t.Fatalf("benign JSON blocked: %v", err)
 			}
-			if !tt.Clean && err == nil && (report == nil || !report.Applied) {
+			if !tt.Clean && !tt.Warn && err == nil && (report == nil || !report.Applied) {
 				t.Fatal("card neither redacted nor refused")
 			}
 		})

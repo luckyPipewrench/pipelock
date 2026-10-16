@@ -100,7 +100,7 @@ func DispatchSSEScan(
 	opts SSEDispatchOptions,
 ) error {
 	if opts.IsA2A {
-		return mcp.ScanA2AStream(ctx, body, w, flusher, sc, opts.A2A)
+		return mcp.ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, mcp.A2AStreamOptions{Config: opts.A2A, Warning: opts.Generic})
 	}
 	return mcp.ScanGenericSSEStreamWithOptions(ctx, body, w, flusher, sc, opts.GenericSSE, opts.Generic)
 }

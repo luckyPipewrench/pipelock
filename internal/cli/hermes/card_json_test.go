@@ -28,12 +28,12 @@ func TestCardJSONHookTypes(t *testing.T) {
 			block bool
 		}{
 			{`{"n":0.` + card + `}`, false},
-			{`{"ids":[` + groups + `]}`, true},
-			{`{"bbox":[` + groups + `]}`, true},
-			{`[` + groups + `]`, true},
-			{`{"":[` + groups + `]}`, true},
-			{`{"-":[` + groups + `]}`, true},
-			{`{"x-":[` + groups + `]}`, true},
+			{`{"ids":[` + groups + `]}`, false},
+			{`{"bbox":[` + groups + `]}`, false},
+			{`[` + groups + `]`, false},
+			{`{"":[` + groups + `]}`, false},
+			{`{"-":[` + groups + `]}`, false},
+			{`{"x-":[` + groups + `]}`, false},
 			{`{"n":"` + card + `"}`, true},
 			{`{"n":` + card + `}`, true},
 			{`{"n":` + card + `.1}`, true},
@@ -61,8 +61,11 @@ func TestCardJSONSharedHookCorpus(t *testing.T) {
 		for _, tt := range cardtest.JSONCases() {
 			t.Run(hook+"/"+tt.Name, func(t *testing.T) {
 				result := evaluate(t.Context(), s, &HookEvent{HookEventName: hook, ToolName: "report", ToolInput: json.RawMessage(tt.Body)})
-				if (result.Decision != DecisionBlock) != tt.Clean {
-					t.Fatalf("decision=%s want clean=%v", result.Decision, tt.Clean)
+				if (result.Decision != DecisionBlock) != (tt.Clean || tt.Warn) {
+					t.Fatalf("decision=%s clean=%v warn=%v", result.Decision, tt.Clean, tt.Warn)
+				}
+				if tt.Warn && len(result.warnings) != 1 {
+					t.Fatalf("missing warning record: %+v", result)
 				}
 			})
 		}

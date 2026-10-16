@@ -113,6 +113,9 @@ func (h *Handler) scanDLP(ctx context.Context, cfg *config.Config, sc *scanner.S
 		resp.Decision = DecisionAllow
 	} else {
 		resp.Decision = DecisionDeny
+		if len(urlResults.results) == 0 && !urlResults.truncated {
+			resp.Decision = cardDLPDecision(result.Matches)
+		}
 		if !result.Clean {
 			resp.Findings = append(resp.Findings, dlpFindings(result, req.Options)...)
 		}
@@ -386,12 +389,12 @@ func (h *Handler) scanToolCall(
 	// kinds (url / dlp / prompt_injection) all scan unconditionally; tool_call
 	// now matches that contract.
 	if scanText != "" {
-		dlpResult := sc.ScanTextForDLPWithCardView(ctx, scanText, extract.JoinCardAtoms(cardAtoms, " "))
+		dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, scanText, extract.JoinCardAtoms(cardAtoms, " "))
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
 		if !dlpResult.Clean {
-			resp.Decision = DecisionDeny
+			resp.Decision = cardDLPDecision(dlpResult.Matches)
 			resp.Findings = append(resp.Findings, dlpFindings(dlpResult, req.Options)...)
 		}
 
@@ -404,9 +407,9 @@ func (h *Handler) scanToolCall(
 			resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
 		}
 	}
-	if resp.Decision == DecisionAllow {
+	if resp.Decision != DecisionDeny {
 		if matches := sc.ScanJSONCardRuns(ctx, string(req.Input.Arguments)); len(matches) > 0 {
-			resp.Decision = DecisionDeny
+			resp.Decision = cardDLPDecision(matches)
 			resp.Findings = append(resp.Findings, dlpFindings(scanner.TextDLPResult{Matches: matches}, req.Options)...)
 		}
 	}
@@ -499,6 +502,9 @@ func dlpFindings(result scanner.TextDLPResult, opts *RequestOptions) []Finding {
 			RuleID:   "DLP-" + m.PatternName,
 			Severity: m.Severity,
 			Message:  "Secret-like token detected (" + m.PatternName + ")",
+		}
+		if m.IsNumberOnlyCardRun() {
+			f.Message = "Number-only JSON card run detected (action=warn)"
 		}
 		if opts != nil && opts.IncludeEvidence {
 			encoding := m.Encoded
@@ -615,4 +621,11 @@ func errorResponse(kind, code, message string, retryable bool) Response {
 			{Code: code, Message: message, Retryable: retryable},
 		},
 	}
+}
+
+func cardDLPDecision(matches []scanner.TextDLPMatch) string {
+	if scanner.OnlyNumberOnlyCardRuns(matches) {
+		return DecisionWarn
+	}
+	return DecisionDeny
 }

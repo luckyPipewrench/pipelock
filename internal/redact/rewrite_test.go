@@ -213,8 +213,8 @@ func TestRewriteJSON_DepthLimitBlocks(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected BlockError, got %v", err)
 	}
-	if be.Reason != ReasonDepthExceeded {
-		t.Fatalf("reason = %q, want %q", be.Reason, ReasonDepthExceeded)
+	if be.Reason != ReasonSecretInNumericScalar {
+		t.Fatalf("reason = %q, want %q", be.Reason, ReasonSecretInNumericScalar)
 	}
 }
 

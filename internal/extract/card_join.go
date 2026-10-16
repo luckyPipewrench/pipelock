@@ -48,12 +48,17 @@ func JoinCardAtoms(atoms []DLPAtom, stringSep string) string {
 	for i, atom := range atoms {
 		if i > 0 {
 			if atoms[i-1].Number || atom.Number {
-				b.WriteString(jsonnumber.NumberBoundary)
+				b.WriteString(jsonnumber.CardBoundary(atoms[i-1].Number, atom.Number))
 			} else {
 				b.WriteString(stringSep)
 			}
 		}
-		b.WriteString(atom.Card)
+		if atom.Number {
+			b.WriteString(atom.Card)
+		} else {
+			// Untrusted strings cannot manufacture typed number boundaries.
+			b.WriteString(jsonnumber.EscapeCardBoundaries(atom.Card))
+		}
 	}
 	return b.String()
 }

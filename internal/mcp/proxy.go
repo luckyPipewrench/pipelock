@@ -884,7 +884,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
-		if rec != nil {
+		numberOnlyDecision := len(verdict.Matches) == 0 && scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches)
+		if rec != nil && !numberOnlyDecision {
 			action = decide.UpgradeAction(action, rec.EscalationLevel(), adaptiveCfg)
 		}
 		escalationDriven := action != originalAction
@@ -931,7 +932,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					observeMCPResponseTaint(taintOpts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					if len(verdict.DLPMatches) > 0 {
+					if len(verdict.DLPMatches) > 0 && !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches) {
 						// The injection stripper has no lossless DLP rewrite for arbitrary
 						// JSON-RPC result shapes. Never forward an unredacted credential.
 						effectiveAction = config.ActionBlock
@@ -954,7 +955,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		case config.ActionStrip:
-			if len(verdict.DLPMatches) > 0 {
+			if len(verdict.DLPMatches) > 0 && !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches) {
 				// The injection stripper has no lossless DLP rewrite for arbitrary
 				// JSON-RPC result shapes. Never forward an unredacted credential.
 				effectiveAction = config.ActionBlock
@@ -1057,8 +1058,8 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
-		// Signal recording: record after action is taken.
-		if adaptiveCfg != nil && adaptiveCfg.Enabled {
+		// Signal recording: number-only warnings do not affect the score.
+		if adaptiveCfg != nil && adaptiveCfg.Enabled && !numberOnlyDecision {
 			ep := decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
 				Logger:        opts.AuditLogger,
@@ -1464,7 +1465,7 @@ const maxStripDepth = 4
 type stripResponseScanner func(string) scanner.ResponseScanResult
 
 // stripResponse rewrites supported fields without discarding the envelope and
-// returns content only after a whole-message rescan finds no residual finding.
+// returns content only after a whole-message rescan finds no enforcing finding.
 func stripResponse(line []byte, sc *scanner.Scanner) ([]byte, error) {
 	return stripResponseWithOptions(line, sc, context.Background(), ResponseScanOptions{})
 }
@@ -1479,14 +1480,14 @@ func stripResponseWithOptions(line []byte, sc *scanner.Scanner, ctx context.Cont
 	}
 	// Rescan the outgoing message with the response scan that decided it, so
 	// every view that produced a finding (typed fields, decoded media text,
-	// envelope strings and keys) must now be clean. The raw view also covers
+	// envelope strings and keys) must have no enforcing finding. The raw view also covers
 	// findings that span fields. Observation callbacks already fired for the
 	// original message and must not fire again for the candidate.
 	checkOpts := opts
 	checkOpts.OnSuppressedResponse = nil
 	checkOpts.OnObservedCoreResponse = nil
 	checkOpts.OnDroppedDLP = nil
-	if verdict := ScanResponseOpts(out, sc, checkOpts); !verdict.Clean || verdict.Error != "" {
+	if verdict := ScanResponseOpts(out, sc, checkOpts); verdict.Error != "" || (!verdict.Clean && (len(verdict.Matches) > 0 || !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches))) {
 		return nil, fmt.Errorf("stripped response is not clean")
 	}
 	if checked := scan(string(out)); !checked.Clean || checked.Failed() {

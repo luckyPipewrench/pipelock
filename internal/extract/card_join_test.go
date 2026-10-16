@@ -16,7 +16,7 @@ func TestJoinCardAtoms(t *testing.T) {
 		{"empty", " ", "", nil},
 		{"string neighbors", " ", "a b", []DLPAtom{{Text: "a", Card: "a"}, {Text: "b", Card: "b"}}},
 		{"dot string neighbors", ".", "a.b", []DLPAtom{{Card: "a"}, {Card: "b"}}},
-		{"number boundaries", " ", "a,\x1f,1234,\x1f,5678,\x1f,b", []DLPAtom{{Card: "a"}, {Text: "1234", Card: "1234", Number: true}, {Text: "5678", Card: "5678", Number: true}, {Card: "b"}}},
+		{"number boundaries", " ", "a,\x1fn,1234,\x1f,5678,\x1fs,b", []DLPAtom{{Card: "a"}, {Text: "1234", Card: "1234", Number: true}, {Text: "5678", Card: "5678", Number: true}, {Card: "b"}}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := JoinCardAtoms(tt.atoms, tt.separator); got != tt.want {

@@ -55,15 +55,15 @@ func TestCardJSONResponseSegments(t *testing.T) {
 			}
 		})
 	}
-	// Existing structured numeric-channel behavior is intentionally preserved.
+	// Single numeric cards enforce alongside the separate known-value channel.
 	line := []byte(`{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"n":` + card + `}}}`)
-	if v := ScanResponse(line, s); !v.Clean || v.Error != "" {
+	if v := ScanResponse(line, s); v.Clean || v.Error != "" || v.Action != config.ActionBlock {
 		t.Fatalf("numeric channel changed: %+v", v)
 	}
 	groups := "4111,1111" + ",1111,1111"
 	line = []byte(`{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"ids":[` + groups + `]}}}`)
-	if v := ScanResponse(line, s); v.Clean || v.Error != "" || len(v.DLPMatches) == 0 {
-		t.Fatalf("split numeric response was not denied: %+v", v)
+	if v := ScanResponse(line, s); v.Clean || v.Action != config.ActionWarn || v.Error != "" || len(v.DLPMatches) == 0 {
+		t.Fatalf("split numeric response lacked warning evidence: %+v", v)
 	}
 }
 
@@ -79,6 +79,8 @@ func TestCardJSONSharedTransportCorpus(t *testing.T) {
 			request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + tt.Body + `}`)
 			if v := ScanRequest(t.Context(), request, s, config.ActionBlock, config.ActionBlock); v.Clean != tt.Clean || v.Error != "" {
 				t.Fatalf("MCP request clean=%v error=%q want=%v", v.Clean, v.Error, tt.Clean)
+			} else if tt.Warn && (v.Action != config.ActionWarn || len(v.Matches) == 0) {
+				t.Fatal("MCP request warning missing")
 			}
 			response, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": []map[string]string{{"type": "text", "text": tt.Body}}}})
 			if err != nil {
@@ -86,17 +88,23 @@ func TestCardJSONSharedTransportCorpus(t *testing.T) {
 			}
 			if v := ScanResponse(response, s); v.Clean != tt.Clean || v.Error != "" {
 				t.Fatalf("MCP response clean=%v error=%q want=%v", v.Clean, v.Error, tt.Clean)
+			} else if tt.Warn && (v.Action != config.ActionWarn || len(v.DLPMatches) == 0) {
+				t.Fatalf("MCP response warning missing: %+v", v)
 			}
-			if v := ScanA2ARequestBody(t.Context(), []byte(tt.Body), s, enabledA2ACfg()); v.Clean != tt.Clean {
+			a2aCfg := enabledA2ACfg()
+			a2aCfg.Action = config.ActionBlock
+			if v := ScanA2ARequestBody(t.Context(), []byte(tt.Body), s, a2aCfg); v.Clean != tt.Clean {
 				t.Fatalf("A2A clean=%v want=%v", v.Clean, tt.Clean)
+			} else if tt.Warn && (v.Action != config.ActionWarn || len(v.DLPFindings) == 0) {
+				t.Fatal("A2A warn evidence missing")
 			}
 			stream := "data: " + tt.Body + "\n\n"
 			var forwarded bytes.Buffer
 			err = ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledSSECfg())
-			if (err == nil) != tt.Clean {
+			if (err == nil) != (tt.Clean || tt.Warn) {
 				t.Fatalf("SSE error=%v want clean=%v", err, tt.Clean)
 			}
-			if tt.Clean && forwarded.String() != stream {
+			if (tt.Clean || tt.Warn) && forwarded.String() != stream {
 				t.Fatal("clean SSE event changed")
 			}
 		})
@@ -156,8 +164,8 @@ func TestCardJSONInputTypes(t *testing.T) {
 			if v.Clean != tt.clean || v.Error != "" {
 				t.Fatalf("clean=%v want=%v verdict=%+v", v.Clean, tt.clean, v)
 			}
-			if !tt.clean && v.Action != config.ActionBlock {
-				t.Fatalf("card did not block: %+v", v)
+			if !tt.clean && v.Action != scanner.CardRunAction(v.Matches, config.ActionBlock) {
+				t.Fatalf("card action did not match its class: %+v", v)
 			}
 		})
 	}
@@ -240,10 +248,11 @@ func TestCardJSONA2AStreamTypes(t *testing.T) {
 		stream := "data: " + tt.event + "\n\ndata: " + tt.event + "\n\n"
 		var forwarded bytes.Buffer
 		err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg())
-		if (err == nil) != tt.clean {
+		warn := scanner.OnlyNumberOnlyCardRuns(ScanA2ARequestBody(t.Context(), []byte(tt.event), s, enabledA2ACfg()).DLPFindings)
+		if (err == nil) != (tt.clean || warn) {
 			t.Fatalf("event=%s error=%v want clean=%v", tt.event, err, tt.clean)
 		}
-		if tt.clean && forwarded.String() != stream {
+		if (tt.clean || warn) && forwarded.String() != stream {
 			t.Fatalf("numeric event bytes changed: %q", forwarded.String())
 		}
 	}
@@ -265,7 +274,7 @@ func TestCardJSONA2ACrossEventBoundaries(t *testing.T) {
 	}{
 		{"root strings", `"` + first + `"`, `"` + last + `"`, true},
 		{"object then array", `{"part":"` + first + `"}`, `["` + last + `"]`, true},
-		{"root integer arrays", `[` + first + `]`, `[` + last + `]`, true},
+		{"root integer arrays", `[` + first + `]`, `[` + last + `]`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testA2AScanner(t)
@@ -295,7 +304,7 @@ func TestCardJSONA2ATaskUpdateNumbersAcrossEvents(t *testing.T) {
 	stream := "event: task-update\ndata: " + wrap(first) + "\n\nevent: task-update\ndata: " + wrap(last) + "\n\n"
 	var forwarded bytes.Buffer
 	err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg())
-	if !errors.Is(err, ErrA2AStreamFinding) || !strings.Contains(err.Error(), "cross-event dlp") {
-		t.Fatalf("task update numeric run was not denied: %v", err)
+	if err != nil || forwarded.String() != stream {
+		t.Fatalf("number-only task update was not forwarded: %v", err)
 	}
 }

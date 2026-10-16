@@ -199,7 +199,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
-					action = config.StrongestAction(action, defaultFindingAction)
+					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Matches, defaultFindingAction))
 				}
 			}
 
@@ -282,7 +282,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			if a2aDLPForcesBlock(matches) {
 				action = config.StrongestAction(action, config.ActionBlock)
 			} else {
-				action = config.StrongestAction(action, defaultFindingAction)
+				action = config.StrongestAction(action, scanner.CardRunAction(matches, defaultFindingAction))
 			}
 		}
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
@@ -297,14 +297,14 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		texts := extracted.Strings
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
-			dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
+			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 				if a2aDLPForcesBlock(dlpResult.Matches) {
 					action = config.StrongestAction(action, config.ActionBlock)
 				} else {
-					action = config.StrongestAction(action, defaultFindingAction)
+					action = config.StrongestAction(action, scanner.CardRunAction(dlpResult.Matches, defaultFindingAction))
 				}
 			}
 		}
@@ -402,7 +402,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
 		forceBlock = true
 	}
-	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
+	dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 	if !dlpResult.Clean {
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 		if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -443,14 +443,15 @@ func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
 // to deduplicate across its per-leaf and joined-raw scans.
 func appendUniqueA2ADLPFindings(existing, incoming []scanner.TextDLPMatch) []scanner.TextDLPMatch {
 	type matchKey struct {
-		name    string
-		encoded string
+		name       string
+		encoded    string
+		numberOnly bool
 	}
 
 	seen := make(map[matchKey]struct{}, len(existing)+len(incoming))
 	result := make([]scanner.TextDLPMatch, 0, len(existing)+len(incoming))
 	for _, match := range append(existing, incoming...) {
-		key := matchKey{name: match.PatternName, encoded: match.Encoded}
+		key := matchKey{name: match.PatternName, encoded: match.Encoded, numberOnly: match.IsNumberOnlyCardRun()}
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1212,6 +1213,18 @@ func (ct *ContextTracker) maxContextsLocked() int {
 // - On detection: returns error (caller should close the connection).
 // - Compressed responses must be rejected BEFORE calling this function.
 func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher, sc *scanner.Scanner, cfg *config.A2AScanning) error {
+	return ScanA2AStreamWithOptions(ctx, body, w, flusher, sc, A2AStreamOptions{Config: cfg})
+}
+
+// A2AStreamOptions reuses the stream warning audit and receipt callbacks.
+type A2AStreamOptions struct {
+	Config  *config.A2AScanning
+	Warning GenericSSEScanOptions
+}
+
+// ScanA2AStreamWithOptions records number-only warnings before forwarding.
+func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, flusher http.Flusher, sc *scanner.Scanner, opts A2AStreamOptions) error {
+	cfg := opts.Config
 	if cfg == nil || !cfg.Enabled {
 		// A2A scanning disabled: share the generic-SSE chunked
 		// passthrough so per-read flushing preserves SSE TTFB. After the
@@ -1247,6 +1260,21 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			return fmt.Errorf("a2a stream read: %w", err)
 		}
 
+		var warnedFinding error
+		recordNumberOnly := func(matches []scanner.TextDLPMatch) bool {
+			if !scanner.OnlyNumberOnlyCardRuns(matches) {
+				return false
+			}
+			if warnedFinding == nil {
+				warnedFinding = fmt.Errorf("%w: number-only JSON card run (action=warn)", ErrA2AStreamFinding)
+				sc.EmitTextDLPWarnMatches(ctx, matches)
+				if opts.Warning.OnFinding != nil {
+					opts.Warning.OnFinding(warnedFinding)
+				}
+			}
+			return true
+		}
+
 		// Field-walk the event data payload.
 		eventResult := scanA2ABody(ctx, event, sc, cfg, nil)
 		if !eventResult.Clean {
@@ -1256,7 +1284,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			if eventResult.ScanError != "" {
 				return fmt.Errorf("%w: response scan incomplete: %s", ErrSSEStreamScanError, eventResult.ScanError)
 			}
-			return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
+			if len(eventResult.InjectFindings) > 0 || len(eventResult.URLFindings) > 0 || eventResult.EntropyFinding != nil || eventResult.BudgetExceeded || !recordNumberOnly(eventResult.DLPFindings) {
+				return fmt.Errorf("%w: %s", ErrA2AStreamFinding, eventResult.Reason)
+			}
 		}
 
 		// Scan the canonical full-event text (event:/id:/retry: plus the
@@ -1280,7 +1310,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
 		}
-		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); !dlpResult.Clean {
+		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); !dlpResult.Clean && !recordNumberOnly(dlpResult.Matches) {
 			return fmt.Errorf("%w: dlp in sse metadata: %s",
 				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 		}
@@ -1304,12 +1334,9 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		}
 		if dlpTail != "" && currentText != "" {
 			combined := dlpTail + currentText
-			cardBoundary := ""
-			if previousLastNumber || currentFirstNumber {
-				cardBoundary = jsonnumber.NumberBoundary
-			}
-			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
-			if !dlpResult.Clean {
+			cardBoundary := jsonnumber.CardBoundary(previousLastNumber, currentFirstNumber)
+			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
+			if !dlpResult.Clean && !recordNumberOnly(dlpResult.Matches) {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
@@ -1319,8 +1346,8 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		// those wrapper fields cannot hide a split card.
 		numberText, numberCard := extract.JSONNumberStreamViews(event)
 		if numberTail != "" && numberText != "" {
-			result := sc.ScanTextForDLPWithCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
-			if !result.Clean {
+			result := sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
+			if !result.Clean && !recordNumberOnly(result.Matches) {
 				return fmt.Errorf("%w: cross-event dlp detected: %s", ErrA2AStreamFinding, sseDLPMatchNames(result.Matches))
 			}
 		}
@@ -1340,7 +1367,13 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			previousLastNumber = currentLastNumber
 		}
 
-		// Forward clean event. Preserve id, event, and retry fields from the
+		if warnedFinding != nil && opts.Warning.ConfirmFinding != nil {
+			if err := opts.Warning.ConfirmFinding(warnedFinding); err != nil {
+				return fmt.Errorf("a2a finding confirmation: %w", err)
+			}
+		}
+
+		// Forward inspected event. Preserve id, event, and retry fields from the
 		// SSE reader so downstream consumers can correlate events, handle
 		// typed dispatching, and respect reconnection timing.
 		if werr := writeSSEEvent(w, event, reader.LastEventID(), reader.LastEventType(), reader.LastRetry()); werr != nil {
@@ -1444,14 +1477,14 @@ func (r A2AScanResult) IsInfrastructureError() bool {
 }
 
 // IsAdaptiveNeutral reports whether this A2A result should be score-neutral
-// for adaptive enforcement. Mirrors scanner.Result.IsAdaptiveNeutral(): covers
-// protective enforcement plus infrastructure errors, but NOT config mismatch
+// for adaptive enforcement. It covers heuristic findings, protective
+// enforcement and infrastructure errors, but NOT config mismatch
 // (which remains a bounded NearMiss signal).
 func (r A2AScanResult) IsAdaptiveNeutral() bool {
 	if r.Clean {
 		return false
 	}
-	if r.IsEntropyOnly() {
+	if r.IsEntropyOnly() || r.IsNumberOnlyCardRuns() {
 		return true
 	}
 	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
@@ -1466,6 +1499,11 @@ func (r A2AScanResult) IsAdaptiveNeutral() bool {
 		}
 	}
 	return true
+}
+
+// IsNumberOnlyCardRuns excludes other evidence and incomplete inspection.
+func (r A2AScanResult) IsNumberOnlyCardRuns() bool {
+	return scanner.OnlyNumberOnlyCardRuns(r.DLPFindings) && len(r.InjectFindings) == 0 && len(r.URLFindings) == 0 && r.EntropyFinding == nil && !r.BudgetExceeded && !r.InspectionIncomplete && r.ScanError == ""
 }
 
 // IsEntropyOnly distinguishes opaque content from concrete A2A findings even

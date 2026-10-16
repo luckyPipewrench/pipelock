@@ -34,7 +34,7 @@ func TestCardRuns(t *testing.T) {
 			if tt.name == "over depth" {
 				depth = 1
 			}
-			if got := slices.Contains(CardRuns(tt.input, depth), card); got != tt.want {
+			if got := slices.ContainsFunc(CardRuns(tt.input, depth), func(run CardRun) bool { return run.Digits == card }); got != tt.want {
 				t.Fatalf("candidate found=%v want=%v", got, tt.want)
 			}
 		})
@@ -59,7 +59,7 @@ func TestCardRunsOverLimit(t *testing.T) {
 func TestBoundaryCardRuns(t *testing.T) {
 	card := "4111" + "1111" + "1111" + "1111"
 	view := "4111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,,"
-	if !slices.Contains(BoundaryCardRuns(view), card) {
+	if !slices.ContainsFunc(BoundaryCardRuns(view), func(run CardRun) bool { return run.Digits == card }) {
 		t.Fatal("decimal scalar pieces were not joined")
 	}
 }

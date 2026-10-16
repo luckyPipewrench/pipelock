@@ -27,8 +27,12 @@ the offending hook.
 """
 
 import importlib.util
+import io
+import logging
 import os
 import sys
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 class _Event:
@@ -136,6 +140,28 @@ def main():
                     file=sys.stderr,
                 )
                 return 1
+
+    # Success must retain the hook's operator record without changing allow.
+    record = "pipelock: warning: number-only JSON card run detected (action=warn)"
+    logs = io.StringIO()
+    logger = logging.getLogger(mod.__name__)
+    handler = logging.StreamHandler(logs)
+    logger.addHandler(handler)
+    try:
+        for stderr in (b"", record.encode("utf-8")):
+            logs.truncate(0)
+            logs.seek(0)
+            with patch.object(mod, "_resolve_pipelock", return_value="/synthetic/pipelock"), patch.object(
+                mod, "_resolve_config", return_value=None
+            ), patch.object(mod.subprocess, "run", return_value=SimpleNamespace(
+                returncode=0, stdout=b"{}", stderr=stderr
+            )):
+                decision = mod._invoke({"hook_event_name": "transform_tool_result"})
+            if decision != {} or (stderr and logs.getvalue().count(record) != 1) or (not stderr and logs.getvalue()):
+                print("FAIL: successful hook warning was lost or altered allow", file=sys.stderr)
+                return 1
+    finally:
+        logger.removeHandler(handler)
 
     captured = []
     mod._invoke = lambda payload: captured.append(payload) or {"decision": "allow"}

@@ -16,6 +16,7 @@ on uncertainty rather than fail open.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -111,6 +112,11 @@ def _invoke(payload: dict) -> dict:
             "decision": "block",
             "reason": f"pipelock hermes hook exit {proc.returncode}: {stderr}",
         }
+
+    # The hook writes non-blocking operator records on stderr even on success.
+    stderr = proc.stderr.decode("utf-8", errors="replace").strip()
+    if stderr:
+        logging.getLogger(__name__).warning("%s", stderr)
 
     raw = proc.stdout.decode("utf-8", errors="replace").strip()
     if not raw:

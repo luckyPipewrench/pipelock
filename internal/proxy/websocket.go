@@ -1838,13 +1838,25 @@ func (r *wsRelay) scanClientText(ctx context.Context, log *audit.Logger, scanInp
 
 func (r *wsRelay) scanClientTextWithCardView(ctx context.Context, log *audit.Logger, scanInput, cardInput []byte) (blocked bool) {
 	dlpResult := r.scanner.ScanTextForDLPWithCardView(ctx, string(scanInput), string(cardInput))
+	return r.handleClientTextResult(log, scanInput, dlpResult, false)
+}
+
+func (r *wsRelay) scanClientNumberText(ctx context.Context, log *audit.Logger, text, cards []byte) bool {
+	result := r.scanner.ScanTextForDLPWithTypedCardView(ctx, string(text), string(cards))
+	return r.handleClientTextResult(log, text, result, true)
+}
+
+func (r *wsRelay) handleClientTextResult(log *audit.Logger, scanInput []byte, dlpResult scanner.TextDLPResult, crossMessage bool) bool {
 	filteredMatches, audienceAllows := r.scanner.FilterTextDLPMatchesForDestination(dlpResult.Matches, r.targetURL, "websocket_frame")
-	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
 	for _, allow := range audienceAllows {
 		if err := r.recordCredentialAudienceAllow(allow); err != nil {
 			return r.blockOnCredentialAudienceReceiptFailure(log, err)
 		}
 	}
+	if crossMessage && r.blockCrossMessageRedaction(log, filteredMatches) {
+		return true
+	}
+	dlpResult.Matches = r.filterClientFrameDLPMatches(filteredMatches)
 	var addrFindings []addressprotect.Finding
 	if checker := r.scanner.AddressChecker(); checker != nil {
 		addrFindings = checker.CheckText(string(scanInput), r.agent).Findings
@@ -1895,7 +1907,16 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 			crossAddr = wsCrossMessageAddressFindings(combinedAddr.Findings, prevAddr.Findings, currAddr.Findings)
 		}
 	}
-	if r.redaction != nil && r.redaction.required && len(crossDLP) > 0 {
+	if r.blockCrossMessageRedaction(log, crossDLP) {
+		return true
+	}
+
+	crossDLP = r.filterClientFrameDLPMatches(crossDLP)
+	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+}
+
+func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanner.TextDLPMatch) bool {
+	if r.redaction != nil && r.redaction.required && len(matches) > 0 && !scanner.OnlyNumberOnlyCardRuns(matches) {
 		reason := "redaction blocked request: websocket cross-message secret cannot be redacted"
 		r.recordFinding(session.SignalBlock, log, scannerLabelRedaction, reason)
 		log.LogWSBlocked(audit.WSBlockedEvent{
@@ -1922,8 +1943,7 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 		return true
 	}
 
-	crossDLP = r.filterClientFrameDLPMatches(crossDLP)
-	return r.handleClientTextFindings(log, crossDLP, crossAddr)
+	return false
 }
 
 func (r *wsRelay) filterClientFrameDLPMatches(matches []scanner.TextDLPMatch) []scanner.TextDLPMatch {
@@ -2008,7 +2028,8 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		}
 		wsBundleRules := dlpBundleRules(dlpMatches)
 		hardBlock := shouldHardBlockCriticalDLP(dlpMatches, r.cfg.EnforceEnabled())
-		if hardBlock || r.cfg.EnforceEnabled() {
+		numberOnly := scanner.OnlyNumberOnlyCardRuns(dlpMatches)
+		if hardBlock || (r.cfg.EnforceEnabled() && !numberOnly) {
 			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
 			log.LogWSBlocked(audit.WSBlockedEvent{
@@ -2035,7 +2056,10 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		}
 
 		baseAction := config.ActionWarn
-		effectiveAction := decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+		effectiveAction := baseAction
+		if !numberOnly {
+			effectiveAction = decide.UpgradeAction(baseAction, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
+		}
 		if effectiveAction == config.ActionBlock {
 			reason := fmt.Sprintf("DLP match: %s (escalated)", strings.Join(names, ", "))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
@@ -2064,7 +2088,9 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 			return true
 		}
 
-		r.recordFinding(session.SignalNearMiss, log, scanner.ScannerDLP, fmt.Sprintf("DLP match: %s", strings.Join(names, ", ")))
+		if !numberOnly {
+			r.recordFinding(session.SignalNearMiss, log, scanner.ScannerDLP, fmt.Sprintf("DLP match: %s", strings.Join(names, ", ")))
+		}
 		log.LogWSScan(audit.WSScanEvent{
 			Target:    r.targetURL,
 			Direction: audit.DirectionClientToServer,
@@ -2405,7 +2431,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	if !result.IsEntropyOnly() {
+	if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
 		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
@@ -2434,7 +2460,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		if !result.IsEntropyOnly() {
+		if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
 			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
 		}
 		blockReason := reason
@@ -2466,7 +2492,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		if !result.IsEntropyOnly() {
+		if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
 			r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
 		}
 		if len(result.DLPMatches) > 0 {
@@ -2852,12 +2878,7 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 			prevCardTail := crossMsgCardTail
 			numberText, numberCard := extract.JSONNumberStreamViews(msg)
 			if len(crossMsgNumberTail) > 0 && numberText != "" {
-				if redactionEnabled {
-					if r.scanClientCrossMessageTextViews(ctx, log, crossMsgNumberTail, []byte(numberText), crossMsgNumberCardTail, []byte(jsonnumber.NumberBoundary+numberCard)) {
-						blocked = true
-						return
-					}
-				} else if r.scanClientTextWithCardView(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
+				if r.scanClientNumberText(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
 					blocked = true
 					return
 				}

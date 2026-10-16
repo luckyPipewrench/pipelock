@@ -15,7 +15,49 @@ import (
 // this marker lets the separate candidate pass recover only typed joins.
 const NumberBoundary = ",\x1f,"
 
-var boundaryRun = regexp.MustCompile(`[0-9]+(?:,+\x1f,[0-9]+)+`)
+// Mixed boundaries retain which side came from a string. NumberBoundary is
+// reserved for two numeric pieces in extractor-produced views.
+const (
+	NumberStringBoundary = ",\x1fs,"
+	StringNumberBoundary = ",\x1fn,"
+)
+
+var (
+	boundaryRun       = regexp.MustCompile(`[0-9]+(?:,+\x1f[snt]?,[0-9]+)+`)
+	boundarySeparator = regexp.MustCompile(`,+\x1f([snt]?),`)
+)
+
+// CardRun retains the provenance of a candidate as well as its digits.
+// NumberOnly requires at least two pieces, all JSON number integer components.
+type CardRun struct {
+	Digits     string
+	NumberOnly bool
+}
+
+type cardPiece struct {
+	digits string
+	number bool
+}
+
+// EscapeCardBoundaries retains scans of input markers without granting type
+// provenance. The t marker declares both neighboring pieces to be strings.
+func EscapeCardBoundaries(text string) string {
+	return strings.NewReplacer("\x1fn,", "\x1ft,", "\x1fs,", "\x1ft,", "\x1f,", "\x1ft,").Replace(text)
+}
+
+// CardBoundary encodes the types at a join in an extractor-produced view.
+func CardBoundary(leftNumber, rightNumber bool) string {
+	if leftNumber && rightNumber {
+		return NumberBoundary
+	}
+	if leftNumber {
+		return NumberStringBoundary
+	}
+	if rightNumber {
+		return StringNumberBoundary
+	}
+	return ""
+}
 
 // These are the existing validateLuhn length bounds. Run enumeration uses
 // them only to cap work; the configured regex and validator decide findings.
@@ -81,18 +123,20 @@ func ValidCardIssuer(digits []byte, n int) bool {
 	return false
 }
 
-func appendCardSubruns(runs []string, pieces []string) []string {
-	for start := range pieces {
+func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
+	for start, first := range pieces {
 		var candidate strings.Builder
+		numberOnly := true
 		for end := start; end < len(pieces); end++ {
-			candidate.WriteString(pieces[end])
+			candidate.WriteString(pieces[end].digits)
+			numberOnly = numberOnly && pieces[end].number
 			size := candidate.Len()
 			if size > cardRunMaxDigits {
 				break
 			}
-			if end > start && size >= cardRunMinDigits {
+			if (end > start || first.number) && size >= cardRunMinDigits {
 				if value := candidate.String(); ValidCardNumber(value) {
-					runs = append(runs, value)
+					runs = append(runs, CardRun{Digits: value, NumberOnly: numberOnly && end > start})
 				}
 			}
 		}
@@ -102,27 +146,36 @@ func appendCardSubruns(runs []string, pieces []string) []string {
 
 // BoundaryCardRuns returns runs made by joining typed scalar atoms. A run
 // needs a typed boundary, so ordinary comma-separated prose is not promoted.
-func BoundaryCardRuns(view string) []string {
-	var runs []string
+func BoundaryCardRuns(view string) []CardRun {
+	var runs []CardRun
 	for _, match := range boundaryRun.FindAllString(view, -1) {
-		parts := strings.Split(match, "\x1f,")
-		pieces := make([]string, 0, len(parts))
-		for _, part := range parts {
-			pieces = append(pieces, strings.TrimRight(part, ","))
+		boundaries := boundarySeparator.FindAllStringSubmatch(match, -1)
+		parts := boundarySeparator.Split(match, -1)
+		pieces := make([]cardPiece, len(parts))
+		for i, part := range parts {
+			number := true
+			if i > 0 && (boundaries[i-1][1] == "s" || boundaries[i-1][1] == "t") {
+				number = false
+			}
+			if i < len(boundaries) && (boundaries[i][1] == "n" || boundaries[i][1] == "t") {
+				number = false
+			}
+			pieces[i] = cardPiece{digits: part, number: number}
 		}
 		runs = appendCardSubruns(runs, pieces)
 	}
 	return runs
 }
 
-// CardRuns returns runs of adjacent JSON scalar values with at least two
-// digit-bearing pieces. Object keys are skipped; arrays, object siblings and
-// nesting do not break a run. A non-digit value does. Each number contributes
+// CardRuns returns adjacent scalar candidates and single numeric cards.
+// NumberOnly is true only for at least two numeric pieces. Object keys are
+// skipped; arrays, object siblings and nesting do not break a run. A non-digit
+// value does. Each number contributes
 // only its written integer component, preserving the single-number fraction
 // policy while still examining separate numbers together. Callers apply their
 // existing card rule to these candidates. Invalid, over-depth or over-budget
 // documents have no typed run and retain the caller's conservative raw scan.
-func CardRuns(text string, maxDepth int) []string {
+func CardRuns(text string, maxDepth int) []CardRun {
 	runs, _ := CardRunsWithLimit(text, maxDepth)
 	return runs
 }
@@ -139,7 +192,7 @@ const (
 // CardRunsWithLimit also reports a valid document whose number or nesting
 // exceeds the typed inspection budget. Callers must refuse that document.
 // Invalid JSON is left to the transport parser or the ordinary text scan.
-func CardRunsWithLimit(text string, maxDepth int) ([]string, CardRunLimit) {
+func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 	if !json.Valid([]byte(text)) {
 		return nil, CardRunWithinBudget
 	}
@@ -150,8 +203,8 @@ func CardRunsWithLimit(text string, maxDepth int) ([]string, CardRunLimit) {
 		expectKey bool
 	}
 	var stack []frame
-	var runs []string
-	var pieces []string
+	var runs []CardRun
+	var pieces []cardPiece
 	flush := func() {
 		runs = appendCardSubruns(runs, pieces)
 		pieces = nil
@@ -183,9 +236,9 @@ func CardRunsWithLimit(text string, maxDepth int) ([]string, CardRunLimit) {
 			}
 			if !allDigits(v) {
 				flush()
-				continue
+			} else {
+				pieces = append(pieces, cardPiece{digits: v})
 			}
-			pieces = append(pieces, v)
 		case json.Number:
 			if _, ok := boundedComponents(v.String()); !ok {
 				return nil, CardRunNumberLimit
@@ -193,11 +246,15 @@ func CardRunsWithLimit(text string, maxDepth int) ([]string, CardRunLimit) {
 			integer, _, _ := strings.Cut(v.String(), ".")
 			integer, _, _ = strings.Cut(integer, "e")
 			integer, _, _ = strings.Cut(integer, "E")
-			if !allDigits(integer) {
+			if allDigits(integer) {
+				pieces = append(pieces, cardPiece{digits: integer, number: true})
+			} else {
 				flush()
-				continue
+				// A minus sign ends adjacency, but does not exempt a single card.
+				if unsigned, signed := strings.CutPrefix(integer, "-"); signed && allDigits(unsigned) {
+					runs = appendCardSubruns(runs, []cardPiece{{digits: unsigned, number: true}})
+				}
 			}
-			pieces = append(pieces, integer)
 		default:
 			flush()
 		}

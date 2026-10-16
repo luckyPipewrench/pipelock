@@ -17,6 +17,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/cliutil"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/rules"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -66,9 +67,10 @@ type HookEvent struct {
 // Context is reserved for the pre_llm_call hook contract but is unused at this
 // release.
 type HookDecision struct {
-	Decision string `json:"decision,omitempty"`
-	Reason   string `json:"reason,omitempty"`
-	Context  string `json:"context,omitempty"`
+	warnings []string // operator records written to stderr, outside the decision schema
+	Decision string   `json:"decision,omitempty"`
+	Reason   string   `json:"reason,omitempty"`
+	Context  string   `json:"context,omitempty"`
 }
 
 // hookCmd returns the `pipelock hermes hook` subcommand. Hermes invokes it as
@@ -182,6 +184,9 @@ func runHook(ctx context.Context, cmd *cobra.Command, configFile string) error {
 	defer sc.Close()
 
 	decision := evaluate(ctx, sc, &event)
+	for _, warning := range decision.warnings {
+		_, _ = fmt.Fprintln(stderr, warning)
+	}
 	return emitDecision(stdout, decision)
 }
 
@@ -274,13 +279,41 @@ type hookScanViews struct {
 	raw         json.RawMessage
 }
 
-func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanViews, surface string, dir scanDirection) HookDecision {
+func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanViews, surface string, dir scanDirection) (decision HookDecision) {
+	numberOnly := false
+	defer func() {
+		if numberOnly {
+			decision.warnings = []string{"pipelock: warning: number-only JSON card run detected (action=warn)"}
+		}
+	}()
 	text, cards := views.text, views.cards
 	if strings.TrimSpace(text) == "" {
 		return allowDecision()
 	}
-	if matches := sc.ScanJSONCardRuns(ctx, string(views.raw)); len(matches) > 0 {
-		return blockDecision(dlpBlockReason(surface, matches[0]))
+	// Inspect the original document and complete JSON documents stored in
+	// individual string leaves, before envelope text joins erase their shape.
+	documents := []string{string(views.raw)}
+	leaves := extract.AllStringsFromJSONResult(views.raw)
+	for _, leaf := range leaves.Strings {
+		trimmed := strings.TrimSpace(leaf)
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			documents = append(documents, leaf)
+		}
+	}
+	var cardBlock *scanner.TextDLPMatch
+	for _, document := range documents {
+		for _, match := range sc.ScanJSONCardRuns(ctx, document) {
+			if match.IsNumberOnlyCardRun() {
+				numberOnly = true
+				continue
+			}
+			if cardBlock == nil {
+				cardBlock = &match
+			}
+		}
+	}
+	if cardBlock != nil {
+		return blockDecision(dlpBlockReason(surface, *cardBlock))
 	}
 
 	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-
@@ -290,14 +323,21 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	// poisoned tool result or operator message is the real inbound threat.
 	var dlp scanner.TextDLPResult
 	if dir == directionInbound {
-		dlp = sc.ScanTextForDLPInboundWithCardView(ctx, text, cards)
+		dlp = sc.ScanTextForDLPInboundWithTypedCardView(ctx, text, cards)
 	} else {
-		dlp = sc.ScanTextForDLPWithCardView(ctx, text, cards)
+		dlp = sc.ScanTextForDLPWithTypedCardView(ctx, text, cards)
 	}
 	if !dlp.Clean && len(dlp.Matches) > 0 {
-		enforceable := dlp.Matches
+		var enforceable []scanner.TextDLPMatch
+		for _, match := range dlp.Matches {
+			if match.IsNumberOnlyCardRun() {
+				numberOnly = true
+			} else {
+				enforceable = append(enforceable, match)
+			}
+		}
 		if dir == directionInbound {
-			enforceable = scanner.EnforceableInboundTextDLPMatches(text, dlp.Matches)
+			enforceable = scanner.EnforceableInboundTextDLPMatches(text, enforceable)
 		}
 		if len(enforceable) > 0 {
 			return blockDecision(dlpBlockReason(surface, enforceable[0]))
@@ -349,7 +389,7 @@ func extractToolInputViews(raw json.RawMessage) (string, string, bool) {
 	// drop into the recursive walker for what is already a leaf value.
 	var asString string
 	if err := json.Unmarshal(raw, &asString); err == nil {
-		return asString, asString, false
+		return asString, jsonnumber.EscapeCardBoundaries(asString), false
 	}
 	extracted := extract.AllStringsFromJSONResult(raw)
 	strs := extracted.Strings

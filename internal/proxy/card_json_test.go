@@ -56,7 +56,11 @@ func TestCardJSONRequestBody(t *testing.T) {
 				if tt.clean && !redaction && string(out) != tt.body {
 					t.Fatalf("metrics changed: %s", out)
 				}
-				if !tt.clean && result.Action != config.ActionBlock {
+				wantAction := config.ActionBlock
+				if scanner.OnlyNumberOnlyCardRuns(result.DLPMatches) {
+					wantAction = config.ActionWarn
+				}
+				if !tt.clean && result.Action != wantAction {
 					t.Fatalf("non-clean request did not block: %+v", result)
 				}
 			})

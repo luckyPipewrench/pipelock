@@ -25,7 +25,7 @@ Use GitHub CLI v2.97.0 or later for attestation verification; older versions hav
 git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
-# Or download the v3.7.0 Linux amd64 archive after publication
+# Or download the v3.7.0 Linux amd64 archive
 gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
 gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
 tar xzf pipelock_3.7.0_linux_amd64.tar.gz

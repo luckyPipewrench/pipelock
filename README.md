@@ -106,7 +106,7 @@ The full argument for why proof beats promises is in [demonstration over attesta
 
 ## Quick Start
 
-These examples target v3.7.0 once its release artifacts are published. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
+These examples target the published v3.7.0 release. For an existing deployment, read the [3.7 upgrade guide](docs/guides/upgrading-to-3.7.md) before changing the binary or configuration.
 
 ```bash
 # Build the current release from source (Community edition, Go 1.26+)
@@ -128,7 +128,7 @@ pipelock check --config ./pipelock.yaml --url "https://docs.python.org/3/"      
 # Download a binary
 # See https://github.com/luckyPipewrench/pipelock/releases
 
-# Docker (after v3.7.0 image publication)
+# Docker
 docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 
 # Homebrew on macOS
@@ -563,7 +563,7 @@ For false positive tuning: **[docs/false-positive-tuning.md](docs/false-positive
 ## Deployment
 
 ```bash
-# Docker (after v3.7.0 image publication)
+# Docker
 docker pull ghcr.io/luckypipewrench/pipelock:3.7.0
 docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
   ghcr.io/luckypipewrench/pipelock:3.7.0 \
@@ -573,7 +573,7 @@ docker run -p 8888:8888 -v "$(pwd)/pipelock.yaml":/config/pipelock.yaml:ro \
 pipelock generate docker-compose --agent claude-code -o docker-compose.yaml
 docker compose up
 
-# Kubernetes with Helm (after v3.7.0 chart publication, Helm 3.8+)
+# Kubernetes with Helm (Helm 3.8+)
 helm install pipelock oci://ghcr.io/luckypipewrench/charts/pipelock --version 3.7.0
 ```
 
@@ -583,7 +583,7 @@ Production recipes for Docker Compose, Kubernetes sidecar + NetworkPolicy, iptab
 
 ## CI Integration
 
-The source commit below pins the action implementation, not a release tag. Its explicit `version` selects the v3.7.0 binary once that release is published.
+The commit below pins the action source; its `action.yml` is identical to the one at the v3.7.0 tag. The action's `version` input defaults to `latest`, so the explicit `version` keeps the binary on 3.7.0.
 
 ```yaml
 # .github/workflows/pipelock.yaml

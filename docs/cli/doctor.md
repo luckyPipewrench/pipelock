@@ -6,6 +6,7 @@
 pipelock doctor --config /etc/pipelock/pipelock.yaml
 pipelock doctor --config /etc/pipelock/pipelock.yaml --json
 pipelock doctor --config /etc/pipelock/pipelock.yaml --check-ports
+pipelock doctor --config /etc/pipelock/pipelock.yaml --startup
 ```
 
 The command does not make network requests. It checks local config, file readability, selected environment variables, and deployment prerequisites that can be inferred from the current process.
@@ -16,6 +17,7 @@ The command does not make network requests. It checks local config, file readabi
 |---|---|---|
 | `http_proxy` | HTTP | Whether at least one fetch, forward, WebSocket, or reverse-proxy listener is configured and whether global `enforce` is blocking. |
 | `tls_interception` | HTTP | Whether TLS interception is enabled and the configured CA certificate/key are readable. |
+| `tls_interception_coverage` | HTTP | Whether CONNECT HTTPS content visibility matches the enabled content scanners, or HTTPS bodies stay tunnel-level only because TLS interception is off. |
 | `request_body_scanning` | HTTP | Whether request-body scanning is enabled with blocking action. |
 | `browser_shield` | HTTP | Whether Browser Shield is enabled and whether HTTPS body visibility depends on TLS interception. |
 | `mcp_wrapper_scanning` | MCP | Which wrapper-dependent MCP features are configured and need proof that the agent launches through `pipelock mcp proxy` or a Pipelock MCP listener. |
@@ -27,8 +29,13 @@ The command does not make network requests. It checks local config, file readabi
 | `config_exemption_semantics` | Config | Whether `response_scanning.exempt_domains` / `adaptive_enforcement.exempt_domains` is set on a scanner that is disabled, making the exemption inert. |
 | `config_action_divergence` | Config | Whether an independently enabled sub-detector carries an action weaker than the section enclosing it, so findings from that sub-detector resolve to the weaker value. Advisory: a weaker child is often the right operational choice, and this changes no enforcement decision. |
 | `config_semantics` | Config | A semantic config finding whose category this release does not record a check name for. It names no specific knob, so read the detail rather than assuming which setting to edit. |
+| `flight_recorder` | Config | Whether the flight recorder is enabled, has a `dir`, and that directory is reachable and within its evidence file-count health limit. |
+| `license_status` | Config | Whether a configured license key verifies, and fails when it is expired or revoked. |
+| `available_unconfigured_knobs` | Config | Informational list of security-relevant optional settings that are available but not configured. |
 | `sentry` | Host | Whether Sentry telemetry is enabled and a DSN is present without printing the DSN value. |
 | `direct_egress_boundary` | Host | Reminder that proxy env vars are not a wall; direct egress requires `pipelock contain`, sandboxing, NetworkPolicy, firewalling, or equivalent controls. |
+| `startup_dlp_secrets_file` | Host | With `--startup`, whether `dlp.secrets_file` loads for the current user. |
+| `startup_tls_ca` | Host | With `--startup`, whether the configured TLS interception CA certificate and key parse. |
 | `port_collisions:*` | Host | With `--check-ports`, whether configured listener ports are already held by another process. On Linux, this uses `/proc/net/tcp*` plus `/proc/<pid>/fd`; run as root when cross-user process ownership hides PID details. Non-Linux hosts report the check as unavailable. |
 
 ## Semantic Config Validation (Inert Exemptions)
@@ -57,4 +64,6 @@ These checks are deliberately conservative: a warning is emitted only when inert
 - Run without `sudo` when checking service-user file readability. When run as root, DAC checks reflect root's view and may make unreadable service files look reachable. The file-sentry check names the user it checked; run it as the service user before a restart.
 - `doctor` does not prove that an agent launcher has consumed `PIPELOCK_MCP_PROXY_URL` or `PIPELOCK_MCP_CONFIG`; it tells you that MCP wrapper-dependent protections require that proof.
 - `doctor` does not prove Kubernetes NetworkPolicy enforcement. Pair it with cluster smoke tests for direct-egress fail-closed behavior.
+- Use `--startup` on the host where Pipelock runs, with its mounted files present, for startup-equivalent checks that must open files. `pipelock check` validates config shape and path permissions, but not whether an existing file can be loaded.
+- Use `--no-color` to disable colored terminal output.
 - Use `--json` for CI gates and dashboards. The JSON report includes per-check `configured`, `reachable`, `enforcing`, `detail`, and `next` fields.

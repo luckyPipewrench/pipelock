@@ -15,7 +15,7 @@ updates your cluster.
 
 ## Get the exact image set
 
-After v3.7.0 is published, this downloads its immutable image set into the current directory.
+This downloads the v3.7.0 immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash

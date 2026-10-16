@@ -204,7 +204,7 @@ asyncio.run(main())
 
 ### LangGraph Docker image with Pipelock
 
-After v3.7.0 is published, download and verify its [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz) in the build directory.
+Download and verify the v3.7.0 [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz) in the build directory.
 
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 

@@ -187,6 +187,18 @@ if ! "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}//" > "${tmp
 	cat "${tmp}/check.out" >&2
 	exit 1
 fi
+# An argument naming no directory must refuse, never fall back to a served-only pass.
+for empty_dir in '' '/' '//'; do
+	if "${script_dir}/check-live.sh" "${origin}" "${empty_dir}" > "${tmp}/check.out" 2>&1; then
+		echo "viewer directory argument '${empty_dir}' skipped the local comparison" >&2
+		exit 1
+	fi
+	if ! grep -q 'names no directory' "${tmp}/check.out"; then
+		echo "viewer directory argument '${empty_dir}' failed for the wrong reason" >&2
+		cat "${tmp}/check.out" >&2
+		exit 1
+	fi
+done
 printf 'tampered\n' > "${tmp}/web/asset file.txt"
 if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
 	echo 'tampered served file was accepted' >&2

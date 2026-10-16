@@ -16,6 +16,12 @@ while [ -n "${site_dir}" ] && [ "${site_dir}" != "-" ] && [ "${site_dir}" != "${
 	site_dir="${site_dir%/}"
 done
 expected_version="${3:-}"
+# An argument that names no directory ("", "/") must not quietly become "no local
+# comparison"; only an omitted argument or "-" skips it.
+if [ "$#" -ge 2 ] && [ "${2}" != - ] && [ -z "${site_dir}" ]; then
+	echo "[check-live] ERROR: site viewer directory names no directory: '${2}'" >&2
+	exit 2
+fi
 if [[ ! "${origin}" =~ ^https?://[^/@?#]+$ ]]; then
 	echo "[check-live] ERROR: origin must be an HTTP(S) origin without a path or credentials" >&2
 	exit 2

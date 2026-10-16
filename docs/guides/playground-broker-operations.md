@@ -342,6 +342,6 @@ record. With a site viewer directory, it also compares every viewer file with
 the local checkout and notes when the site has newer commits; a site commit
 that leaves the viewer unchanged is not drift. The WASM verifier and its
 JavaScript shim are built outputs and are skipped in that local comparison.
-Use `-` for the viewer directory when checking only an expected version. Any missing file, mismatched hash, unhealthy
+Use `-` for the viewer directory when checking only an expected version; an empty or `/` argument is refused rather than treated as no viewer. Any missing file, mismatched hash, unhealthy
 broker, version mismatch, or build record marked dirty (`dirty`, `pipelock_dirty`, or `site_dirty`) makes the command fail. A restored image built before this record does not serve `/build-info.json`; that failure means the check does not apply to it, so confirm health and the recorded image digest instead of treating the rollback as bad. The script uses `curl` and
 `jq` and does not change the deployment or either checkout.

@@ -23,24 +23,25 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
 		return nil
 	}
-	if scanner.IsVerifiedImageResponseBody(body) {
-		return nil // Images are scanned after media policy removes metadata.
-	}
 	contentType := responseContentType(headers)
 	pipeline := detectShieldPipelineForResponse(contentType, body, headers)
 	if shieldLeavesBodyUnchanged(pipeline) {
 		return nil
 	}
+	// Scan what the transport's own scan reads once media policy has run, so
+	// image metadata the existing path removes is not retained and metadata it
+	// keeps is not lost to a rewrite.
+	surface := shieldScanSurface(cfg, contentType, body, headers, target)
 	var result scanner.ResponseScanResult
 	mediaType, validMediaType := shieldMediaTypeEssence(contentType)
-	fetchHTML := transport == TransportFetch && validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
+	fetchHTML := transport == TransportFetch && validMediaType && (mediaType == "text/html" || mediaType == "application/xhtml+xml") && !scanner.IsVerifiedImageResponseBody(surface)
 	if fetchHTML {
-		content, utf16, err := decodeShieldUTF16(body, contentType, pipeline)
+		content, utf16, err := decodeShieldUTF16(surface, contentType, pipeline)
 		if err != nil {
 			return nil // Shield and the body scanner retain their error handling.
 		}
 		if !utf16 {
-			content = string(body)
+			content = string(surface)
 		}
 		hidden := extractHiddenContent(content)
 		if hidden == "" {
@@ -48,15 +49,34 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 		}
 		result = sc.ScanResponseWithSuppress(ctx, hidden, target, cfg.Suppress)
 	} else {
-		result = sc.ScanResponseBodyWithSuppress(ctx, body, target, cfg.Suppress)
+		result = sc.ScanResponseBodyWithSuppress(ctx, surface, target, cfg.Suppress)
 	}
 	return &result
+}
+
+// shieldScanSurface returns the bytes the transport's own scan reads for this
+// response. Media policy runs after Browser Shield on fetch, forward and
+// CONNECT, so the pre-Shield bytes still hold image metadata and trailing bytes
+// it removes before scanning, and hold metadata it leaves in place when the
+// policy is off, skips metadata stripping, or exempts a challenge host. A
+// refused verdict keeps the original bytes: the response is blocked before any
+// scan result is consulted. SVG has no metadata to strip, so it passes as is.
+func shieldScanSurface(cfg *config.Config, contentType string, body []byte, headers http.Header, target string) []byte {
+	host := ""
+	if parsed, err := url.Parse(target); err == nil {
+		host = parsed.Hostname()
+	}
+	verdict := applyMediaPolicy(cfg, contentType, body, mediaPolicyOptions{svgShielded: true, headers: headers, host: host})
+	if verdict.Blocked || verdict.StripResult == nil || !verdict.StripResult.Changed() {
+		return body
+	}
+	return verdict.Body
 }
 
 // scanFetchReadableBeforeShield preserves fetch's original readability result,
 // including its raw-content fallback only when readability is unavailable.
 func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, body []byte, headers http.Header, target string) *scanner.ResponseScanResult {
-	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled || scanner.IsVerifiedImageResponseBody(body) {
+	if !sc.ResponseScanningEnabled() || !cfg.BrowserShield.Enabled {
 		return nil
 	}
 	contentType := responseContentType(headers)
@@ -65,12 +85,16 @@ func scanFetchReadableBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg
 	if !valid || (mediaType != "text/html" && mediaType != "application/xhtml+xml") || shieldLeavesBodyUnchanged(pipeline) {
 		return nil
 	}
-	content, utf16, err := decodeShieldUTF16(body, contentType, pipeline)
+	surface := shieldScanSurface(cfg, contentType, body, headers, target)
+	if scanner.IsVerifiedImageResponseBody(surface) {
+		return nil // handleFetch scans a verified image's metadata, not readable text.
+	}
+	content, utf16, err := decodeShieldUTF16(surface, contentType, pipeline)
 	if err != nil {
 		return nil // Keep the existing Shield/body-scan failure path.
 	}
 	if !utf16 {
-		content = string(body)
+		content = string(surface)
 	}
 	parsed, err := url.Parse(target)
 	if err != nil {

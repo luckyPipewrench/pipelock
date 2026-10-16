@@ -107,8 +107,12 @@ func TestShieldImageScanScope(t *testing.T) {
 					}
 					p := newTestProxyWithConfig(t, cfg)
 					headers := http.Header{"Content-Type": {"text/html"}}
-					if got := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example", transport); got != nil {
-						t.Fatalf("image entered hidden scan: %+v", got)
+					retained := scanBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example", transport)
+					if enabled && !mediaEnabled && (retained == nil || retained.Clean) {
+						t.Fatalf("metadata that media policy leaves in place was not retained: %+v", retained)
+					}
+					if mediaEnabled && retained != nil && !retained.Clean {
+						t.Fatalf("metadata that media policy removes was retained: %+v", retained)
 					}
 					if got := scanFetchReadableBeforeShield(t.Context(), p.scannerPtr.Load(), cfg, body, headers, "https://api.vendor.example"); got != nil {
 						t.Fatalf("image entered readability scan: %+v", got)
@@ -116,6 +120,100 @@ func TestShieldImageScanScope(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func shieldScanImageFixtures() map[string][]byte {
+	badCRC := buildValidPNG([]byte("Comment\x00" + shieldScanDirective))
+	// The tEXt chunk follows the 25-byte IHDR chunk and the 8-byte signature.
+	textStart := 8 + 25
+	textLength := int(badCRC[textStart])<<24 | int(badCRC[textStart+1])<<16 | int(badCRC[textStart+2])<<8 | int(badCRC[textStart+3])
+	badCRC[textStart+8+textLength+3] ^= 0xff
+	return map[string][]byte{
+		"png html comment metadata":  buildValidPNG([]byte("Comment\x00<!-- " + shieldScanDirective + " -->")),
+		"png hidden element":         buildValidPNG([]byte("Comment\x00<div style=\"display:none\">" + shieldScanDirective + "</div>")),
+		"png trailing bytes":         append(buildValidPNG([]byte("Comment\x00ok")), []byte("<p>"+shieldScanDirective+"</p>")...),
+		"png corrupt metadata crc":   badCRC,
+		"jpeg trailing bytes":        append(buildValidJPEG([]byte("ok")), []byte("<p>"+shieldScanDirective+"</p>")...),
+		"jpeg html comment metadata": buildValidJPEG([]byte("<!-- " + shieldScanDirective + " -->")),
+	}
+}
+
+// TestShieldImageMediaSurface pins the pre-Shield scan to what the existing
+// transport scan reads after media policy runs. With media policy off, image
+// metadata reaches that scan, and Shield can rewrite HTML-looking metadata
+// first; with it on, metadata and trailing bytes are removed before the scan.
+func TestShieldImageMediaSurface(t *testing.T) {
+	for name, body := range shieldScanImageFixtures() {
+		for _, transport := range []string{TransportFetch, TransportForward, TransportConnect, TransportReverse} {
+			for _, mediaEnabled := range []bool{false, true} {
+				t.Run(name+"/"+transport+map[bool]string{false: "/media off", true: "/media on"}[mediaEnabled], func(t *testing.T) {
+					statuses := map[bool]int{}
+					for _, shieldEnabled := range []bool{false, true} {
+						cfg := shieldRewriteMarkerConfig()
+						enableShieldRewriteMarkerCategories(cfg)
+						cfg.BrowserShield.Enabled = shieldEnabled
+						cfg.MediaPolicy.Enabled = ptrBool(mediaEnabled)
+						cfg.ResponseScanning.Enabled = true
+						cfg.ResponseScanning.Action = config.ActionBlock
+						statuses[shieldEnabled], _ = requestShieldScan(t, cfg, transport, body, "text/html")
+					}
+					switch {
+					case !mediaEnabled:
+						// Shield must not turn a response the scanner refuses into one it admits.
+						if statuses[false] != http.StatusForbidden || statuses[true] != http.StatusForbidden {
+							t.Fatalf("media off: shield off=%d on=%d, want both 403", statuses[false], statuses[true])
+						}
+					case strings.Contains(name, "trailing") || strings.Contains(name, "crc"):
+						// Media policy removes the carrying bytes, so nothing is left to retain.
+						if statuses[false] != http.StatusOK || statuses[true] != http.StatusOK {
+							t.Fatalf("media on: shield off=%d on=%d, want both 200", statuses[false], statuses[true])
+						}
+					}
+				})
+			}
+		}
+	}
+}
+
+func TestShieldScanSurface(t *testing.T) {
+	headers := http.Header{"Content-Type": {"text/html"}}
+	png := buildValidPNG([]byte("Comment\x00" + shieldScanDirective))
+	trailing := append(buildValidPNG([]byte("Comment\x00ok")), []byte("tail")...)
+	enabled := config.Defaults()
+	enabled.MediaPolicy.Enabled = ptrBool(true)
+	disabled := config.Defaults()
+	disabled.MediaPolicy.Enabled = ptrBool(false)
+	noStrip := config.Defaults()
+	noStrip.MediaPolicy.Enabled = ptrBool(true)
+	noStrip.MediaPolicy.StripImageMetadata = ptrBool(false)
+	challengeHost := config.ShippedChallengeProviderHosts()[0]
+
+	tests := []struct {
+		name   string
+		cfg    *config.Config
+		body   []byte
+		target string
+		kept   bool
+	}{
+		{"strips metadata", enabled, png, "https://api.vendor.example", false},
+		{"drops trailing bytes", enabled, trailing, "https://api.vendor.example", false},
+		{"media policy off", disabled, png, "https://api.vendor.example", true},
+		{"metadata stripping off", noStrip, png, "https://api.vendor.example", true},
+		{"challenge host keeps bytes", enabled, png, "https://" + challengeHost + "/challenge", true},
+		{"non-image", enabled, []byte("<p>hello</p>"), "https://api.vendor.example", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := shieldScanSurface(tc.cfg, "text/html", tc.body, headers, tc.target)
+			if bytes.Equal(got, tc.body) != tc.kept {
+				t.Fatalf("surface unchanged=%v, want %v", bytes.Equal(got, tc.body), tc.kept)
+			}
+		})
+	}
+	svg := []byte("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")
+	if got := shieldScanSurface(enabled, "image/svg+xml", svg, http.Header{"Content-Type": {"image/svg+xml"}}, "https://api.vendor.example"); !bytes.Equal(got, svg) {
+		t.Fatal("SVG must pass through as its own scan surface")
 	}
 }
 

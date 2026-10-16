@@ -6,8 +6,8 @@ Manual-trigger AI security review for pull requests. Comment `/review` on any PR
 
 | Command | Model | Use When |
 |---------|-------|----------|
-| `/review` | GPT-6 Luna at high reasoning for discovery; GPT-6 Sol at low reasoning judges candidates | Quick check, most PRs |
-| `/review deep` | GPT-6 Sol at low reasoning | Adversarial static-diff review (findings-first) |
+| `/review` | GPT-6 Luna at high reasoning for discovery; GPT-6 Sol at high reasoning judges candidates | Quick check, most PRs |
+| `/review deep` | GPT-6 Sol at low reasoning for discovery; GPT-6 Sol at high reasoning judges candidates | Adversarial static-diff review (findings-first) |
 
 ## What It Reviews
 
@@ -78,6 +78,58 @@ finding, and the action's `complete` output stays false until the review reaches
 `clean` or `findings` with coverage of the current pull request base.
 A finding the judge does keep can still show `(needs verification)` when the
 reviewer marked it.
+
+The judge must back each verdict that removes or withholds a candidate:
+
+- A `drop` cites the deciding location as `path:line`, and that line must be
+  current-head code the runner showed the judge for that candidate and not a
+  line the pull request adds, counting every commit of the pull request and
+  not only the change since an earlier review. For a file the pull request
+  deletes, the runner still shows the base-side text so the judge can see what
+  the candidate was about, but that text is not current-head evidence and
+  can't be cited; the drop has to cite unchanged head code that replaces or
+  consumes the deleted code. The count of cited drops is stated in a
+  collapsed "Dropped by the judge with a citation" section, which lists the
+  first eight with the candidate's severity, its cited location and the
+  reason, then how many more. A drop with no citation, one citing a line the
+  judge wasn't shown at the reviewed head, or one citing a line the change adds
+  goes to the one repair. A line counts as shown only if its whole text reached
+  that call's prompt: a line clipped at the context or search-row cap, cut by
+  an evidence bound, or cut short by the byte cap on a repository search is
+  not citable, even though the rest of its window is, and a line only an
+  earlier call showed is not citable in the repair. When the lines the whole pull request adds can't be established,
+  because its diff was unreadable, oversized, unparseable or possibly
+  truncated, no drop is trusted and each such candidate is published as
+  needing verification. The prompt states the rule, and a drop citing an added line is
+  reported to the repair as `drop-cites-added-line`. Other unusable citations
+  are reported as `drop-without-citation`, including well-formed locations
+  that the runner cannot accept as evidence. If the repair still
+  doesn't cite a usable line, the candidate is published as a finding marked
+  `(needs verification: the judge gave no usable citation or outside reason)`,
+  which reads differently from a reviewer's own `(needs verification)`.
+- An `unresolved` verdict names its outside reason in `blocked_on`:
+  `external-system`, `runtime-behaviour`, `published-artifact` or
+  `omitted-unit`. `omitted-unit` counts only when the runner recorded that it
+  left something out for that candidate: a fallback window, a truncated
+  context (including a single line clipped to the context budget, which takes
+  the same truncation marker), cut or unavailable cross-file evidence, failed
+  or truncated requested evidence, or an unanswered request. Text in the shown files is never read to decide
+  this. Without a valid reason the validation code is
+  `unresolved-without-outside-reason`, and if the repair doesn't supply one the
+  candidate is published with the same judge marker, `(needs verification: the
+  judge gave no usable citation or outside reason)`.
+- A `citation`, `blocked_on` or `requests` value of the wrong JSON type is
+  rejected as `invalid-field-type` and goes to the repair.
+
+Shown locations come from what the runner rendered, not from reading the
+prompt text back, and a rendered row counts only when it equals the whole
+source line it names, so text in a shown file that imitates a `path:N:` row
+adds nothing. Line numbers count `\n` only, as git does, so a form feed
+or Unicode line separator in a file doesn't shift them. Search results use
+`git grep -z`, so a filename containing `:12:` can't add a location the judge
+never saw. A checkout or file path that can't be resolved, such as a symlink
+loop, is treated as unreadable and reported as unavailable evidence instead of
+failing the run.
 Default-mode deletion compression is disclosed separately; deep mode reads
 deletions in full.
 
@@ -161,7 +213,7 @@ Values must name models available through the direct OpenAI API.
 - Uses explicit token budgets; deep mode splits an oversized hunk into complete
   contiguous review units rather than summarizing or dropping its deletion lines
 - `/review` uses the efficient model by default
-- `/review deep` is opt-in for GPT-6 Sol at low reasoning
+- `/review deep` is opt-in for GPT-6 Sol at low reasoning; its judge runs at high reasoning, as in default mode, and both review profile lines name the judge
 - Re-running a command against an unchanged head does not review again; it
   links the review that already covered it
 
@@ -239,9 +291,10 @@ time. Nothing here claims a finding was resolved.
   categories for its own candidate indices. It still must decide the candidate;
   diagnostics do not relax validation, add calls, or make an incomplete result
   clean. A malformed primary response can use that same repair slot. The limit
-  remains two judge calls, with a 4,096-token output cap for repair.
+  remains two judge calls, with a 16,384-token output cap and a 210-second
+  timeout for the repair, which reasons at the judge's high effort.
 
-Each candidate has a stable ID and its own evidence window, even if several candidates name the same file. The runner prefers a valid head line, then a named definition or relevant changed hunk. File-start and changed-hunk fallbacks are labelled. Deleted paths use the bound diff and available base content. Content reads are cached by immutable commit and path. Searches can find more code in the same file outside the supplied ranges. Failed reads and searches affect the candidate that needs them; they don't cancel judgment of its siblings.
+Each candidate has a stable ID and its own evidence window, even if several candidates name the same file. The runner prefers a valid head line, then a named definition or relevant changed hunk. File-start and changed-hunk fallbacks are labelled. Deleted paths use the bound diff and available base content, which explains the candidate but is not citable evidence for a drop. Content reads are cached by immutable commit and path. Searches can find more code in the same file outside the supplied ranges. Failed reads and searches affect the candidate that needs them; they don't cancel judgment of its siblings.
 
 The comment retains each unsettled candidate's sanitized reason, evidence source and retrieval outcome. Missing evidence can't dismiss a candidate. Truncated surrounding evidence can still contain the fact that decides a premise. The repair uses the remaining prompt allowance for unresolved candidates, invalid decisions and overflow candidates that fit. Candidates that still don't fit remain visibly incomplete. Prompt accounting includes labels, escaped strings, summaries and truncation notices without shortening candidate claims.
 

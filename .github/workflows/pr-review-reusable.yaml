@@ -274,7 +274,7 @@ jobs:
           done <<< "${body}"
           case "${REVIEW_MODE}" in
             default) profile_pattern='^\*\*Review profile:\*\* `default` with `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\); candidate judge `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\)\.$' ;;
-            deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\)\.$' ;;
+            deep) profile_pattern='^\*\*Review profile:\*\* `deep` with `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\)(; candidate judge `[A-Za-z0-9._:/-]+` \(`[a-z]+` reasoning\))?\.$' ;;
             *) profile_pattern='a^' ;;
           esac
           if [[ ! "${profile}" =~ ${profile_pattern} ]]; then

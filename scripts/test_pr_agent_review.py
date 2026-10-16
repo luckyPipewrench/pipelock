@@ -164,6 +164,13 @@ class CompletionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([("a", "stop"), ("b", "stop")], await asyncio.gather(router.run(), router.run()))
         self.assertEqual([HAIKU, OPENAI, OPENAI], [c.args[0] for c in complete.await_args_list])
 
+    async def test_failure_stops_queued_chunks_before_another_request(self):
+        complete = AsyncMock(side_effect=[("partial", "length"), ("b", "stop")])
+        router = review.CompletionChain([(HAIKU, "one")], complete, 3)
+        results = await asyncio.gather(router.run(), router.run(), return_exceptions=True)
+        self.assertTrue(all(isinstance(r, review.ReviewAbort) for r in results))
+        self.assertEqual(1, complete.await_count)
+
     async def test_exhaustion_is_failure(self):
         router = review.CompletionChain([(HAIKU, "one")], AsyncMock(side_effect=billing()), 2)
         with self.assertRaises(review.ReviewAbort):

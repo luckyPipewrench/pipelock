@@ -166,7 +166,7 @@ class RuntimeTests(unittest.TestCase):
                     self.output = "review:\n  security_concerns: None\n  relevant_tests: 'No'\n  key_issues_to_review: []\n"
                     self.provider.publish_persistent_comment.side_effect = RuntimeError("fixture publication failed")
                 completion = AsyncMock(return_value=self.response())
-                with self.assertRaises((review.ReviewAbort, Exception)):
+                with self.assertRaises(review.ReviewAbort):
                     self.run_adapter(completion)
                 completion.assert_awaited_once()
                 self.provider.publish_comment.assert_not_called()

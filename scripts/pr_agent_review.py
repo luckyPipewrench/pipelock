@@ -105,29 +105,40 @@ class CompletionChain:
         self.max_calls = max_calls
         self.calls = 0
         self.index = 0
+        self.aborted = False
         self.lock = asyncio.Lock()
 
     async def run(self, *args):
         # Upstream chunks run concurrently. Serialize so rejected slots stay retired
-        # and the aggregate call limit cannot race.
+        # and the aggregate call limit cannot race. Upstream gather does not cancel
+        # sibling chunks, so the first failure must stop every queued request.
         async with self.lock:
-            if self.calls >= self.max_calls:
-                raise ReviewAbort("Completion budget exceeded")
-            while self.index < len(self.chain):
-                model, slot = self.chain[self.index]
-                try:
-                    result = await self.complete(model, slot, *args)
-                except Exception as error:
-                    if billing_rejection(error):
-                        self.index += 1
-                        continue
-                    raise ReviewAbort("Provider failed; ambiguous requests are never retried") from None
-                if result[1] not in ("stop", "end_turn"):
-                    raise ReviewAbort("Provider returned an incomplete completion")
-                self.calls += 1
-                print(f"Completed review call {self.calls} with {model}")
-                return result
-            raise ReviewAbort("Configured provider credits exhausted")
+            if self.aborted:
+                raise ReviewAbort("Review already failed; no further provider requests")
+            try:
+                return await self._run_locked(*args)
+            except BaseException:
+                self.aborted = True
+                raise
+
+    async def _run_locked(self, *args):
+        if self.calls >= self.max_calls:
+            raise ReviewAbort("Completion budget exceeded")
+        while self.index < len(self.chain):
+            model, slot = self.chain[self.index]
+            try:
+                result = await self.complete(model, slot, *args)
+            except Exception as error:
+                if billing_rejection(error):
+                    self.index += 1
+                    continue
+                raise ReviewAbort("Provider failed; ambiguous requests are never retried") from None
+            if result[1] not in ("stop", "end_turn"):
+                raise ReviewAbort("Provider returned an incomplete completion")
+            self.calls += 1
+            print(f"Completed review call {self.calls} with {model}")
+            return result
+        raise ReviewAbort("Configured provider credits exhausted")
 
 
 def configure():
@@ -243,7 +254,12 @@ async def review(settings):
 
     reviewer = Reviewer(f"https://github.com/{repo}/pull/{number}", ai_handler=Handler)
     reviewer.check_binding()
-    await reviewer.run()
+    try:
+        await reviewer.run()
+    except Exception as error:
+        # Upstream raises generic exceptions, for example after an unparseable
+        # prediction. Report only the class; the message can carry model output.
+        raise ReviewAbort(f"PR-Agent review failed ({type(error).__name__})") from None
     check_complete(reviewer, router.calls, command_failed())
 
 

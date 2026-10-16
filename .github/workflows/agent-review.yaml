@@ -7,10 +7,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: agent-review-${{ github.repository }}-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   admit:
     name: Admit maintainer command
@@ -58,6 +54,11 @@ jobs:
     name: Review admitted diff
     needs: admit
     if: needs.admit.outputs.admitted == 'true'
+    # Job-scoped so unrelated comments, which never pass admission, cannot
+    # replace a queued maintainer command in the group.
+    concurrency:
+      group: agent-review-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

@@ -401,7 +401,7 @@ func (h *Handler) scanToolCall(
 				}
 				leaf := sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
 				if !leaf.Clean {
-					dlpResult.Matches = append(dlpResult.Matches, leaf.Matches...)
+					dlpResult.Matches = appendNewDLPMatches(dlpResult.Matches, leaf.Matches)
 					dlpResult.Clean = false
 					if !scanner.OnlyNumberOnlyCardRuns(leaf.Matches) {
 						break
@@ -640,6 +640,32 @@ func errorResponse(kind, code, message string, retryable bool) Response {
 			{Code: code, Message: message, Retryable: retryable},
 		},
 	}
+}
+
+// appendNewDLPMatches adds leaf matches the joined scan has not already
+// reported. A leaf that is itself the whole joined text, such as a lone string
+// holding serialized JSON, repeats the joined match, and the response promises
+// one finding per scanner match. Identity matches the MCP input merge: pattern,
+// encoding, and whether the match is a number-only card run.
+func appendNewDLPMatches(existing, incoming []scanner.TextDLPMatch) []scanner.TextDLPMatch {
+	type matchKey struct {
+		name       string
+		encoded    string
+		numberOnly bool
+	}
+	seen := make(map[matchKey]struct{}, len(existing)+len(incoming))
+	for _, match := range existing {
+		seen[matchKey{name: match.PatternName, encoded: match.Encoded, numberOnly: match.IsNumberOnlyCardRun()}] = struct{}{}
+	}
+	for _, match := range incoming {
+		key := matchKey{name: match.PatternName, encoded: match.Encoded, numberOnly: match.IsNumberOnlyCardRun()}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		existing = append(existing, match)
+	}
+	return existing
 }
 
 func cardDLPDecision(matches []scanner.TextDLPMatch) string {

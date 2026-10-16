@@ -53,3 +53,37 @@ func TestCardJSONToolCallScalarLeaves(t *testing.T) {
 		})
 	}
 }
+
+func TestCardJSONToolCallLeafFindingsNotRepeated(t *testing.T) {
+	h := newTestHandler(t)
+	run := "[4111,1111" + ",1111,1111]"
+	card := "4111" + strings.Repeat("1", 12)
+	for _, tt := range []struct {
+		name      string
+		arguments any
+		decision  string
+		findings  int
+	}{
+		{"lone serialized run string", []any{run}, DecisionWarn, 1},
+		{"number run and string exponent", map[string]any{"ids": []any{4111, 1111, 1111, 1111}, "result": card + "e10001"}, DecisionDeny, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{"kind": KindToolCall, "input": map[string]any{"tool_name": "report", "arguments": tt.arguments}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(string(body)))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testToken)
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, req)
+			var result Response
+			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if result.Decision != tt.decision || len(result.Findings) != tt.findings {
+				t.Fatalf("decision=%s findings=%d want %s/%d", result.Decision, len(result.Findings), tt.decision, tt.findings)
+			}
+		})
+	}
+}

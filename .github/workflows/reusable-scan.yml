@@ -6,7 +6,7 @@
 #     security:
 #       uses: luckyPipewrench/pipelock/.github/workflows/reusable-scan.yml@v3.7.0
 #       with:
-#         pipelock-version: '3.7.0'  # Available after release publication
+#         pipelock-version: '3.7.0'
 #
 # All inputs have sensible defaults. Override what you need.
 
@@ -19,7 +19,7 @@ on:
   workflow_call:
     inputs:
       pipelock-version:
-        description: 'Pipelock version (e.g., "3.4.0"). Defaults to latest.'
+        description: 'Pipelock version (e.g., "3.7.0"). Defaults to latest.'
         type: string
         default: 'latest'
       config-path:

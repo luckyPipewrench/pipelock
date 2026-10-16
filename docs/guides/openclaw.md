@@ -12,7 +12,7 @@ CVE-2026-25253 (CVSS 8.8) is a cross-site WebSocket hijacking attack against Ope
 4. Attacker steals the token, connects to the gateway, disables sandbox and safety guardrails
 5. Attacker invokes `node.invoke` for arbitrary code execution on the host
 
-Pipelock blocks the post-compromise steps of this chain: tool policy blocks dangerous tool invocations, input scanning catches secret exfiltration in tool arguments, and response scanning detects injection in tool results. Pipelock does not currently perform handshake-level DLP on inbound WebSocket connections (that requires listener mode, which is planned but not yet implemented for WS upstreams).
+For MCP calls routed through its proxy, Pipelock applies configured tool policy, input scanning, and response scanning to tool invocations, arguments, and results. These controls don't protect direct gateway connections. Pipelock doesn't provide an inbound WebSocket MCP listener; WebSocket upstreams require stdio mode.
 
 ## Quick Start
 
@@ -274,7 +274,7 @@ Mapped to the CVE-2026-25253 attack chain:
 
 | Attack Step | Pipelock Defense | Layer |
 |---|---|---|
-| Token theft via WS handshake | Not yet mitigated (requires WS listener mode, planned) | -- |
+| Token theft via WS handshake | Not mitigated by the MCP wrapper; no inbound WebSocket MCP listener | -- |
 | Sandbox disable via tool call | Tool policy blocks dangerous tool invocations | MCP proxy |
 | RCE via `node.invoke` | Tool policy deny rules for shell/exec tools | MCP proxy |
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |

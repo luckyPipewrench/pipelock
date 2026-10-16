@@ -127,7 +127,35 @@ pipelock_has_unrecorded_context_file() {
 		rm -f -- "${ignored}"
 		return 2
 	fi
+	if [ "${build_broker}" -eq 1 ]; then
+		local flags
+		if ! flags="$(go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
+		case "${flags}" in
+		*-overlay*|*-modfile*) rm -f -- "${ignored}"; return 1 ;;
+		esac
+	fi
 	if [ ! -s "${ignored}" ]; then rm -f -- "${ignored}"; return 0; fi
+	# The browser verifier is compiled on the host, outside Docker's context.
+	# Go publishes the actual selected sources and embed inputs via go list.
+	if [ "${build_broker}" -eq 1 ]; then
+		local sources input
+		local -A ignored_paths=()
+		while IFS= read -r -d '' file; do ignored_paths["${REPO_ROOT}/${file}"]=1; done < "${ignored}"
+		sources="$(mktemp)"
+		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
+			rm -f -- "${sources}" "${ignored}"
+			return 2
+		fi
+		# go list adds a newline between packages; filenames are NUL-delimited.
+		while IFS= read -r -d '' input; do
+			while [[ "${input}" == $'\n'* ]]; do input="${input#$'\n'}"; done
+			if [ -n "${ignored_paths["${input}"]+x}" ]; then
+				rm -f -- "${sources}" "${ignored}"
+				return 1
+			fi
+		done < "${sources}"
+		rm -f -- "${sources}"
+	fi
 	snapshot="$(mktemp -d)"
 	printf 'FROM scratch\nCOPY . /\n' > "${snapshot}/Dockerfile"
 	for recipe in "${CONTEXT_RECIPES[@]}"; do

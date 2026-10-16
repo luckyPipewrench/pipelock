@@ -13,7 +13,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "${tmp}/source/deploy/fly-playground" "${tmp}/source/deploy/wasm-verify" "${tmp}/source/scripts" "${tmp}/site/static/playground/demo" "${tmp}/bin" "${tmp}/capture"
-printf '.git\npipelock\n' > "${tmp}/source/.dockerignore"
+printf '.git\npipelock\ndocs\n' > "${tmp}/source/.dockerignore"
 cp "${script_dir}/viewer-generated.sh" "${tmp}/source/deploy/fly-playground/viewer-generated.sh"
 cp "${script_dir}/build-images.sh" "${tmp}/source/deploy/fly-playground/build-images.sh"
 cat > "${tmp}/source/scripts/git-version.sh" <<'SCRIPT'
@@ -37,7 +37,7 @@ if [ "$1" = build ]; then
 			context="${arg#type=local,dest=}"
 			mkdir -p "${context}"
 			cp -a . "${context}/"
-			rm -rf -- "${context}/.git" "${context}/pipelock"
+			rm -rf -- "${context}/.git" "${context}/pipelock" "${context}/docs"
 			exit 0 ;;
 		esac
 	done
@@ -54,6 +54,9 @@ SCRIPT
 chmod +x "${tmp}/source/scripts/git-version.sh" "${tmp}/source/deploy/wasm-verify/build.sh" "${tmp}/bin/docker"
 printf '<!doctype html><title>viewer</title>\n' > "${tmp}/site/static/playground/demo/index.html"
 printf 'viewer asset\n' > "${tmp}/site/static/playground/demo/asset file.txt"
+mkdir -p "${tmp}/source/cmd/pipelock-verifier-wasm"
+printf 'module fixture.example\n\ngo 1.26\n' > "${tmp}/source/go.mod"
+printf 'package main\nfunc main() {}\n' > "${tmp}/source/cmd/pipelock-verifier-wasm/main.go"
 git -C "${tmp}/source" init -q
 git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid add .
 git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm fixture
@@ -140,6 +143,30 @@ for input in ignored.go configs/extra.yaml; do
 	jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
 	rm -f -- "${tmp}/source/${input}"
 done
+# Host WASM compilation consumes these even when Docker excludes docs/.
+mkdir -p "${tmp}/source/docs/wasm"
+printf 'package main\nimport _ "fixture.example/docs/wasm"\nfunc main() {}\n' > "${tmp}/source/cmd/pipelock-verifier-wasm/main.go"
+printf 'package wasm\nimport "embed"\n//go:embed *.yaml\nvar config embed.FS\n' > "${tmp}/source/docs/wasm/embed.go"
+printf 'base\n' > "${tmp}/source/docs/wasm/base.yaml"
+git -C "${tmp}/source" add cmd/pipelock-verifier-wasm/main.go docs/wasm/embed.go docs/wasm/base.yaml
+git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm 'host wasm fixture'
+printf '/docs/wasm/extra.go\n/docs/wasm/extra.yaml\n' >> "${tmp}/source/.git/info/exclude"
+for input in extra.go extra.yaml; do
+	if [ "${input}" = extra.go ]; then printf 'package wasm\n'; else printf 'extra\n'; fi > "${tmp}/source/docs/wasm/${input}"
+	if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/host.out" 2>&1; then
+		echo "ignored host WASM input accepted: ${input}" >&2; exit 1
+	fi
+	# VM-only does not compile the browser verifier and Docker excludes docs/.
+	"${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/host-vm.out" 2>&1
+	rm -f -- "${tmp}/source/docs/wasm/${input}"
+done
+# GOFLAGS can select replacement source or module bytes outside either tree.
+printf '{"Replace":{}}\n' > "${tmp}/overlay.json"
+if GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/overlay.out" 2>&1; then
+	echo 'source overlay was recorded as clean' >&2; exit 1
+fi
+PLAYGROUND_ALLOW_DIRTY=1 GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/overlay.out" 2>&1
+jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
 printf 'excluded binary\n' > "${tmp}/source/pipelock"
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/excluded.out" 2>&1
 jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null

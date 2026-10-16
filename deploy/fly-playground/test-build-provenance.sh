@@ -181,6 +181,12 @@ if ! grep -q 'site has moved past the built commit' "${tmp}/check.out"; then
 	echo 'moved site commit was not noted' >&2
 	exit 1
 fi
+# A trailing slash names the same directory and must not turn every file into drift.
+if ! "${script_dir}/check-live.sh" "${origin}" "${PLAYGROUND_UI_DIR}//" > "${tmp}/check.out" 2>&1; then
+	echo 'viewer directory with a trailing slash was reported as drift' >&2
+	cat "${tmp}/check.out" >&2
+	exit 1
+fi
 printf 'tampered\n' > "${tmp}/web/asset file.txt"
 if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
 	echo 'tampered served file was accepted' >&2
@@ -200,6 +206,29 @@ if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
 	echo 'unsafe manifest path was accepted' >&2
 	exit 1
 fi
+cp "${tmp}/clean-capture/build-info.json" "${tmp}/web/build-info.json"
+# A record that admits its tree did not match the named commit is a diagnostic
+# image; the drift check must refuse it whichever flag says so.
+for flag in dirty pipelock_dirty site_dirty; do
+	python3 - "${tmp}/clean-capture/build-info.json" "${tmp}/web/build-info.json" "${flag}" <<'PY'
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as stream:
+    info = json.load(stream)
+info[sys.argv[3]] = True
+with open(sys.argv[2], "w", encoding="utf-8") as stream:
+    json.dump(info, stream)
+PY
+	if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then
+		echo "build record with ${flag}=true was accepted" >&2
+		exit 1
+	fi
+	if ! grep -q 'build record is marked dirty' "${tmp}/check.out"; then
+		echo "build record with ${flag}=true failed for the wrong reason" >&2
+		cat "${tmp}/check.out" >&2
+		exit 1
+	fi
+done
 cp "${tmp}/clean-capture/build-info.json" "${tmp}/web/build-info.json"
 printf '{"ok":false}\n' > "${tmp}/web/api/live/health"
 if "${script_dir}/check-live.sh" "${origin}" > "${tmp}/check.out" 2>&1; then

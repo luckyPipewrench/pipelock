@@ -11,6 +11,10 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
 fi
 origin="${1%/}"
 site_dir="${2:-}"
+# A trailing slash makes every local path fail to strip back to the manifest key.
+while [ -n "${site_dir}" ] && [ "${site_dir}" != "-" ] && [ "${site_dir}" != "${site_dir%/}" ]; do
+	site_dir="${site_dir%/}"
+done
 expected_version="${3:-}"
 if [[ ! "${origin}" =~ ^https?://[^/@?#]+$ ]]; then
 	echo "[check-live] ERROR: origin must be an HTTP(S) origin without a path or credentials" >&2
@@ -63,6 +67,12 @@ if ! jq -e '
 		(.value | type == "string" and test("^[0-9a-f]{64}$"))))
 ' >/dev/null <<< "${info}"; then
 	echo "[check-live] ERROR: invalid build-info.json" >&2
+	exit 1
+fi
+# dirty is the bypass mark. Component flags catch a record that names a commit
+# while admitting the tree did not match it. PASS must not mean "diagnostic".
+if jq -e '(.dirty == true) or (.pipelock_dirty == true) or (.site_dirty == true)' >/dev/null <<< "${info}"; then
+	echo "[check-live] ERROR: build record is marked dirty; refusing a diagnostic image" >&2
 	exit 1
 fi
 if ! health="$(fetch api/live/health)"; then

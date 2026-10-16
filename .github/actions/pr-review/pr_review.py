@@ -764,7 +764,10 @@ def _text_lines(text: str) -> list[str]:
     str.splitlines() also breaks at form feeds, U+2028 and other separators,
     which would shift line numbers away from the diff's.
     """
-    lines = [line.removesuffix("\r") for line in text.split("\n")]
+    parts = text.split("\n")
+    # Only newline-terminated rows can have a CRLF terminator. A final
+    # unterminated row retains its carriage return as source content.
+    lines = [line.removesuffix("\r") for line in parts[:-1]] + parts[-1:]
     if lines and lines[-1] == "":
         lines.pop()
     return lines

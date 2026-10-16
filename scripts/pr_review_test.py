@@ -8607,6 +8607,29 @@ class WholeLineCitationTest(OfflineReviewTestCase):
     CONSUMER = "package main\n\nvar GuardValue = guard()\n"
     CANDIDATE = pr_review.Finding("medium", "sample.go", 1, "GuardValue claim", "GuardValue may be unsafe", "fix")
 
+    def test_line_splitting_preserves_unterminated_source_content(self) -> None:
+        for content, expected in (
+            ("", []), ("\n", [""]), ("\r", ["\r"]),
+            ("first\nsecond\r", ["first", "second\r"]),
+            ("first\r\nsecond\r\n", ["first", "second"]),
+            ("first\r\r\nlast\r\r", ["first\r", "last\r\r"]),
+            ("first\u2028second\fthird", ["first\u2028second\fthird"]),
+        ):
+            with self.subTest(content=repr(content)):
+                self.assertEqual(pr_review._text_lines(content), expected)
+
+    def test_a_terminal_carriage_return_reaches_the_citation_prompt(self) -> None:
+        for suffix in ("", "\n", "\r\n", "\r", "\r\r"):
+            with self.subTest(suffix=repr(suffix)):
+                content = "GuardValue = safe" + suffix
+                root, binding, units = self.repo({"sample.go": content})
+                _result, options, model = self.judge(
+                    root, binding, units, self.CANDIDATE, [self.drop("sample.go:1")],
+                )
+                expected = content.removesuffix("\r\n") if content.endswith("\r\n") else content.removesuffix("\n")
+                self.assertEqual(self.prompt(model)["actual_head_context"]["sample.go"], "1: " + expected)
+                self.assert_settled(options, model, self.CANDIDATE, "sample.go", 1, 1)
+
     def repo(self, files: dict[str, str]) -> tuple[pathlib.Path, object, list]:
         """Commit `files`, then change only changed.go, so no fixture file is an added line."""
         directory = tempfile.TemporaryDirectory()

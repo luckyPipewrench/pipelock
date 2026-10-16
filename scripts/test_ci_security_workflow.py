@@ -205,7 +205,7 @@ exit "$DEFAULT_STATUS"
             "CHANGED_FILES_RESULT": "success",
             "DOCS_ONLY": "false",
             "EVENT_NAME": "pull_request",
-            "REPOSITORY": "luckyPipewrench/pipelock",
+            "REPOSITORY": "pipelab-org/pipelock",
         })
         success = subprocess.run(
             ["bash", "-euo", "pipefail", "-c", script],
@@ -257,7 +257,7 @@ exit "$DEFAULT_STATUS"
                 "EVENT_NAME": event,
                 "CHANGED_FILES_RESULT": classifier,
                 "DOCS_ONLY": "false",
-                "REPOSITORY": "luckyPipewrench/pipelock",
+                "REPOSITORY": "pipelab-org/pipelock",
             })
             return subprocess.run(
                 ["bash", "-euo", "pipefail", "-c", script], check=False, env=env, text=True, capture_output=True
@@ -274,7 +274,7 @@ exit "$DEFAULT_STATUS"
         script = step_script(self.build, "Report required build evidence")
         base_env = os.environ.copy()
         base_env.update({name: "success" for name in BUILD_GATE_RESULTS})
-        base_env.update({"REPOSITORY": "luckyPipewrench/pipelock"})
+        base_env.update({"REPOSITORY": "pipelab-org/pipelock"})
 
         def run(event: str, classifier: str, docs: str, **results: str) -> int:
             env = base_env | {"EVENT_NAME": event, "CHANGED_FILES_RESULT": classifier, "DOCS_ONLY": docs} | results

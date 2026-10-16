@@ -127,7 +127,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         sha = "c" * 40
         identity = {
             "WORKFLOW_SHA": sha,
-            "WORKFLOW_REPOSITORY": "luckyPipewrench/pipelock",
+            "WORKFLOW_REPOSITORY": "pipelab-org/pipelock",
             "WORKFLOW_FILE_PATH": ".github/workflows/pr-review-source.yaml",
             "REVIEWER_SHA": "",
         }
@@ -205,7 +205,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
             self.assertIn("source", needs, f"{name} must wait for identity validation")
             for step in job.get("steps", []):
                 with_values = step.get("with", {})
-                if with_values.get("repository") == "luckyPipewrench/pipelock":
+                if with_values.get("repository") == "pipelab-org/pipelock":
                     self.assertEqual(with_values["ref"], "${{ needs.source.outputs.reviewer_sha }}")
                     self.assertEqual(with_values["persist-credentials"], "false")
                     consumers.append((name, "checkout"))
@@ -225,7 +225,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         ci = load_yaml(ROOT / ".github" / "workflows" / "ci.yaml")
         self.assertEqual(ci["jobs"]["pr-review-source"], {
             "needs": "security-scan",
-            "if": "github.repository == 'luckyPipewrench/pipelock'",
+            "if": "github.repository == 'pipelab-org/pipelock'",
             "permissions": {},
             "uses": "./.github/workflows/pr-review-source.yaml",
         })
@@ -305,9 +305,12 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         # expression's structure, so the assertion has to be the expression.
         expected = (
             "github.actor == 'luckyPipewrench' && "
+            "github.actor_id == '142104046' && "
+            "github.run_attempt == '1' && "
             "github.triggering_actor == 'luckyPipewrench' && "
             "github.event.comment.user.login == 'luckyPipewrench' && "
-            "github.event.comment.author_association == 'OWNER' && "
+            "github.event.comment.user.id == 142104046 && "
+            "github.event.comment.author_association == 'MEMBER' && "
             "github.event.issue.pull_request && "
             "(github.event.comment.body == '/review' || "
             "github.event.comment.body == '/review deep')"
@@ -344,7 +347,7 @@ class WorkflowPackagingTest(OfflineReviewTestCase):
         # and would say nothing about a third provider added later.
         self.assertEqual(set(review["env"]), {"HAS_OPENAI"})
         checkout = review["steps"][0]
-        self.assertEqual(checkout["with"]["repository"], "luckyPipewrench/pipelock")
+        self.assertEqual(checkout["with"]["repository"], "pipelab-org/pipelock")
         self.assertEqual(checkout["with"]["ref"], "${{ needs.source.outputs.reviewer_sha }}")
         target_checkout = next(
             step for step in review["steps"] if step.get("name") == "Check out immutable reviewed repository head"
@@ -5838,6 +5841,10 @@ class AdoptionStubTest(OfflineReviewTestCase):
 
     PLACEHOLDER_LOGIN = "YOUR_GITHUB_LOGIN"
     REAL_LOGIN = "luckyPipewrench"
+    PLACEHOLDER_USER_ID = "YOUR_GITHUB_USER_ID"
+    REAL_USER_ID = "142104046"
+    PLACEHOLDER_ASSOCIATION = "YOUR_REPOSITORY_ASSOCIATION"
+    REAL_ASSOCIATION = "MEMBER"
 
     def documented_stub(self) -> dict[str, object]:
         guide = (ROOT / "docs" / "guides" / "pr-review.md").read_text(encoding="utf-8")
@@ -5850,6 +5857,10 @@ class AdoptionStubTest(OfflineReviewTestCase):
         # The stub is written for another repository, so it carries a
         # placeholder where this repository carries its own login.
         self.assertIn(self.PLACEHOLDER_LOGIN, body, "the stub must not hard-code one account")
+        self.assertIn(self.PLACEHOLDER_USER_ID, body, "the stub must not hard-code one account id")
+        self.assertIn(self.PLACEHOLDER_ASSOCIATION, body, "the stub must not assume one association")
+        body = body.replace(self.PLACEHOLDER_ASSOCIATION, self.REAL_ASSOCIATION)
+        body = body.replace(self.PLACEHOLDER_USER_ID, self.REAL_USER_ID)
         return parse_yaml(body.replace(self.PLACEHOLDER_LOGIN, self.REAL_LOGIN))
 
     @staticmethod

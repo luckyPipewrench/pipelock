@@ -360,12 +360,17 @@ If `finalize` fails while the comment still reads `running`, retry only that job
 ## Reusing the reviewer in another repository
 
 The stub below carries nothing specific to any one repository, so every adopting
-repository holds the same file. Make two replacements. Replace both occurrences
+repository holds the same file. Make four replacements. Replace both occurrences
 of `PINNED_PIPELOCK_REVIEW_COMMIT_SHA` with the same full, immutable Pipelock
 commit SHA; do not use a branch or tag, because either can move the reviewer
 code under the pin. Replace `YOUR_GITHUB_LOGIN` with the login allowed to
-trigger a review, or drop those clauses and rely on `author_association ==
-'OWNER'` alone.
+trigger a review and `YOUR_GITHUB_USER_ID` with that account's numeric id
+(`gh api users/YOUR_GITHUB_LOGIN --jq .id`). The id is what decides who is
+trusted, because a login can be renamed and an id cannot. Keep the association
+check, and replace `YOUR_REPOSITORY_ASSOCIATION` with the value your repository
+reports: `OWNER` when a personal account owns the repository, `MEMBER` when an
+organization owns it. Relying on the association alone would let any
+organization member trigger a review.
 
 Grant `issues: write` and `pull-requests: write`. A called workflow cannot hold
 a permission its caller withheld, so dropping either one silently strips it
@@ -397,13 +402,16 @@ jobs:
   review:
     if: >-
       github.actor == 'YOUR_GITHUB_LOGIN' &&
+      github.actor_id == 'YOUR_GITHUB_USER_ID' &&
+      github.run_attempt == '1' &&
       github.triggering_actor == 'YOUR_GITHUB_LOGIN' &&
       github.event.comment.user.login == 'YOUR_GITHUB_LOGIN' &&
-      github.event.comment.author_association == 'OWNER' &&
+      github.event.comment.user.id == YOUR_GITHUB_USER_ID &&
+      github.event.comment.author_association == 'YOUR_REPOSITORY_ASSOCIATION' &&
       github.event.issue.pull_request &&
       (github.event.comment.body == '/review' ||
        github.event.comment.body == '/review deep')
-    uses: luckyPipewrench/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
+    uses: pipelab-org/pipelock/.github/workflows/pr-review-reusable.yaml@PINNED_PIPELOCK_REVIEW_COMMIT_SHA
     with:
       pr_number: ${{ github.event.issue.number }}
       review_mode: >-

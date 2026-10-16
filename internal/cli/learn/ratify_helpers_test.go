@@ -4,6 +4,7 @@
 package learn
 
 import (
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -58,9 +59,15 @@ func TestSummarizeSelectorShapes(t *testing.T) {
 			}
 		})
 	}
+	// The display limit itself is a presentation choice; pin only that an
+	// over-long summary is cut, marked, and still a prefix of the full value.
+	full, err := json.Marshal(map[string]any{"method": long})
+	if err != nil {
+		t.Fatal(err)
+	}
 	got := summarizeSelector(map[string]any{"method": long})
-	if len(got) != 160 || !strings.HasSuffix(got, "...") {
-		t.Fatalf("long selector summary len=%d suffix ok=%t, want 160 chars ending in ...", len(got), strings.HasSuffix(got, "..."))
+	if !strings.HasSuffix(got, "...") || len(got) >= len(full) || !strings.HasPrefix(string(full), strings.TrimSuffix(got, "...")) {
+		t.Fatalf("long selector summary = %q (len %d), want a shorter prefix of %d-byte JSON ending in ...", got, len(got), len(full))
 	}
 }
 

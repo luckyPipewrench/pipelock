@@ -1892,7 +1892,7 @@ The registry holds at most 4,096 client states. Idle principal and legacy compat
 
 ## MCP WebSocket Listener
 
-Controls inbound WebSocket connections when the MCP proxy runs in listener mode with a `ws://` or `wss://` upstream. Loopback origins are always allowed.
+These fields are reserved for an inbound WebSocket listener that the current CLI doesn't provide. `pipelock mcp proxy` refuses `--listen` with a `ws://` or `wss://` upstream, so a WebSocket upstream runs only in stdio mode (`pipelock mcp proxy --upstream wss://...`). Pipelock validates the fields at load and fills in the default below, but no listener reads them, and setting them doesn't change runtime behavior.
 
 ```yaml
 mcp_ws_listener:
@@ -4330,7 +4330,7 @@ The following are enforced at startup:
 
 - Strict mode requires a non-empty `api_allowlist`
 - All DLP and response patterns must compile as valid regex
-- `secrets_file` must exist and not be world-readable (mode 0600 or stricter)
+- `secrets_file` must exist and be a regular file. On Unix it must not grant group write or execute, or any access to other users. Modes 0600 and 0640 pass, and group read is allowed for Kubernetes Secret volumes. Windows doesn't check its permissions.
 - MCP tool policy requires at least one rule if enabled
 - Kill switch `api_listen` must differ from the main proxy listen address
 - WebSocket `strip_compression` must be true when scanning is enabled

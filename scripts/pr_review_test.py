@@ -4318,10 +4318,10 @@ class ChunkResilienceTest(OfflineReviewTestCase):
 
 
 class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
-    def _judge(self, first: object, repair: object, count: int = 2) -> tuple[object, object, object, object]:
+    def _judge(self, first: object, repair: object, count: int = 2, added_lines: object = None, paths: list[str] | None = None) -> tuple[object, object, object, object]:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
-        candidates = [pr_review.Finding("medium", f"example/{index}.go", 1, f"claim {index}", "premise", "verify") for index in range(count)]
-        options = pr_review.JudgeOptions()
+        candidates = [pr_review.Finding("medium", paths[index] if paths else f"example/{index}.go", 1, f"claim {index}", "premise", "verify") for index in range(count)]
+        options = pr_review.JudgeOptions(added_lines=added_lines)
         with mock.patch.object(pr_review, "fetch_file_context", return_value="1: source"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("consumer.go:1 source", False)
         ), mock.patch.object(pr_review, "requested_repository_evidence", return_value=("", False)), mock.patch.object(
@@ -4430,6 +4430,95 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
                 self.assertEqual(diagnostics["judge-repair"][expected], 1)
                 self.assertEqual(model.call_count, 2)
                 self.assertNotIn("raw provider text", repr(printed.call_args_list))
+
+    def test_semantic_rejections_reach_the_reindexed_repair_and_diagnostics(self) -> None:
+        first = {"findings": [
+            self._decision(0, "keep"),
+            self._decision(1, citation="example/1.go:90"),
+            self._decision(2, "unresolved", blocked_on="omitted-unit"),
+        ]}
+        repair = {"findings": [self._decision(0, "keep"), self._decision(1, "keep")]}
+        result, diagnostics, model, _printed = self._judge(first, repair, count=3)
+        self.assertEqual([item.title for item in result[0]], ["claim 0", "claim 1", "claim 2"])
+        self.assertEqual((result[4], result[5]), ([], []))
+        self.assertEqual(model.call_count, 2)
+        prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertEqual([item["title"] for item in prompt["candidates"]], ["claim 1", "claim 2"])
+        self.assertEqual(prompt["prior_response_validation"], [
+            {"index": 0, "rejections": ["drop-without-citation"]},
+            {"index": 1, "rejections": ["unresolved-without-outside-reason"]},
+        ])
+        self.assertEqual(diagnostics, {"judge": {
+            "drop-without-citation": 1, "unresolved-without-outside-reason": 1,
+        }})
+
+    def test_semantic_rejection_codes_are_exclusive_and_final_outcome_stays_conservative(self) -> None:
+        # 0 cites an added line, 1 an unchanged shown line, 2 a malformed
+        # location, 3 an omitted-unit reason with nothing omitted.
+        first = {"findings": [
+            self._decision(0), self._decision(1),
+            self._decision(2, citation="example/2.go:zero"),
+            self._decision(3, "unresolved", blocked_on="omitted-unit"),
+        ]}
+        # The repair sees candidates 0, 2 and 3 as indices 0, 1 and 2, and repeats each fault.
+        repeat = {"findings": [
+            self._decision(0),
+            self._decision(1, citation="example/2.go:zero"),
+            self._decision(2, "unresolved", blocked_on="omitted-unit"),
+        ]}
+        result, diagnostics, model, _printed = self._judge(first, repeat, count=4, added_lines=lambda: {("example/0.go", 1)})
+        prompt = json.loads(model.call_args_list[1].args[1])
+        # The unchanged-line drop settles in the first pass and is not repaired.
+        self.assertEqual([item["title"] for item in prompt["candidates"]], ["claim 0", "claim 2", "claim 3"])
+        self.assertEqual(prompt["prior_response_validation"], [
+            {"index": 0, "rejections": ["drop-cites-added-line"]},
+            {"index": 1, "rejections": ["drop-without-citation"]},
+            {"index": 2, "rejections": ["unresolved-without-outside-reason"]},
+        ])
+        self.assertEqual(diagnostics["judge"], {
+            "drop-cites-added-line": 1, "drop-without-citation": 1, "unresolved-without-outside-reason": 1,
+        })
+        # Repeated invalidity publishes each repaired candidate as needing verification;
+        # the accepted unchanged-line drop is the only candidate removed.
+        self.assertEqual([(item.title, item.needs_verification) for item in result[0]],
+                         [("claim 0", True), ("claim 2", True), ("claim 3", True)])
+        self.assertEqual((result[4], result[5]), ([], []))
+
+    def test_semantic_rejections_map_through_a_skipped_candidate(self) -> None:
+        # With one file read allowed, candidate 1 (its own file) is never admitted,
+        # so the primary's local indices 0, 1 are candidates 0, 2 and differ from them.
+        first = {"findings": [self._decision(0, citation="a.go:90"), self._decision(1, citation="a.go:90")]}
+        repair = {"findings": [self._decision(0, "keep"), self._decision(1, "keep")]}
+        with mock.patch.object(pr_review, "MAX_JUDGE_CONTEXT_FETCHES", 1):
+            result, diagnostics, model, _printed = self._judge(first, repair, count=3, paths=["a.go", "b.go", "a.go"])
+        prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertEqual([item["title"] for item in prompt["candidates"]], ["claim 0", "claim 2"])
+        self.assertEqual(prompt["prior_response_validation"], [
+            {"index": 0, "rejections": ["drop-without-citation"]},
+            {"index": 1, "rejections": ["drop-without-citation"]},
+        ])
+        self.assertEqual(diagnostics["judge"], {"drop-without-citation": 2})
+        self.assertEqual([item.title for item in result[0]], ["claim 0", "claim 2"])
+        self.assertEqual([item.title for item in result[2]], [])
+        self.assertEqual([item.title for item in result[3]], ["claim 1"])
+
+    def test_unproved_added_lines_reject_a_shown_citation_for_the_repair(self) -> None:
+        first = {"findings": [self._decision(0)]}
+        repeat = {"findings": [self._decision(0)]}
+        result, diagnostics, model, _printed = self._judge(first, repeat, count=1, added_lines=lambda: None)
+        self.assertEqual(json.loads(model.call_args_list[1].args[1])["prior_response_validation"],
+                         [{"index": 0, "rejections": ["drop-without-citation"]}])
+        self.assertEqual(diagnostics["judge"], {"drop-without-citation": 1})
+        self.assertEqual([(item.title, item.needs_verification) for item in result[0]], [("claim 0", True)])
+
+    def test_supported_outside_reason_has_no_semantic_rejection(self) -> None:
+        first = {"findings": [self._decision(0, "unresolved", blocked_on="external-system")]}
+        repair = {"findings": [self._decision(0, "unresolved", blocked_on="external-system")]}
+        result, diagnostics, model, _printed = self._judge(first, repair, count=1)
+        self.assertEqual([item.title for item in result[4]], ["claim 0"])
+        self.assertEqual(model.call_count, 2)
+        self.assertEqual(json.loads(model.call_args_list[1].args[1])["prior_response_validation"], [])
+        self.assertEqual(diagnostics, {})
 
     def test_invalid_primary_schema_uses_only_the_existing_repair_slot(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)

@@ -3614,29 +3614,6 @@ def judge_findings(
             return [], "", ""
         return selected, system, user
 
-    primary, system, user = prepare(available, "judge")
-    if primary:
-        validation = primary_validation
-        try:
-            calls += 1
-            primary_deadline = deadline - llm_call_budget_for(mode, "judge-repair") if deadline is not None else None
-            payload = call_model(system, user, mode, "judge", binding.correlation, deadline=primary_deadline)
-            local_decisions = _parse_judge_decisions(payload, len(primary), validation=validation)
-            if any(decision.verdict == "drop" for decision in local_decisions.values()) and (added := added_lines()) is not None:
-                _flag_added_line_drops(local_decisions, added, validation)
-            decisions.update({primary[index]: decision for index, decision in local_decisions.items()})
-            for index, decision in decisions.items():
-                record = options.evidence[candidate_identifier(candidates[index])]
-                record.reason = decision.reason or "Decisive evidence was not classified."
-            admitted.update(primary)
-        except (ModelTimeout, ModelConnectionError, ModelRateLimited, ModelTransportError, ModelHTTPError, ProviderConfigurationError) as exc:
-            validation.reject(judge_error_code(exc))
-            raise
-        except ModelOutputError as exc:
-            validation.reject(judge_error_code(exc))
-            admitted.update(primary)
-        finally:
-            record_judge_validation("judge", validation, options, binding.correlation)
     def cited(index: int, decision: JudgeDecision) -> tuple[str, int] | None:
         # Only a line of the reviewed head that the judge was shown can decide
         # a drop. A deleted candidate's base-side lines are shown for
@@ -3664,6 +3641,39 @@ def judge_findings(
             or record.retrieval in {"unavailable-or-exhausted", "unavailable-or-truncated"}
             or record.omitted
         )
+
+    primary, system, user = prepare(available, "judge")
+    if primary:
+        validation = primary_validation
+        try:
+            calls += 1
+            primary_deadline = deadline - llm_call_budget_for(mode, "judge-repair") if deadline is not None else None
+            payload = call_model(system, user, mode, "judge", binding.correlation, deadline=primary_deadline)
+            local_decisions = _parse_judge_decisions(payload, len(primary), validation=validation)
+            if any(decision.verdict == "drop" for decision in local_decisions.values()) and (added := added_lines()) is not None:
+                _flag_added_line_drops(local_decisions, added, validation)
+            for local, decision in local_decisions.items():
+                index = primary[local]
+                if decision.verdict == "drop" and cited(index, decision) is None:
+                    # Syntax alone cannot establish a usable citation. Keep
+                    # the existing specific added-line code when applicable.
+                    if _cited_location(decision.citation) is not None and "drop-cites-added-line" not in validation.by_index.get(local, set()):
+                        validation.reject("drop-without-citation", local)
+                elif decision.verdict == "unresolved" and decision.blocked_on == "omitted-unit" and not omitted(index, decision):
+                    validation.reject("unresolved-without-outside-reason", local)
+            decisions.update({primary[index]: decision for index, decision in local_decisions.items()})
+            for index, decision in decisions.items():
+                record = options.evidence[candidate_identifier(candidates[index])]
+                record.reason = decision.reason or "Decisive evidence was not classified."
+            admitted.update(primary)
+        except (ModelTimeout, ModelConnectionError, ModelRateLimited, ModelTransportError, ModelHTTPError, ProviderConfigurationError) as exc:
+            validation.reject(judge_error_code(exc))
+            raise
+        except ModelOutputError as exc:
+            validation.reject(judge_error_code(exc))
+            admitted.update(primary)
+        finally:
+            record_judge_validation("judge", validation, options, binding.correlation)
 
     # A drop without a usable citation (none, unshown, base-side only, an
     # added line, or a range whose added lines could not be proved) or an

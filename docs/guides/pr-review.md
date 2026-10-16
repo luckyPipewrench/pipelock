@@ -101,7 +101,9 @@ The judge must back each verdict that removes or withholds a candidate:
   because its diff was unreadable, oversized, unparseable or possibly
   truncated, no drop is trusted and each such candidate is published as
   needing verification. The prompt states the rule, and a drop citing an added line is
-  reported to the repair as `drop-cites-added-line`. If the repair still
+  reported to the repair as `drop-cites-added-line`. Other unusable citations
+  are reported as `drop-without-citation`, including well-formed locations
+  that the runner cannot accept as evidence. If the repair still
   doesn't cite a usable line, the candidate is published as a finding marked
   `(needs verification: the judge gave no usable citation or outside reason)`,
   which reads differently from a reviewer's own `(needs verification)`.

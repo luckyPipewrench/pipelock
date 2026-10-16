@@ -751,9 +751,21 @@ def _emit_piece(
     return [piece_header] + lines, old_start + old_count, new_start + new_count
 
 
+def _text_lines(text: str) -> list[str]:
+    """Split text the way git numbers lines: at "\n" only.
+
+    str.splitlines() also breaks at form feeds, U+2028 and other separators,
+    which would shift line numbers away from the diff's.
+    """
+    lines = [line.removesuffix("\r") for line in text.split("\n")]
+    if lines and lines[-1] == "":
+        lines.pop()
+    return lines
+
+
 def parse_diff(diff: str, mode: str = "default") -> tuple[list[DiffUnit], list[str]]:
     """Split an exact-commit unified diff into hunk-addressable review units."""
-    lines = diff.splitlines()
+    lines = _text_lines(diff)
     starts = [index for index, line in enumerate(lines) if line.startswith("diff --git ")]
     if not starts:
         return [], ([] if not diff.strip() else ["diff has no file headers"])
@@ -1152,7 +1164,8 @@ def _added_head_lines(units: list[DiffUnit]) -> set[tuple[str, int]]:
             elif row.startswith("+"):
                 added.add((unit.path, line))
                 line += 1
-            elif row.startswith(" "):
+            elif row.startswith(" ") or row == "":
+                # Some diff settings write an empty context row with no space.
                 line += 1
     return added
 
@@ -2635,7 +2648,7 @@ def fetch_file_context(
 
 
 def _line_context(content: str, line: int | None, max_tokens: int = MAX_JUDGE_CONTEXT_TOKENS) -> str:
-    lines = content.splitlines()
+    lines = _text_lines(content)
     if line is not None and (line < 1 or line > len(lines)):
         return "<file-context-unavailable: requested line is outside the file>"
     if not lines:
@@ -2694,7 +2707,7 @@ def _candidate_context(finding: Finding, content: str | None, units: list[DiffUn
     relevant = [unit for unit in units if unit.path == finding.path]
     terms = _evidence_terms(finding, "")
     if content is not None:
-        lines = content.splitlines()
+        lines = _text_lines(content)
         if finding.line is not None and 1 <= finding.line <= len(lines):
             return _line_context(content, finding.line, max_tokens), "head-anchor"
         for term in terms:
@@ -2928,7 +2941,7 @@ def _evidence_windows(matches: list[tuple[int, str, int, str]]) -> list[tuple[st
 
 
 def _render_evidence_window(path: str, content: str, anchors: list[int]) -> tuple[str, bool]:
-    lines = content.splitlines()
+    lines = _text_lines(content)
     if not anchors or any(line < 1 or line > len(lines) for line in anchors):
         return f"<evidence-line-unavailable: {path}>", True
     start = max(0, min(anchors) - 5)
@@ -3058,13 +3071,12 @@ def cross_file_evidence(
             # whitespace. The outer bound still enforces the shared budget.
             text = f"CANDIDATE {candidate_identifier(finding)} <evidence-omitted>"
             omitted = True
+            budget.cut_owners.add(candidate_identifier(finding))
         else:
             text = header + ("\n".join(pieces) or "<no additional matches>")
             text, clipped = _bounded_evidence(text, allowance, cuts[index] or failures[index])
             if clipped or cuts[index] or failures[index]:
                 budget.cut_owners.add(candidate_identifier(finding))
-        if text.endswith("<evidence-omitted>"):
-            budget.cut_owners.add(candidate_identifier(finding))
         rendered.append(text)
     evidence, cut = _bounded_evidence("\n\n".join(rendered), max_tokens, False)
     if cut:

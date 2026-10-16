@@ -864,7 +864,9 @@ wait
                         self.fail("timed out waiting for the descendant to become ready")
                     time.sleep(0.01)
                 deadline = time.monotonic() + 5
-                while not descendant_pids and time.monotonic() < deadline:
+                while not descendant_pids:
+                    if time.monotonic() >= deadline:
+                        self.fail("timed out waiting for the descendant pid")
                     remember_descendant()
                     time.sleep(0.01)
 

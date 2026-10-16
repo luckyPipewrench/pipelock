@@ -7726,6 +7726,77 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
             pr_review.cross_file_evidence(binding, [cut, whole], {}, max_tokens=20_000, budget=budget)
         self.assertEqual(budget.cut_owners, {pr_review.candidate_identifier(cut)})
 
+    def test_marker_text_ending_a_real_evidence_window_is_not_a_cut(self) -> None:
+        binding = self.BINDING
+        candidate = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
+        hits = [f"{binding.head_sha}:helper.go\x004\x00// <evidence-omitted>"]
+        def grep(_root, term, *_args, **_kwargs):
+            return (hits, False, False) if term == "helper" else ([], False, False)
+        content = "package p\n\nfunc helper() {}\n// <evidence-omitted>\n"
+        budget = pr_review.EvidenceBudget()
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
+            pr_review, "_bounded_git_grep", side_effect=grep
+        ), mock.patch.object(pr_review, "_read_commit_file", return_value=content):
+            evidence, omitted = pr_review.cross_file_evidence(binding, [candidate], {}, max_tokens=20_000, budget=budget)
+        self.assertTrue(evidence.endswith("helper.go:4: // <evidence-omitted>"), evidence)
+        self.assertFalse(omitted)
+        self.assertEqual(budget.cut_owners, set())
+
+    def test_prompt_shrinking_marks_the_evidence_omitted(self) -> None:
+        owner = pr_review.candidate_identifier(pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix"))
+        text = f"CANDIDATE {owner} REPOSITORY EVIDENCE\n" + "\n".join(f"b.go:{n}: value_{n}" for n in range(1, 200))
+        def tokens(_system, user, *_args):
+            return 10**9 if "b.go:199: value_199" in user else 0
+        with mock.patch.object(pr_review, "serialized_prompt_tokens", side_effect=tokens):
+            (verified, _j, _b, _f, unresolved, _i), record, candidate = self.unresolved_omitted(evidence=rendered_evidence(text))
+        self.assertTrue(record.omitted)
+        self.assertEqual((verified, unresolved), ([], [candidate]))
+
+    def test_line_numbers_count_only_newlines(self) -> None:
+        for separator in ("\x0c", "\u2028", "\x85", "\x1c", "\r"):
+            with self.subTest(separator=repr(separator)):
+                head = [f"L{n}" for n in range(1, 21)]
+                head[1] = f"p{separator}q"
+                content = "\n".join(head) + "\n"
+                self.assertIn("\n12: L12\n", "\n" + pr_review._line_context(content, 12) + "\n")
+                window, _cut = pr_review._render_evidence_window("a.go", content, [12])
+                self.assertIn("a.go:12: L12", window.split("\n"))
+                diff = ("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,3 @@\n L1\n-p\n"
+                        f"+p{separator}q\n L3\n@@ -11 +11,2 @@\n L11\n+L12\n")
+                units, errors = pr_review.parse_diff(diff)
+                self.assertEqual(errors, [])
+                self.assertIn(f"+p{separator}q", units[0].body.split("\n"))
+                self.assertEqual(pr_review._added_head_lines(units), {("a.go", 2), ("a.go", 12)})
+
+    def test_a_drop_citing_an_added_line_after_a_form_feed_needs_verification(self) -> None:
+        head = [f"L{n}" for n in range(1, 21)]
+        head[1] = "p\x0cq"
+        content = "\n".join(head) + "\n"
+        diff = ("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,3 @@\n L1\n-p\n+p\x0cq\n L3\n"
+                "@@ -11 +11,2 @@\n L11\n+L12\n")
+        units, _ = pr_review.parse_diff(diff)
+        candidate = pr_review.Finding("medium", "a.go", 12, "claim", "premise", "fix")
+        for line, dropped in ((12, False), (11, True)):
+            with self.subTest(line=line):
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": f"a.go:{line}"}]}
+                options = pr_review.JudgeOptions(units=units)
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                    pr_review, "fetch_file_context", return_value=content
+                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+                    pr_review, "call_model", side_effect=[reply, reply]
+                ) as model:
+                    verified, *_rest = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+                self.assertIn("12: L12\\n", model.call_args_list[0].args[1])
+                self.assertEqual(len(options.dropped), int(dropped))
+                self.assertEqual(verified, [] if dropped else [pr_review._needs_verification(candidate)])
+
+    def test_empty_context_rows_still_advance_the_line(self) -> None:
+        diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n a\n\n+new\n c\n"
+        units, _ = pr_review.parse_diff(diff)
+        self.assertEqual(pr_review._added_head_lines(units), {("a.go", 3)})
+
     def test_a_citation_over_400_characters_is_not_a_citation(self) -> None:
         for length, dropped in ((400, True), (401, False)):
             with self.subTest(length=length):

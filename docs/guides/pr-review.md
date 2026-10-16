@@ -98,12 +98,15 @@ The judge must back each verdict that removes or withholds a candidate:
   or an unanswered request. Text in the shown files is never read to decide
   this. Without a valid reason the
   validation code is `unresolved-without-outside-reason`, and if the repair
-  doesn't supply one the candidate is published as `(needs verification)`.
+  doesn't supply one the candidate is published with the same judge marker,
+  `(needs verification: the judge gave no usable citation or outside
+  reason)`.
 - A `citation`, `blocked_on` or `requests` value of the wrong JSON type is
   rejected as `invalid-field-type` and goes to the repair.
 
 Shown locations come from what the runner rendered, not from reading the
-prompt text back. Search results use `git grep -z`, so a filename containing
+prompt text back. Line numbers count `\n` only, as git does, so a form feed
+or Unicode line separator in a file doesn't shift them. Search results use `git grep -z`, so a filename containing
 `:12:` can't add a location the judge never saw. A checkout or file path that
 can't be resolved, such as a symlink loop, is treated as unreadable and
 reported as unavailable evidence instead of failing the run.

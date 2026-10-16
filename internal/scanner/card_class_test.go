@@ -121,3 +121,35 @@ func TestCardRunBoundaryTextCannotClaimNumberType(t *testing.T) {
 		}
 	}
 }
+
+func TestCardRunBudgetRefusesOnlyStructuredText(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	// Scalar text is valid JSON but is a string value or plain text, never a
+	// document; its digits keep the ordinary text scan.
+	for _, text := range []string{strings.Repeat("7", 4097), " 1e10001 ", "-" + strings.Repeat("7", 4097)} {
+		for _, result := range []TextDLPResult{
+			s.ScanTextForDLP(t.Context(), text),
+			s.ScanTextForDLPWithCardView(t.Context(), text, text),
+			s.ScanTextForDLPInboundWithCardView(t.Context(), text, text),
+		} {
+			if !result.Clean {
+				t.Fatalf("scalar text %.12q was refused: %+v", text, result.Matches)
+			}
+		}
+	}
+	for _, text := range []string{`[1e10001]`, ` {"n":` + strings.Repeat("7", 4097) + `}`, strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65)} {
+		result := s.ScanTextForDLP(t.Context(), text)
+		if result.Clean || result.Matches[0].PatternName != UninspectableJSONNumberPattern {
+			t.Fatalf("structured over-budget text %.12q was not refused", text)
+		}
+	}
+	// An in-budget scalar still contributes its integer component.
+	card := "4111" + "1111" + "1111" + "1111"
+	if result := s.ScanTextForDLP(t.Context(), card+"e-2"); result.Clean || OnlyNumberOnlyCardRuns(result.Matches) {
+		t.Fatal("scalar exponent card lost enforcement")
+	}
+}

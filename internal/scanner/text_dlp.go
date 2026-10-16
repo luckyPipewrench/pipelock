@@ -657,10 +657,13 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	// Extracted text may concatenate several numbers into one scalar spelling;
 	// only the typed boundaries can classify that synthetic view.
 	trimmed := strings.TrimSpace(text)
-	if !opts.typedCardView || (len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')) {
+	structured := len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
+	if !opts.typedCardView || structured {
 		runs, limit = jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
 	}
-	if limit != jsonnumber.CardRunWithinBudget {
+	// Only a structured document is refused over budget. Scalar text such as a
+	// string value of digits keeps its ordinary checks, as StructuredCardView does.
+	if limit != jsonnumber.CardRunWithinBudget && structured {
 		original.Matches = append(original.Matches, uninspectableJSONNumberMatch())
 	}
 	boundaryRuns := jsonnumber.BoundaryCardRuns(cardView)

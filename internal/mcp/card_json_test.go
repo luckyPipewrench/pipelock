@@ -124,6 +124,30 @@ func TestCardJSONResponseNumberBudgetFailsClosed(t *testing.T) {
 	}
 }
 
+// A string argument is not a JSON document, even when its contents are a
+// valid JSON scalar. Only the request's own over-budget numbers are refused.
+func TestCardJSONInputStringScalarNotRefused(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := scanner.MustNew(cfg)
+	t.Cleanup(s.Close)
+	request := func(arg string) []byte {
+		return []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bignum","arguments":{"result":` + arg + `}}}`)
+	}
+	for _, arg := range []string{`"` + strings.Repeat("7", 4097) + `"`, `"1e10001"`} {
+		if v := ScanRequest(t.Context(), request(arg), s, config.ActionBlock, config.ActionBlock); !v.Clean {
+			t.Fatalf("string argument %.12s was refused: %+v", arg, v.Matches)
+		}
+	}
+	for _, arg := range []string{strings.Repeat("7", 4097), `1e10001`} {
+		v := ScanRequest(t.Context(), request(arg), s, config.ActionBlock, config.ActionBlock)
+		if v.Clean || v.Action != config.ActionBlock {
+			t.Fatalf("over-budget number %.12s was not refused: %+v", arg, v)
+		}
+	}
+}
+
 func TestCardJSONInputTypes(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

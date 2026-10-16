@@ -164,7 +164,7 @@ pipelock_has_unrecorded_context_file() {
 		# Any GOFLAGS value can change what the host compiles (-toolexec,
 		# -overlay, -modfile, -ldflags), so a clean record requires none.
 		if [ -n "${flags}" ]; then
-			echo "[build-images] note: GOFLAGS is set; unset it for a clean build record" >&2
+			echo "[build-images] note: GOFLAGS is set; unset GOFLAGS and run 'go env -u GOFLAGS' for a clean build record" >&2
 			rm -f -- "${ignored}"
 			return 1
 		fi
@@ -349,7 +349,7 @@ if [ "${build_broker}" -eq 1 ]; then
 fi
 if [ "${PIPELOCK_DIRTY}" = true ] || [ "${SITE_DIRTY}" = true ]; then
 	if [ "${PLAYGROUND_ALLOW_DIRTY:-}" != 1 ]; then
-		echo "[build-images] ERROR: source changes found; commit them or set PLAYGROUND_ALLOW_DIRTY=1" >&2
+		echo "[build-images] ERROR: unrecorded build inputs found; restore clean sources and Go settings or set PLAYGROUND_ALLOW_DIRTY=1" >&2
 		exit 1
 	fi
 fi
@@ -502,9 +502,12 @@ fi
 # clean record. A check that cannot run counts as a change.
 if [ "${PIPELOCK_DIRTY}" = false ] && [ "${SITE_DIRTY}" = false ]; then
 	changed=0
+	if ! after_commit="$(git rev-parse --verify HEAD)" || [ "${after_commit}" != "${PIPELOCK_COMMIT}" ]; then changed=1; fi
+	pipelock_has_unrecorded_context_file || changed=1
 	if ! after_status="$(git status --porcelain --untracked-files=all)" || [ -n "${after_status}" ]; then changed=1; fi
 	worktree_matches_head "${REPO_ROOT}" "" 0 || changed=1
 	if [ "${build_broker}" -eq 1 ]; then
+		if ! after_commit="$(git -C "${SITE_ROOT}" rev-parse --verify HEAD)" || [ "${after_commit}" != "${SITE_COMMIT}" ]; then changed=1; fi
 		if ! after_status="$(git -C "${SITE_ROOT}" status --porcelain --untracked-files=all -- ":(literal)${VIEWER_PATH}")" || [ -n "${after_status}" ]; then changed=1; fi
 		worktree_matches_head "${SITE_ROOT}" "${VIEWER_PATH}" 1 || changed=1
 		viewer_has_unrecorded_file || changed=1

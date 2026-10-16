@@ -12,6 +12,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The fixture owns its Go settings, including when run by go test with GOFLAGS.
+export GOENV="${tmp}/fixture-goenv" GOFLAGS=""
+
 mkdir -p "${tmp}/source/deploy/fly-playground" "${tmp}/source/deploy/wasm-verify" "${tmp}/source/scripts" "${tmp}/site/static/playground/demo" "${tmp}/bin" "${tmp}/capture"
 printf '.git\npipelock\ndocs\n' > "${tmp}/source/.dockerignore"
 cp "${script_dir}/viewer-generated.sh" "${tmp}/source/deploy/fly-playground/viewer-generated.sh"
@@ -46,11 +49,18 @@ if [ "$1" = build ]; then
 			exit 0 ;;
 		esac
 	done
+	if [ -n "${DOCKER_EDIT_DURING_BUILD:-}" ]; then
+		printf '// edited mid-build\n' >> "${DOCKER_EDIT_DURING_BUILD}"
+		if [ "${DOCKER_COMMIT_DURING_BUILD:-}" = 1 ]; then
+			edit_root="$(git -C "$(dirname "${DOCKER_EDIT_DURING_BUILD}")" rev-parse --show-toplevel)"
+			git -C "${edit_root}" add -- "${DOCKER_EDIT_DURING_BUILD}"
+			git -C "${edit_root}" -c user.name=Test -c user.email=test@example.invalid commit -qm 'source update during build'
+		fi
+	fi
 	while [ "$#" -gt 0 ]; do
 		if [ "$1" = --build-context ]; then
 			shift
 			cp -a "${1#ui=}/." "${CAPTURE_DIR}/"
-			if [ -n "${DOCKER_EDIT_DURING_BUILD:-}" ]; then printf 'edited mid-build\n' >> "${DOCKER_EDIT_DURING_BUILD}"; fi
 			break
 		fi
 		shift
@@ -145,6 +155,14 @@ grep -q 'GOFLAGS is set' "${tmp}/goflags.out" || { echo 'GOFLAGS refusal does no
 GOFLAGS=-trimpath PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > /dev/null 2>&1
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["dirty"] and d["pipelock_dirty"] else 1)' "${tmp}/capture/build-info.json" ||
 	{ echo 'GOFLAGS diagnostic build was not recorded dirty' >&2; exit 1; }
+# Persisted settings are effective even after the shell variable is unset.
+GOENV="${tmp}/goenv" go env -w GOFLAGS=-trimpath
+if env -u GOFLAGS GOENV="${tmp}/goenv" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/goenv.out" 2>&1; then
+	echo 'persisted GOFLAGS was accepted as clean' >&2; exit 1
+fi
+grep -q "go env -u GOFLAGS" "${tmp}/goenv.out" || { echo 'persisted GOFLAGS remedy is missing' >&2; exit 1; }
+env -u GOFLAGS GOENV="${tmp}/goenv" go env -u GOFLAGS
+env -u GOFLAGS GOENV="${tmp}/goenv" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > /dev/null
 # An edit made while the images build must not ship under a clean record.
 for edited in "${tmp}/source/scripts/git-version.sh" "${PLAYGROUND_UI_DIR}/asset file.txt"; do
 	cp -p "${edited}" "${tmp}/edit-original"
@@ -156,7 +174,39 @@ for edited in "${tmp}/source/scripts/git-version.sh" "${PLAYGROUND_UI_DIR}/asset
 done
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > /dev/null
 
+# A concurrent commit leaves status clean but changes the recorded revision.
+for selection in broker vm both; do
+	for tree in source site; do
+		if [ "${selection}" = vm ] && [ "${tree}" = site ]; then continue; fi
+		if [ "${tree}" = source ]; then edited="${tmp}/source/cmd/pipelock-verifier-wasm/main.go"; else edited="${PLAYGROUND_UI_DIR}/asset file.txt"; fi
+		cp -p "${edited}" "${tmp}/edit-original"
+		args=()
+		if [ "${selection}" != both ]; then args=(--only "${selection}"); fi
+		: > "${DOCKER_LOG}"
+		if DOCKER_EDIT_DURING_BUILD="${edited}" DOCKER_COMMIT_DURING_BUILD=1 PLAYGROUND_PUSH=1 "${tmp}/source/deploy/fly-playground/build-images.sh" "${args[@]}" > "${tmp}/committed-edit.out" 2>&1; then
+			echo "committed mid-build edit accepted: ${selection}/${tree}" >&2; exit 1
+		fi
+		grep -q 'source changed during the build' "${tmp}/committed-edit.out" || { cat "${tmp}/committed-edit.out" >&2; exit 1; }
+		if grep -q '^push ' "${DOCKER_LOG}"; then echo 'image pushed after source commit changed' >&2; exit 1; fi
+		cp -p "${tmp}/edit-original" "${edited}"
+		git -C "${tmp}/${tree}" add -- "${edited}"
+		git -C "${tmp}/${tree}" -c user.name=Test -c user.email=test@example.invalid commit -qm 'restore fixture source'
+	done
+done
+# Newly generated ignored inputs must be reinspected, not just tracked blobs.
 mkdir -p "${tmp}/source/configs" "${tmp}/source/.git/info"
+printf '/configs/generated.yaml\n' >> "${tmp}/source/.git/info/exclude"
+for selection in broker vm both; do
+	args=()
+	if [ "${selection}" != both ]; then args=(--only "${selection}"); fi
+	: > "${DOCKER_LOG}"
+	if DOCKER_EDIT_DURING_BUILD="${tmp}/source/configs/generated.yaml" PLAYGROUND_PUSH=1 "${tmp}/source/deploy/fly-playground/build-images.sh" "${args[@]}" > "${tmp}/generated-input.out" 2>&1; then
+		echo "new ignored build input accepted: ${selection}" >&2; exit 1
+	fi
+	grep -q 'source changed during the build' "${tmp}/generated-input.out" || { cat "${tmp}/generated-input.out" >&2; exit 1; }
+	if grep -q '^push ' "${DOCKER_LOG}"; then echo 'image pushed after ignored input appeared' >&2; exit 1; fi
+	rm -f -- "${tmp}/source/configs/generated.yaml"
+done
 printf '/ignored.go\n/configs/extra.yaml\n/pipelock\n' >> "${tmp}/source/.git/info/exclude"
 for input in ignored.go configs/extra.yaml; do
 	printf 'unrecorded build input\n' > "${tmp}/source/${input}"

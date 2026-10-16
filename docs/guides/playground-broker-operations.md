@@ -286,13 +286,16 @@ Build and deploy sequence:
    WASM verifier, its shim, and the build record, which are replaced in staging;
    `PLAYGROUND_ALLOW_DIRTY=1` is only for an explicitly marked diagnostic build.
    The record describes those source trees and the files the image builds
-   consume. A clean record requires an empty `GOFLAGS`. It does not describe the
-   rest of the host Go toolchain, such as `GOEXPERIMENT` or the module cache, so
+   consume. A clean record requires an empty `GOFLAGS`, including settings saved by
+   `go env -w`. Clear it with `unset GOFLAGS` and `go env -u GOFLAGS`. The record
+   does not describe the rest of the host Go toolchain, such as `GOEXPERIMENT`
+   or the module cache, so
    build from a shell with no custom Go settings. The host verifier's input
    inspection and WASM build ignore Go workspaces (`GOWORK=off`). Leave both
    checkouts unchanged while the build runs: the record describes the inputs
    checked at the start, and the script checks them again before pushing and
-   refuses if either changed.
+   refuses if either revision or its recorded inputs changed. This includes
+   commits made during the build and newly generated ignored build inputs.
    Set `PLAYGROUND_UI_DIR` to the site's `static/playground/demo` directory and
    `PLAYGROUND_REGISTRY` to the image registry prefix. Run
    `deploy/fly-playground/build-images.sh` with `PLAYGROUND_PUSH=1`. It prints

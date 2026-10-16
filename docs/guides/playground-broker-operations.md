@@ -288,7 +288,9 @@ Build and deploy sequence:
    The record describes those source trees and the files the image builds
    consume. It does not describe the host Go toolchain or its settings, such as
    `GOFLAGS`, `GOEXPERIMENT` or the module cache, so build from a shell with no
-   custom Go settings.
+   custom Go settings. The host verifier's input inspection and WASM build
+   ignore Go workspaces (`GOWORK=off`). Leave both checkouts unchanged while
+   the build runs, because the record describes the inputs checked at the start.
    Set `PLAYGROUND_UI_DIR` to the site's `static/playground/demo` directory and
    `PLAYGROUND_REGISTRY` to the image registry prefix. Run
    `deploy/fly-playground/build-images.sh` with `PLAYGROUND_PUSH=1`. It prints
@@ -335,9 +337,10 @@ Rollback sequence:
    configuration, and matching broker arguments together. An old binary can
    reject flags introduced by a newer config, and a new binary can require
    settings absent from an older config.
-3. Confirm health, budget values, and `check-live.sh` against the restored
-   version. Run the invalid-token and pause/resume checks again before sending
-   traffic back.
+3. Confirm health and budget values. For images that include `/build-info.json`,
+   run `check-live.sh` against the restored version. For images built before
+   build records, confirm health and the recorded image digest instead. Run the
+   invalid-token and pause/resume checks again before sending traffic back.
 
 ### Checking for drift
 

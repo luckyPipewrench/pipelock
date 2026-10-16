@@ -23,7 +23,11 @@ SCRIPT
 cat > "${tmp}/source/deploy/wasm-verify/build.sh" <<'SCRIPT'
 #!/usr/bin/env bash
 set -eu
-printf 'fresh wasm' > "$1/pipelock-verifier.wasm"
+if [ "${PROVENANCE_VERSION_PROBE:-}" = 1 ]; then
+	go list -m -f '{{.Version}}' version.example/dep > "$1/pipelock-verifier.wasm"
+else
+	printf 'fresh wasm' > "$1/pipelock-verifier.wasm"
+fi
 printf 'fresh shim' > "$1/wasm_exec.js"
 SCRIPT
 cat > "${tmp}/bin/docker" <<'SCRIPT'
@@ -38,7 +42,7 @@ if [ "$1" = build ]; then
 			context="${arg#type=local,dest=}"
 			mkdir -p "${context}"
 			cp -a . "${context}/"
-			rm -rf -- "${context}/.git" "${context}/pipelock" "${context}/docs"
+			rm -rf -- "${context}/.git" "${context}/pipelock" "${context}/docs" "${context}/go.work" "${context}/go.work.sum"
 			exit 0 ;;
 		esac
 	done
@@ -168,8 +172,56 @@ if GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/b
 fi
 PLAYGROUND_ALLOW_DIRTY=1 GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/overlay.out" 2>&1
 jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
-# A workspace or GOPATH can compile module source from outside this tree even
-# when no file in it is ignored. A workspace naming only this tree is clean.
+# A workspace can select another cached version without introducing an outside
+# source path. Use Go's file proxy protocol so this test needs no network.
+(
+	export GOPROXY="file://${tmp}/module-proxy" GOSUMDB=off GOMODCACHE="${tmp}/module-cache" GOWORK=off
+	cp -a "${tmp}/source" "${tmp}/version-source"
+	mkdir -p "${tmp}/version-extra"
+	python3 - "${tmp}/module-proxy" <<'MODULES'
+import json
+import pathlib
+import sys
+import zipfile
+
+root = pathlib.Path(sys.argv[1]) / "version.example/dep/@v"
+root.mkdir(parents=True)
+for version in ("v1.0.0", "v1.1.0"):
+    mod = "module version.example/dep\n\ngo 1.26\n"
+    (root / (version + ".mod")).write_text(mod)
+    (root / (version + ".info")).write_text(json.dumps({"Version": version, "Time": "2026-01-01T00:00:00Z"}))
+    with zipfile.ZipFile(root / (version + ".zip"), "w") as archive:
+        prefix = "version.example/dep@" + version + "/"
+        archive.writestr(prefix + "go.mod", mod)
+        archive.writestr(prefix + "dep.go", 'package dep\nconst Version = "' + version + '"\n')
+(root / "list").write_text("v1.0.0\nv1.1.0\n")
+MODULES
+	printf '\nrequire version.example/dep v1.0.0\n' >> "${tmp}/version-source/go.mod"
+	printf 'package main\nimport dep "version.example/dep"\nfunc main() { println(dep.Version) }\n' > "${tmp}/version-source/cmd/pipelock-verifier-wasm/main.go"
+	printf 'go.work\ngo.work.sum\n' > "${tmp}/version-source/.gitignore"
+	printf 'go.work\ngo.work.sum\n' >> "${tmp}/version-source/.dockerignore"
+	(cd "${tmp}/version-source" && GOFLAGS=-modcacherw go mod download version.example/dep@v1.0.0 version.example/dep@v1.1.0)
+	git -C "${tmp}/version-source" add go.mod go.sum .gitignore .dockerignore cmd/pipelock-verifier-wasm/main.go
+	git -C "${tmp}/version-source" -c user.name=Test -c user.email=test@example.invalid commit -qm 'cached module fixture'
+	printf 'module extra.example\n\ngo 1.26\n\nrequire version.example/dep v1.1.0\n' > "${tmp}/version-extra/go.mod"
+	printf 'go 1.26\n\nuse (\n%s\n%s\n)\n' "${tmp}/version-source" "${tmp}/version-extra" > "${tmp}/version-source/go.work"
+	cp "${tmp}/version-source/go.work" "${tmp}/external.work"
+	selected="$(cd "${tmp}/version-source" && GOWORK=auto go list -m -f '{{.Version}}' version.example/dep)"
+	[ "${selected}" = v1.1.0 ] || { echo 'workspace fixture did not select the higher cached version' >&2; exit 1; }
+	PROVENANCE_VERSION_PROBE=1 "${tmp}/version-source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/version.out" 2>&1
+	cp "${tmp}/capture/pipelock-verifier.wasm" "${tmp}/recorded-version.wasm"
+	grep -qx v1.0.0 "${tmp}/recorded-version.wasm"
+	for workspace in auto "${tmp}/external.work"; do
+		GOWORK="${workspace}" PROVENANCE_VERSION_PROBE=1 "${tmp}/version-source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/version.out" 2>&1
+		if ! cmp -s "${tmp}/recorded-version.wasm" "${tmp}/capture/pipelock-verifier.wasm"; then
+			echo "workspace changed verifier output: ${workspace}" >&2; exit 1
+		fi
+		jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+	done
+)
+
+# Workspaces are ignored even when their replacements name unrecorded source.
+# Recorded go.mod replacements and GOPATH mode still need input checks.
 mkdir -p "${tmp}/source/third_party/dep" "${tmp}/elsewhere/dep" "${tmp}/gopath/src/dep.example" "${tmp}/gopath/src/fixture.example/docs"
 printf 'module dep.example\n\ngo 1.26\n' > "${tmp}/source/third_party/dep/go.mod"
 printf 'package dep\n' > "${tmp}/source/third_party/dep/dep.go"
@@ -182,17 +234,31 @@ printf 'package dep\n// not the recorded source\n' > "${tmp}/elsewhere/dep/dep.g
 printf 'go 1.26\n\nuse %s\n' "${tmp}/source" > "${tmp}/own.work"
 GOWORK="${tmp}/own.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
 jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+# Keep exercising source-path validation independently of ignored workspaces.
+check_unrecorded_replacement() {
+	local replacement="$1"
+	cp "${tmp}/source/go.mod" "${tmp}/recorded.mod"
+	GOWORK=off go -C "${tmp}/source" mod edit "-replace=dep.example=${replacement}"
+	git -C "${tmp}/source" add go.mod
+	git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm 'replacement source fixture'
+	if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/replacement.out" 2>&1; then
+		echo 'unrecorded go.mod replacement was accepted as clean source' >&2; exit 1
+	fi
+	grep -Eq 'outside the recorded tree|recorded commit does not contain' "${tmp}/replacement.out"
+	PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/replacement.out" 2>&1
+	jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+	cp "${tmp}/recorded.mod" "${tmp}/source/go.mod"
+	git -C "${tmp}/source" add go.mod
+	git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm 'restore recorded dependency fixture'
+}
 # Go retains directory-replace symlinks in its selected source paths. A link
 # under Docker-excluded docs must not make outside source look recorded.
 ln -s "${tmp}/elsewhere/dep" "${tmp}/source/docs/linked-dep"
 printf '/docs/linked-dep\n' >> "${tmp}/source/.git/info/exclude"
 printf 'replace dep.example => %s\n' "${tmp}/source/docs/linked-dep" | cat "${tmp}/own.work" - > "${tmp}/linked.work"
-if GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1; then
-	echo 'symlinked workspace replacement outside the tree was recorded as clean' >&2; exit 1
-fi
-grep -q 'outside the recorded tree' "${tmp}/linked.out"
-PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1
-jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1
+jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+check_unrecorded_replacement "${tmp}/source/docs/linked-dep"
 rm -f -- "${tmp}/source/docs/linked-dep"
 # Git lists an ignored nested clone as one directory, never its files, so a
 # dependency checked out there is inside the tree but not in the record.
@@ -200,11 +266,9 @@ git init -q "${tmp}/source/docs/nested-dep"
 cp "${tmp}/elsewhere/dep/go.mod" "${tmp}/elsewhere/dep/dep.go" "${tmp}/source/docs/nested-dep/"
 printf '/docs/nested-dep/\n' >> "${tmp}/source/.git/info/exclude"
 printf 'replace dep.example => %s\n' "${tmp}/source/docs/nested-dep" | cat "${tmp}/own.work" - > "${tmp}/nested.work"
-if GOWORK="${tmp}/nested.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested.out" 2>&1; then
-	echo 'ignored nested clone in the tree was recorded as clean' >&2; exit 1
-fi
-PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/nested.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested.out" 2>&1
-jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+GOWORK="${tmp}/nested.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested.out" 2>&1
+jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+check_unrecorded_replacement "${tmp}/source/docs/nested-dep"
 rm -rf -- "${tmp}/source/docs/nested-dep"
 # Equivalent physical roots remain clean, including a symlinked checkout.
 ln -s "${tmp}/source" "${tmp}/source-link"
@@ -214,12 +278,9 @@ for root in "${tmp}/goroot-link" "$(go env GOROOT)/" "$(go env GOROOT)/../$(base
 	jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
 done
 printf 'replace dep.example => %s\n' "${tmp}/elsewhere/dep" | cat "${tmp}/own.work" - > "${tmp}/replace.work"
-if GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1; then
-	echo 'workspace replacement outside the tree was recorded as clean' >&2; exit 1
-fi
-grep -q 'outside the recorded tree' "${tmp}/work.out"
-PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
-jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
+jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+check_unrecorded_replacement "${tmp}/elsewhere/dep"
 cp "${tmp}/elsewhere/dep/dep.go" "${tmp}/gopath/src/dep.example/dep.go"
 cp -R "${tmp}/source/docs/wasm" "${tmp}/gopath/src/fixture.example/docs/wasm"
 if GO111MODULE=off GOPATH="${tmp}/gopath" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/gopath.out" 2>&1; then

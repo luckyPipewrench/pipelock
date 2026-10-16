@@ -160,14 +160,15 @@ pipelock_has_unrecorded_context_file() {
 	if [ "${build_broker}" -eq 1 ]; then
 		local flags goroot modcache source_root sources input canonical
 		local -A recorded_paths=()
-		if ! flags="$(go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
+		if ! flags="$(GOWORK=off go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
 		case "${flags}" in
 		*-overlay*|*-modfile*) rm -f -- "${ignored}"; return 1 ;;
 		esac
-		# A workspace file (GOWORK or any parent go.work), GOPATH mode or a
-		# directory replace can compile source the record does not name. Only
-		# this tree, the toolchain and the go.sum-verified module cache count.
-		if ! goroot="$(go env GOROOT)" || ! modcache="$(go env GOMODCACHE)" ||
+		# Ignore workspaces for inspection and compilation: they can select a
+		# cached module version that this commit does not require. GOPATH mode
+		# and directory replaces can still select source outside the record.
+		# Only this tree, the toolchain and the module cache count.
+		if ! goroot="$(GOWORK=off go env GOROOT)" || ! modcache="$(GOWORK=off go env GOMODCACHE)" ||
 			[ -z "${goroot}" ] || [ -z "${modcache}" ]; then
 			rm -f -- "${ignored}"
 			return 2
@@ -191,7 +192,7 @@ pipelock_has_unrecorded_context_file() {
 			return 2
 		fi
 		while IFS= read -r -d '' file; do recorded_paths["${file}"]=1; done < "${sources}"
-		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .HFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
+		if ! GOWORK=off GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .HFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
 			rm -f -- "${sources}" "${ignored}"
 			return 2
 		fi
@@ -429,7 +430,7 @@ if [ "${build_broker}" -eq 1 ]; then
 	echo "[build-images] building browser-verifier WASM into private staging copy"
 	wasm_stamp="${stage}/wasm-stamp"
 	: > "${wasm_stamp}"
-	deploy/wasm-verify/build.sh "${stage}/ui"
+	GOWORK=off deploy/wasm-verify/build.sh "${stage}/ui"
 	if [ -z "$(find "${stage}/ui" -type f -name '*.wasm' -newer "${wasm_stamp}" -print -quit)" ]; then
 		echo "[build-images] ERROR: browser-verifier build produced no .wasm in staging; refusing to ship unwired inline verify UI" >&2
 		exit 1

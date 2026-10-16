@@ -8,9 +8,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import os
 import re
+import shlex
 import shutil
 import subprocess
+import tempfile
 import tomllib
 import unittest
 from pathlib import Path
@@ -108,6 +111,57 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("secrets.", json.dumps(checkout))
         self.assertEqual("python scripts/pr_agent_review.py", run["run"])
         self.assertNotIn("comment.body", json.dumps(run))
+
+    def test_container_keeps_hardening_and_uses_hosted_runner_uid(self):
+        job = WORKFLOW["jobs"]["review"]
+        # Hosted Ubuntu's runner UID is documented by actions/runner-images#10936.
+        self.assertEqual("ubuntu-latest", job["runs-on"])
+        self.assertCountEqual([
+            "--user", "1001:1001", "--cap-drop=ALL", "--security-opt=no-new-privileges",
+        ], shlex.split(job["container"]["options"]))
+        self.assertEqual({"contents": "read", "issues": "write", "pull-requests": "write"},
+                         job["permissions"])
+
+    @unittest.skipUnless(shutil.which("jq"), "jq required to run the admission step")
+    def test_admission_step_outputs_only_valid_same_repository_commits(self):
+        script = WORKFLOW["jobs"]["admit"]["steps"][0]["run"]
+        pr = {"state": "open", "head": {"repo": {"fork": False, "full_name": "example/project"},
+                                            "sha": "a" * 40},
+              "base": {"repo": {"full_name": "example/project"}, "sha": "b" * 40}}
+        cases = [(pr, True)]
+        for section, key, value in (("head", "sha", "invalid"), ("base", "sha", None),
+                                    ("head", "repo", None),
+                                    ("base", "repo", {"full_name": "other/project"}),
+                                    ("head", "repo", {"fork": True, "full_name": "example/project"})):
+            invalid = copy.deepcopy(pr)
+            invalid[section][key] = value
+            cases.append((invalid, False))
+        cases.append((dict(pr, state="closed"), False))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            gh = root / "gh"
+            gh.write_text('#!/bin/sh\n[ "$1" = api ] && [ "$2" = repos/example/project/pulls/1 ] || exit 2\n'
+                          'cat "$PR_FIXTURE"\nexit "${API_EXIT:-0}"\n')
+            gh.chmod(0o700)
+            fixture, output = root / "pr.json", root / "output"
+            env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", PR_FIXTURE=str(fixture),
+                       GITHUB_REPOSITORY="example/project", PR_NUMBER="1", GITHUB_OUTPUT=str(output))
+            for data, expected in cases:
+                with self.subTest(pr=data):
+                    fixture.write_text(json.dumps(data))
+                    output.write_text("")
+                    result = subprocess.run(["bash", "-c", script], env=env, capture_output=True,
+                                            text=True, timeout=10, check=False)
+                    wanted = f"admitted=true\nhead={'a' * 40}\nbase={'b' * 40}\n" if expected else ""
+                    self.assertEqual(wanted, output.read_text(), result.stderr)
+                    if expected:
+                        self.assertEqual(0, result.returncode, result.stderr)
+            fixture.write_text(json.dumps(pr))
+            output.write_text("")
+            result = subprocess.run(["bash", "-c", script], env=dict(env, API_EXIT="1"),
+                                    capture_output=True, text=True, timeout=10, check=False)
+            self.assertNotEqual(0, result.returncode)
+            self.assertEqual("", output.read_text())
 
     @unittest.skipUnless(shutil.which("jq"), "jq required to exercise the workflow's actual fork predicate")
     def test_actual_jq_fork_predicate(self):

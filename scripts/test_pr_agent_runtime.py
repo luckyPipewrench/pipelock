@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib.util
 import os
 import socket
@@ -224,6 +225,99 @@ class RuntimeTests(unittest.TestCase):
                 self.assertEqual(1, wire.await_count)
                 self.provider.publish_code_suggestions.assert_not_called()
                 self.provider.publish_persistent_comment.assert_not_called()
+
+    def test_github_workflow_token_diff_and_comment_endpoints(self):
+        # Exercise the real provider and PyGithub objects. Only the REST boundary
+        # and model response are fixtures; unexpected endpoints fail the test.
+        from github import GithubException
+        from github.Requester import Requester
+
+        root = "https://api.github.com/repos/example/project"
+        pr_url = f"{root}/pulls/1"
+        repo = {"full_name": self.repo, "url": root, "default_branch": "main"}
+        pr = {"url": pr_url, "issue_url": f"{root}/issues/1",
+              "html_url": "https://github.com/example/project/pull/1", "number": 1,
+              "title": "Example", "body": "Untrusted description", "state": "open", "changed_files": 1,
+              "head": {"sha": self.head, "ref": "fix/example", "repo": dict(repo, fork=False)},
+              "base": {"sha": self.base, "ref": "main", "repo": repo}, "user": {"login": "contributor"},
+              "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-01T00:00:00Z"}
+        commit = {"sha": self.head, "url": f"{root}/commits/{self.head}",
+                  "html_url": f"https://github.com/example/project/commit/{self.head}",
+                  "commit": {"message": "Example change", "author": {"date": "2026-01-01T00:00:00Z"}}}
+        requests, comments, unexpected, content_refs = [], [], [], []
+
+        def api(method, url, parameters=None, headers=None, input=None, **kwargs):
+            requests.append((method, url, input))
+            if method == "GET":
+                if url == "/user":
+                    # GITHUB_TOKEN is an installation token, not a user token.
+                    raise GithubException(403, {"message": "Resource not accessible by integration"})
+                if url in ("/repos/example/project", root):
+                    return {}, repo
+                if url == pr_url:
+                    return {}, pr
+                if url == f"{pr_url}/commits":
+                    return {}, [commit]
+                if url == f"{pr_url}/files":
+                    return {}, [{"filename": "src/file.py", "status": "modified", "additions": 1,
+                                 "deletions": 1, "changes": 2, "patch": "@@ -1 +1 @@\n-old\n+new\n"}]
+                if url == f"{root}/compare/{self.base}...{self.head}":
+                    return {}, {"merge_base_commit": {"sha": self.base}}
+                if url == f"{root}/contents/src/file.py":
+                    content_refs.append(parameters["ref"])
+                    content = "new\n" if parameters["ref"] == self.head else "old\n"
+                    return {}, {"type": "file", "path": "src/file.py", "encoding": "base64",
+                                "content": base64.b64encode(content.encode()).decode()}
+                if url == f"{root}/languages":
+                    return {}, {"Python": 1}
+                if url == f"{root}/issues/1/comments":
+                    return {}, comments
+                if url in (f"{pr_url}/comments", f"{pr_url}/reviews"):
+                    return {}, []
+            if method == "POST" and url == f"{root}/issues/1/comments":
+                comment = dict(input, id=7, url=f"{root}/issues/comments/7", user={"login": "github-actions[bot]"},
+                               html_url="https://github.com/example/project/pull/1#issuecomment-7")
+                comments.append(comment)
+                return {}, comment
+            if method == "PATCH" and url == f"{root}/issues/comments/7":
+                comments[0].update(input)
+                return {}, comments[0]
+            if method == "POST" and url == f"{pr_url}/reviews":
+                return {}, {"id": 8, "state": "COMMENTED"}
+            unexpected.append((method, url))
+            self.fail(f"Unexpected GitHub operation: {method} {url}")
+
+        completion = AsyncMock(return_value=self.response())
+        with (
+            patch.dict(os.environ, dict(self.env, GITHUB_ACTIONS="true")),
+            patch.object(Requester, "requestJsonAndCheck", side_effect=api),
+            patch("pr_agent.algo.ai_handlers.litellm_ai_handler.LiteLLMAIHandler._get_completion", completion),
+            asyncio.Runner() as runner,
+        ):
+            runner.get_loop()
+            with patch.object(socket.socket, "connect", side_effect=AssertionError("network forbidden")):
+                try:
+                    runner.run(review.review(self.settings))
+                except review.ReviewAbort:
+                    self.fail(f"Review aborted after fixture requests: {[(m, u) for m, u, _ in requests]}")
+                # A second run must update the persistent summary rather than duplicate it.
+                self.settings, _ = review.configure()
+                with patch.dict(os.environ, self.env):
+                    runner.run(review.review(self.settings))
+        self.assertEqual(2, completion.await_count)
+        self.assertEqual([], unexpected)
+        self.assertEqual({self.head, self.base}, set(content_refs))
+        self.assertIn(("GET", "/user"), [(m, u) for m, u, _ in requests])
+        self.assertIn(("GET", f"{pr_url}/files"), [(m, u) for m, u, _ in requests])
+        self.assertEqual(1, sum(m == "POST" and u == f"{root}/issues/1/comments" for m, u, _ in requests))
+        self.assertEqual(1, sum(m == "PATCH" for m, _, _ in requests))
+        inline = [data for method, url, data in requests if method == "POST" and url == f"{pr_url}/reviews"]
+        self.assertTrue(inline)
+        self.assertEqual(self.head, inline[0]["commit_id"])
+        self.assertEqual("COMMENT", inline[0]["event"])
+        self.assertIn("src/file.py", str(inline[0]["comments"]))
+        self.assertIn(self.head, comments[0]["body"])
+        self.assertIn(self.base, comments[0]["body"])
 
 
 if __name__ == "__main__":

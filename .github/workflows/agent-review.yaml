@@ -67,7 +67,10 @@ jobs:
       pull-requests: write # Publish inline review threads.
     container:
       image: pragent/pr-agent:0.47.0@sha256:7d98954c29289846a08faf00aaea0f1f1375b1676cd8a2ed303e0af07010af7a
-      options: --cap-drop=ALL --security-opt=no-new-privileges
+      # Match the hosted Ubuntu runner's UID so checkout can write file commands
+      # and the workspace without restoring DAC_OVERRIDE or other capabilities.
+      # https://github.com/actions/runner-images/issues/10936
+      options: --user 1001:1001 --cap-drop=ALL --security-opt=no-new-privileges
     steps:
       - name: Check out the loaded default-branch workflow revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

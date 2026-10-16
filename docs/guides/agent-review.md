@@ -38,6 +38,8 @@ The adapter bypasses PR-Agent's webhook/comment parser and invokes only its revi
 
 The upstream CLI image is pinned by version and image digest in [the workflow](../../.github/workflows/agent-review.yaml). The digest freezes its entire dependency tree, and Renovate's GitHub Actions image updater can propose updates. Review the image source and run the adapter checks when updating it. The wrapper depends on the pinned handler's Tenacity `retry_with` interface, exception chaining, and HTTP retry method. The adapter has no server or hosted-review subscription dependency.
 
+The container runs as UID 1001, matching the [hosted Ubuntu runner](https://github.com/actions/runner-images/issues/10936), with all Linux capabilities dropped and privilege escalation disabled. This lets checkout write the runner-owned workspace and file-command mounts through ordinary ownership permissions. GitHub supplies the writable home at `/github/home`. A runner or image change needs the same checkout, cache-write, and adapter checks as an image update; restoring filesystem-bypass capabilities isn't required. See [GitHub's container job options](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/run-jobs-in-a-container) and [Docker's user and capability controls](https://docs.docker.com/engine/containers/run/).
+
 Run the fast checks with the repository's pinned test dependencies installed:
 
 ```bash
@@ -47,6 +49,14 @@ python -m unittest scripts.pr_review_test
 
 With `pr-agent==0.47.0` installed in a disposable environment, run `python scripts/pr_agent_review.py --check-config` to print only non-secret effective settings. This does not call a model or require provider credentials.
 
-Run `python -m unittest scripts.test_pr_agent_runtime` in that same environment to exercise the real pinned handler, parser, and publication path with fixture credentials and network connections blocked. These optional integration tests skip in environments without PR-Agent; admission and failure-contract tests always run through the existing CI test discovery.
+Before running the offline integration tests, prepare the tokenizer data once in that disposable environment, without credentials:
+
+```bash
+python -c "import tiktoken; tiktoken.get_encoding('o200k_base')"
+```
+
+This downloads the data verified by tiktoken's bundled hash. Keep the cache directory when disabling networking; set `TIKTOKEN_CACHE_DIR` to a writable directory to choose its location. A fresh image doesn't include this cache.
+
+Run `python -m unittest scripts.test_pr_agent_runtime` in that same environment to exercise the real pinned handler, parser, GitHub diff reads, and comment publication with fixture credentials and network connections blocked. The GitHub fixture rejects unexpected API operations and verifies persistent summary reuse with the workflow bot identity. These optional integration tests skip in environments without PR-Agent; admission and failure-contract tests always run through the existing CI test discovery.
 
 For the first live smoke test after merging and configuring credentials, comment `/agent-review` on a small same-repository pull request with a known, harmless correctness defect on an added line. Verify the job succeeds, logs the configured Anthropic model when its primary key is available, posts a resolvable inline thread, and names the captured commits in the summary. Repeat the command to check summary reuse and inline deduplication. Local fixtures cover OpenAI-only operation and credit/spend-limit rollover without deliberately spending an account down. Real API model acceptance, account access, actual billing-response formats, and GitHub publication permissions require live verification.

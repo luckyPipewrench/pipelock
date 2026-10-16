@@ -155,6 +155,7 @@ MAX_JUDGE_CONTEXT_TOKENS = 1_200
 MAX_JUDGE_EVIDENCE_REQUESTS = 8
 MAX_REQUESTS_PER_CANDIDATE = 3
 MAX_JUDGE_REASON_CHARS = 300
+MAX_JUDGE_CITATION_CHARS = 400
 # Validation feedback uses part of the existing prompt-structure reserve.
 MAX_JUDGE_FEEDBACK_TOKENS = 250
 JUDGE_VALIDATION_CODES = frozenset({
@@ -1131,7 +1132,7 @@ def _parse_judge_decisions(
             validation.reject("drop-without-citation", index)
         decisions[index] = JudgeDecision(
             verdict, requests, sanitize_public_text(reason, limit=MAX_JUDGE_REASON_CHARS),
-            citation if isinstance(citation, str) and len(citation) <= 400 else None,
+            citation if isinstance(citation, str) and len(citation) <= MAX_JUDGE_CITATION_CHARS else None,
             blocked_on if blocked_on in JUDGE_BLOCKED_ON else None,
         )
     for index in range(candidate_count):
@@ -1142,7 +1143,7 @@ def _parse_judge_decisions(
 
 def _cited_location(citation: object) -> tuple[str, int] | None:
     """Split "path:line" at its last colon, so a path may itself contain ":12:"."""
-    if not isinstance(citation, str):
+    if not isinstance(citation, str) or len(citation) > MAX_JUDGE_CITATION_CHARS:
         return None
     path, colon, number = citation.strip().removeprefix("./").rpartition(":")
     if not colon or not path or not number.isascii() or not number.isdigit() or number.startswith("0"):

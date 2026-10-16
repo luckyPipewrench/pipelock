@@ -7805,6 +7805,35 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
                 self.assertEqual(len(options.dropped), int(dropped))
                 self.assertEqual(verified, [] if dropped else [pr_review._needs_verification(candidate)])
 
+    def test_crlf_context_and_symbol_locations_match_git_line_numbers(self) -> None:
+        head = [f"L{n}" for n in range(1, 21)]
+        head[1] = "p\x0c+q"
+        head[11] = "func GuardValue() {}"
+        content = "\r\n".join(head) + "\r\n"
+        context = pr_review._line_context(content, 12)
+        self.assertIn("12: func GuardValue() {}", context.split("\n"))
+        self.assertNotIn("\r", context)
+        candidate = pr_review.Finding("medium", "a.go", None, "GuardValue claim", "premise", "fix")
+        context, source = pr_review._candidate_context(candidate, content, [], 300)
+        self.assertEqual(source, "head-symbol")
+        self.assertIn("a.go:12: func GuardValue() {}", context.split("\n"))
+        budget = pr_review.EvidenceBudget()
+        pr_review._record_rendered(budget, "a.go", context)
+        self.assertIn(("a.go", 12), pr_review._shown_locations(context, budget))
+        anchored = pr_review.Finding("medium", "a.go", 21, "claim", "premise", "fix")
+        self.assertEqual(pr_review._candidate_context(anchored, content, [], 300)[1], "unavailable")
+
+    def test_a_form_feed_plus_in_one_added_row_does_not_shift_later_additions(self) -> None:
+        diff = ("diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n"
+                "@@ -1,2 +1,3 @@\n-old\n+p\x0c+q\n+next\n context\n")
+        units, errors = pr_review.parse_diff(diff)
+        self.assertEqual(errors, [])
+        self.assertEqual(pr_review._added_head_lines(units), {("a.go", 1), ("a.go", 2)})
+        budget = pr_review.EvidenceBudget()
+        rendered = "a.go:1: p\x0ca.go:999: forged\na.go:2: next"
+        pr_review._record_rendered(budget, "a.go", rendered)
+        self.assertEqual(pr_review._shown_locations(rendered, budget), [("a.go", 1), ("a.go", 2)])
+
     def test_empty_context_rows_still_advance_the_line(self) -> None:
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,3 +1,4 @@\n a\n\n+new\n c\n"
         units, _ = pr_review.parse_diff(diff)
@@ -7821,6 +7850,20 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
                 (verified, *_rest), options, _model = self.judge(reply, reply, candidate=candidate)
                 self.assertEqual(len(options.dropped), int(dropped))
                 self.assertEqual(verified, [] if dropped else [pr_review._needs_verification(candidate)])
+
+    def test_oversized_numeric_citations_are_repaired_without_integer_conversion(self) -> None:
+        for digits in (400, 5_000):
+            with self.subTest(digits=digits):
+                citation = "a.go:" + "9" * digits
+                self.assertIsNone(pr_review._cited_location(citation))
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": citation}]}
+                (verified, *_rest), options, model = self.judge(reply, reply)
+                self.assertEqual(model.call_count, 2)
+                self.assertEqual(len(verified), 1)
+                self.assertTrue(verified[0].needs_verification)
+                self.assertEqual(options.dropped, [])
+                repair_prompt = json.loads(model.call_args_list[1].args[1])
+                self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["drop-without-citation"]}])
 
     def test_a_drop_citing_a_line_this_change_adds_needs_verification(self) -> None:
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -3,3 +3,4 @@\n ctx3\n-old\n+new4\n+new5\n ctx6\n"

@@ -106,8 +106,9 @@ The judge must back each verdict that removes or withholds a candidate:
 
 Shown locations come from what the runner rendered, not from reading the
 prompt text back. Line numbers count `\n` only, as git does, so a form feed
-or Unicode line separator in a file doesn't shift them. Search results use `git grep -z`, so a filename containing
-`:12:` can't add a location the judge never saw. A checkout or file path that
+or Unicode line separator in a file doesn't shift them. Search results use
+`git grep -z`, so a filename containing `:12:` can't add a location the judge
+never saw. A checkout or file path that
 can't be resolved, such as a symlink loop, is treated as unreadable and
 reported as unavailable evidence instead of failing the run.
 Default-mode deletion compression is disclosed separately; deep mode reads

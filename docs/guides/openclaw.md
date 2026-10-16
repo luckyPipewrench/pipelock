@@ -4,13 +4,7 @@ Pipelock sits between your AI agent and the OpenClaw gateway when the agent's MC
 
 ## Why
 
-CVE-2026-25253 (CVSS 8.8) is a cross-site WebSocket hijacking attack against OpenClaw gateways. The attack chain:
-
-1. Victim clicks a malicious link
-2. Attacker's page opens a WebSocket to the victim's localhost gateway (no origin validation)
-3. Browser auto-sends the gateway auth token
-4. Attacker steals the token, connects to the gateway, disables sandbox and safety guardrails
-5. Attacker invokes `node.invoke` for arbitrary code execution on the host
+[CVE-2026-25253](https://github.com/openclaw/openclaw/security/advisories/GHSA-g8p2-7wf7-98mq) affects OpenClaw through version 2026.1.28. Its Control UI accepts an unvalidated gateway URL and automatically sends the stored gateway token when connecting. Token theft can lead to gateway compromise even when the gateway listens only on loopback. Upgrade to 2026.1.29 or later; the fix requires confirmation of a new gateway URL before connecting.
 
 For MCP calls routed through its proxy, Pipelock applies configured tool policy, input scanning, and response scanning to tool invocations, arguments, and results. These controls don't protect direct gateway connections. Pipelock doesn't provide an inbound WebSocket MCP listener; WebSocket upstreams require stdio mode.
 
@@ -19,6 +13,8 @@ For MCP calls routed through its proxy, Pipelock applies configured tool policy,
 **1. Install pipelock:**
 
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+
+Run the archive commands in a fresh directory. If verification fails or provenance cannot be retrieved, stop without extracting or installing the archive. Use another fresh directory before retrying so an existing download does not prevent the commands from running.
 
 ```bash
 # From source (Go 1.26+)
@@ -274,7 +270,7 @@ These controls apply when the relevant traffic passes through Pipelock. They do 
 
 | Traffic or Operation | Pipelock Control | Layer |
 |---|---|---|
-| Token theft via WS handshake | Not mitigated by the MCP wrapper; no inbound WebSocket MCP listener | -- |
+| Gateway token theft through a direct WebSocket connection | Outside MCP wrapper coverage; upgrade OpenClaw to the fixed release | -- |
 | Sandbox disable via a mediated MCP tool call | Configured tool policy can deny matching tool invocations | MCP proxy |
 | Shell/exec operation via a mediated MCP tool call | Configured tool policy can deny matching tool names and arguments; direct gateway `node.invoke` calls bypass it | MCP proxy |
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |
@@ -282,7 +278,7 @@ These controls apply when the relevant traffic passes through Pipelock. They do 
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
 | Outbound HTTP exfiltration | Ordered URL scanning, DLP on request URLs | HTTP proxy |
 
-Pipelock does not patch the CVE itself. The gateway needs its own origin validation fix. Pipelock scans traffic routed through its proxies; direct gateway connections remain outside that coverage.
+Pipelock does not patch the CVE itself; upgrade OpenClaw as described above. Pipelock scans traffic routed through its proxies; direct gateway connections remain outside that coverage.
 
 ## TLS Interception
 

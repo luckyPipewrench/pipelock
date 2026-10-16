@@ -208,6 +208,8 @@ Download and verify the v3.7.0 [Linux amd64 archive](https://github.com/luckyPip
 
 Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
 
+Run these commands in a fresh directory. If verification fails or provenance cannot be retrieved, stop without extracting the archive or building the image. Use another fresh directory before retrying so an existing download does not prevent the commands from running.
+
 ```bash
 gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz &&
   gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml &&

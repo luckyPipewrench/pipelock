@@ -281,7 +281,8 @@ Build and deploy sequence:
 1. Fetch the latest `main` in both the Pipelock and site repositories. Build
    from clean checkouts of those fetched commits. The build script refuses
    uncommitted tracked or untracked changes in Pipelock or under the site viewer
-   directory. Ignored viewer files also count as source changes, except for the
+   directory, and a tracked file whose bytes differ from HEAD when git status
+   hides that change. Ignored viewer files also count as source changes, except for the
    WASM verifier, its shim, and the build record, which are replaced in staging;
    `PLAYGROUND_ALLOW_DIRTY=1` is only for an explicitly marked diagnostic build.
    Set `PLAYGROUND_UI_DIR` to the site's `static/playground/demo` directory and

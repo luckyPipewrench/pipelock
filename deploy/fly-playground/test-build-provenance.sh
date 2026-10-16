@@ -125,6 +125,52 @@ for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
 	mv "${PLAYGROUND_UI_DIR}/${generated}" "${tmp}/${generated}"
 done
 
+# A nested ignored directory, and an ignored file whose name matches a staging
+# output only in a subdirectory, are still copied. The top-level exclude must
+# not hide them. Brackets in the viewer directory are literal path characters.
+mkdir -p "${PLAYGROUND_UI_DIR}/nested/deeper" "${PLAYGROUND_UI_DIR}/sub"
+printf '/static/playground/demo/nested/\n/static/playground/demo/sub/pipelock-verifier.wasm\n' >> "${tmp}/site/.git/info/exclude"
+printf 'secret\n' > "${PLAYGROUND_UI_DIR}/nested/deeper/secret.txt"
+printf 'not wasm\n' > "${PLAYGROUND_UI_DIR}/sub/pipelock-verifier.wasm"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/nested-ignored.out" 2>&1; then
+	echo 'nested ignored viewer file was accepted as clean source' >&2
+	exit 1
+fi
+rm -rf -- "${PLAYGROUND_UI_DIR}/nested" "${PLAYGROUND_UI_DIR}/sub"
+bracket_dir="${tmp}/site/static/playground/demo[v1]"
+mkdir -p "${bracket_dir}"
+printf '<!doctype html><title>viewer</title>\n' > "${bracket_dir}/index.html"
+git -C "${tmp}/site" add -- ":(literal)static/playground/demo[v1]/index.html"
+git -C "${tmp}/site" -c user.name=Test -c user.email=test@example.invalid commit -qm 'bracket viewer'
+printf '/static/playground/demo\[v1\]/hidden.txt\n' >> "${tmp}/site/.git/info/exclude"
+printf 'hidden\n' > "${bracket_dir}/hidden.txt"
+if PLAYGROUND_UI_DIR="${bracket_dir}" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/bracket.out" 2>&1; then
+	echo 'ignored file under a viewer path with brackets was accepted as clean source' >&2
+	exit 1
+fi
+rm -f -- "${bracket_dir}/hidden.txt"
+
+# git status does not list these edits, but cp still copies the changed bytes.
+for hide in skip-worktree assume-unchanged; do
+	git -C "${tmp}/site" update-index "--${hide}" -- "static/playground/demo/asset file.txt"
+	printf 'hidden change\n' > "${PLAYGROUND_UI_DIR}/asset file.txt"
+	if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/hidden.out" 2>&1; then
+		echo "viewer change hidden by ${hide} was accepted as clean source" >&2
+		exit 1
+	fi
+	PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/hidden.out"
+	python3 - "${tmp}/capture/build-info.json" "${tmp}/capture/asset file.txt" <<'CHECK'
+import json
+import pathlib
+import sys
+info = json.load(open(sys.argv[1], encoding="utf-8"))
+assert info["dirty"] is True and info["site_dirty"] is True and info["pipelock_dirty"] is False
+assert "hidden change" in pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+CHECK
+	git -C "${tmp}/site" update-index "--no-${hide}" -- "static/playground/demo/asset file.txt"
+	git -C "${tmp}/site" checkout -q -- "static/playground/demo/asset file.txt"
+done
+
 printf 'changed\n' >> "${PLAYGROUND_UI_DIR}/index.html"
 if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/dirty.out" 2>&1; then
 	echo 'dirty site viewer was accepted' >&2
@@ -139,7 +185,13 @@ assert info["dirty"] is True and info["site_dirty"] is True
 PY
 grep -q -- '-dirty$' "${tmp}/dirty.out"
 
+git -C "${tmp}/source" update-index --skip-worktree -- scripts/git-version.sh
 printf 'changed\n' >> "${tmp}/source/scripts/git-version.sh"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/dirty.out" 2>&1; then
+	echo 'Pipelock change hidden by skip-worktree was accepted' >&2
+	exit 1
+fi
+git -C "${tmp}/source" update-index --no-skip-worktree -- scripts/git-version.sh
 if "${tmp}/source/deploy/fly-playground/build-images.sh" --only vm > "${tmp}/dirty.out" 2>&1; then
 	echo 'dirty Pipelock tree was accepted' >&2
 	exit 1

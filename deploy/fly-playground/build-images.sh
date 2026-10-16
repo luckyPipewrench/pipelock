@@ -27,6 +27,96 @@
 #   deploy/fly-playground/build-images.sh --only broker
 set -euo pipefail
 
+# git status hides skip-worktree and assume-unchanged edits, and the image
+# still copies or compiles those bytes. Return 0 when every committed blob
+# under prefix matches the work tree, 1 when it does not, and 2 when the
+# comparison itself cannot be made. An empty prefix covers the whole tree.
+# exclude_generated skips the three viewer outputs staging replaces.
+worktree_matches_head() {
+	local root="$1" prefix="$2" exclude_generated="$3"
+	local list entry mode oid path rel work file_oid differs=0
+	list="$(mktemp)"
+	if [ -n "${prefix}" ]; then
+		if ! git -C "${root}" ls-tree -r -z HEAD -- ":(literal)${prefix}" > "${list}"; then
+			rm -f -- "${list}"
+			return 2
+		fi
+	elif ! git -C "${root}" ls-tree -r -z HEAD > "${list}"; then
+		rm -f -- "${list}"
+		return 2
+	fi
+	while IFS= read -r -d '' entry || [ -n "${entry}" ]; do
+		[ -n "${entry}" ] || continue
+		mode="${entry%% *}"
+		oid="${entry#* }"
+		oid="${oid#* }"
+		oid="${oid%%$'\t'*}"
+		path="${entry#*$'\t'}"
+		rel="${path}"
+		if [ -n "${prefix}" ]; then
+			rel="${path#"${prefix}/"}"
+		fi
+		if [ "${exclude_generated}" = 1 ]; then
+			case "${rel}" in
+			pipelock-verifier.wasm|wasm_exec.js|build-info.json) continue ;;
+			esac
+		fi
+		# A gitlink or symlink is not the blob this record would be claiming.
+		if [ "${mode}" = 120000 ] || [ "${mode}" = 160000 ]; then
+			differs=1
+			break
+		fi
+		work="${root}/${path}"
+		if [ ! -f "${work}" ] || [ -L "${work}" ]; then
+			differs=1
+			break
+		fi
+		if ! file_oid="$(git -C "${root}" hash-object -- "${work}")"; then
+			rm -f -- "${list}"
+			return 2
+		fi
+		if [ "${file_oid}" != "${oid}" ]; then
+			differs=1
+			break
+		fi
+	done < "${list}"
+	rm -f -- "${list}"
+	return "${differs}"
+}
+
+# Files cp will copy that HEAD does not contain. The three staging outputs are
+# replaced and are not source. Return 1 when such a file exists, 2 on error.
+viewer_has_unrecorded_file() {
+	local list extra rel
+	local -A recorded=()
+	list="$(mktemp)"
+	if ! git -C "${SITE_ROOT}" ls-tree -r -z --name-only HEAD -- ":(literal)${VIEWER_PATH}" > "${list}"; then
+		rm -f -- "${list}"
+		return 2
+	fi
+	while IFS= read -r -d '' extra || [ -n "${extra}" ]; do
+		[ -n "${extra}" ] || continue
+		recorded["${extra}"]=1
+	done < "${list}"
+	if ! find "${PLAYGROUND_UI_DIR}" \( -type f -o -type l \) -print0 > "${list}"; then
+		rm -f -- "${list}"
+		return 2
+	fi
+	while IFS= read -r -d '' extra || [ -n "${extra}" ]; do
+		[ -n "${extra}" ] || continue
+		rel="${extra#"${PLAYGROUND_UI_DIR}/"}"
+		case "${rel}" in
+		pipelock-verifier.wasm|wasm_exec.js|build-info.json) continue ;;
+		esac
+		if [ -z "${recorded["${VIEWER_PATH}/${rel}"]+x}" ]; then
+			rm -f -- "${list}"
+			return 1
+		fi
+	done < "${list}"
+	rm -f -- "${list}"
+	return 0
+}
+
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 : "${PLAYGROUND_REGISTRY:?set PLAYGROUND_REGISTRY, e.g. registry.fly.io/<fly-app>}"
 
@@ -66,6 +156,15 @@ fi
 if [ -n "${pipelock_status}" ]; then
 	PIPELOCK_DIRTY=true
 fi
+pipelock_match=0
+worktree_matches_head "${REPO_ROOT}" "" 0 || pipelock_match=$?
+if [ "${pipelock_match}" -eq 2 ]; then
+	echo "[build-images] ERROR: cannot compare Pipelock tree to HEAD" >&2
+	exit 1
+fi
+if [ "${pipelock_match}" -ne 0 ]; then
+	PIPELOCK_DIRTY=true
+fi
 SITE_DIRTY=false
 if [ "${build_broker}" -eq 1 ]; then
 	if ! SITE_ROOT="$(git -C "${PLAYGROUND_UI_DIR}" rev-parse --show-toplevel 2>/dev/null)"; then
@@ -94,6 +193,21 @@ if [ "${build_broker}" -eq 1 ]; then
 		exit 1
 	fi
 	if [ -n "${site_status}" ] || [ -n "${ignored_site_files}" ]; then
+		SITE_DIRTY=true
+	fi
+	site_match=0
+	worktree_matches_head "${SITE_ROOT}" "${VIEWER_PATH}" 1 || site_match=$?
+	if [ "${site_match}" -eq 2 ]; then
+		echo "[build-images] ERROR: cannot compare site viewer tree to HEAD" >&2
+		exit 1
+	fi
+	unrecorded=0
+	viewer_has_unrecorded_file || unrecorded=$?
+	if [ "${unrecorded}" -eq 2 ]; then
+		echo "[build-images] ERROR: cannot list site viewer files" >&2
+		exit 1
+	fi
+	if [ "${site_match}" -ne 0 ] || [ "${unrecorded}" -ne 0 ]; then
 		SITE_DIRTY=true
 	fi
 fi

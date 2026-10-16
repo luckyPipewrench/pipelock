@@ -1,0 +1,87 @@
+name: PR-Agent review
+
+on:
+  # Default-branch code only; the identity gate and fork admission are tested.
+  issue_comment: # zizmor: ignore[dangerous-triggers]
+    types: [created]
+
+permissions: {}
+
+concurrency:
+  group: agent-review-${{ github.repository }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: Admit maintainer command
+    if: >-
+      github.actor == 'luckyPipewrench' &&
+      github.actor_id == '142104046' &&
+      github.run_attempt == '1' &&
+      github.triggering_actor == 'luckyPipewrench' &&
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.user.id == 142104046 &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.author_association == 'MEMBER' &&
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/agent-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read # Read PR origin and immutable commits before admission.
+    outputs:
+      admitted: ${{ steps.pr.outputs.admitted }}
+      head: ${{ steps.pr.outputs.head }}
+      base: ${{ steps.pr.outputs.base }}
+    steps:
+      - name: Reject fork and closed pull requests before provider admission
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .state == "open" and .head.repo.fork == false and
+            .head.repo.full_name == $repo and .base.repo.full_name == $repo
+          ' <<< "$pr" >/dev/null; then
+            echo 'Pull request is ineligible; no provider work admitted.'
+            exit 0
+          fi
+          head="$(jq -er '.head.sha' <<< "$pr")"
+          base="$(jq -er '.base.sha' <<< "$pr")"
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]]
+          printf 'admitted=true\nhead=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
+
+  review:
+    name: Review admitted diff
+    needs: admit
+    if: needs.admit.outputs.admitted == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read # Check out the trusted workflow revision.
+      issues: write # Update the persistent summary on the pull request.
+      pull-requests: write # Publish inline review threads.
+    container:
+      image: pragent/pr-agent:0.47.0@sha256:7d98954c29289846a08faf00aaea0f1f1375b1676cd8a2ed303e0af07010af7a
+      options: --cap-drop=ALL --security-opt=no-new-privileges
+    steps:
+      - name: Check out the loaded default-branch workflow revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+      - name: Review the admitted diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_HEAD: ${{ needs.admit.outputs.head }}
+          REVIEW_BASE: ${{ needs.admit.outputs.base }}
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+          OTEL_SDK_DISABLED: 'true'
+        run: python scripts/pr_agent_review.py

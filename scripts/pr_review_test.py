@@ -76,6 +76,23 @@ def init_git_fixture(root: pathlib.Path) -> None:
     subprocess.run(["git", "-C", str(root), "config", "core.hooksPath", "/dev/null"], check=True)
 
 
+def rendered_evidence(text: str, unavailable: bool = False):
+    """A cross_file_evidence stand-in that records its lines as the runner does."""
+    def fake(*_args, budget=None, **_kwargs):
+        if budget is not None:
+            for line in text.split("\n"):
+                match = re.match(r"([^\s:]+):[0-9]+: ", line)
+                if match:
+                    pr_review._record_rendered(budget, match[1], line)
+        return text, unavailable
+    return fake
+
+
+def cite(item: dict) -> str:
+    """Cite a judge prompt candidate's own anchor, which its head context shows."""
+    return f"{item['path']}:{item['line'] or 1}"
+
+
 def unit(identifier: int, path: str, category: str, *, additions: int = 1, tokens: int = 2) -> object:
     return pr_review.DiffUnit(
         identifier=identifier,
@@ -2537,6 +2554,14 @@ if [ -f "$FAKE_CAPTURE" ]; then cat "$FAKE_CAPTURE"; else printf '%s' "$FAKE_BOD
         self.assertEqual(parsed["state"], "failed")
         self.assertEqual(parsed["mode"], "deep")
 
+    def test_finalizer_keeps_the_profile_line_the_runner_writes(self) -> None:
+        # The finalizer keeps the runner's profile line only when its pattern
+        # matches, so the pattern must accept what review_profile() writes.
+        for mode in ("default", "deep"):
+            with self.subTest(mode=mode):
+                profile = f"**Review profile:** {pr_review.review_profile(mode)}"
+                self.assertIn(profile, self._run_finalizer(profile, mode))
+
     def test_finalizer_shell_output_round_trips_through_the_runner_parser(self) -> None:
         profile = "**Review profile:** `deep` with `gpt-5.6-terra` (`xhigh` reasoning)."
         posted = self._run_finalizer(profile, "deep")
@@ -2804,7 +2829,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             '    value := "first"', '    value += "second"', '    value += "third"',
             '    value += "fourth"', '    value += "required_override"', "    return value", "}",
         ])
-        hits = [f"{binding.head_sha}:helper_test.go:{line}:helper" for line in (3, 15, 19)]
+        hits = [f"{binding.head_sha}:helper_test.go\x00{line}\x00helper" for line in (3, 15, 19)]
         finding = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
             pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
@@ -2833,7 +2858,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
             finding = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
             literal, _, _ = pr_review._bounded_git_grep(root, "helper", head)
             # Positive control: the literal search alone stops before the definition.
-            self.assertFalse(any(":46:" in hit for hit in literal))
+            self.assertFalse(any("\x0046\x00" in hit for hit in literal))
             with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
                 pr_review, "_local_review_root", return_value=root
             ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]):
@@ -2880,7 +2905,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_failed_definition_search_keeps_literal_hits(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         finding = pr_review.Finding("medium", "caller.go", 1, "helper incomplete", "missing body", "check helper")
-        hits = [f"{binding.head_sha}:helper.go:1:helper"]
+        hits = [f"{binding.head_sha}:helper.go\x001\x00helper"]
 
         def grep(root, term, treeish, deadline=None, extended=False, **kwargs):
             return ([], False, True) if extended else (hits, False, False)
@@ -2909,7 +2934,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_skipped_definition_search_marks_truncation(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         finding = pr_review.Finding("medium", "caller.go", 1, "helper incomplete", "missing body", "check helper")
-        hits = [f"{binding.head_sha}:helper.go:1:helper"]
+        hits = [f"{binding.head_sha}:helper.go\x001\x00helper"]
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
             pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
         ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
@@ -3021,7 +3046,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_requested_search_marks_failed_and_capped_reads(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(search="helper"),))}
-        hits = [f"{binding.head_sha}:helper.go:1:func helper() {{"]
+        hits = [f"{binding.head_sha}:helper.go\x001\x00func helper() {{"]
         for content in (None, "func helper() {\n" + "    work()\n" * 80 + "}\n"):
             with self.subTest(content=content is None), mock.patch.object(
                 pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
@@ -3039,7 +3064,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_cross_file_evidence_retains_window_cap_and_fails_closed_on_read_error(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         finding = pr_review.Finding("medium", "caller.go", 1, "helper incomplete", "missing body", "check helper")
-        hits = [f"{binding.head_sha}:helper{index:02}.go:1:helper" for index in range(33)]
+        hits = [f"{binding.head_sha}:helper{index:02}.go\x001\x00helper" for index in range(33)]
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
             pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
         ), mock.patch.object(pr_review, "_evidence_terms", return_value=["helper"]), mock.patch.object(
@@ -3064,7 +3089,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_requested_search_retains_hit_cap_and_marks_omitted_hits(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         decisions = {0: pr_review.JudgeDecision("unresolved", (pr_review.EvidenceRequest(search="helper"),))}
-        hits = [f"{binding.head_sha}:helper{index:02}.go:1:helper" for index in range(13)]
+        hits = [f"{binding.head_sha}:helper{index:02}.go\x001\x00helper" for index in range(13)]
         with mock.patch.object(pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")), mock.patch.object(
             pr_review, "_bounded_git_grep", return_value=(hits, False, False)
         ), mock.patch.object(pr_review, "_read_commit_file", return_value="helper") as read:
@@ -3087,7 +3112,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         candidate = pr_review.Finding(
             "medium", "schema.json", 12, "Uniqueness is weak", "consumer may accept duplicates", "validate pairs"
         )
-        decision = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer evidence missing"}]}
+        decision = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer evidence missing", "blocked_on": "external-system"}]}
         with mock.patch.object(pr_review, "fetch_file_context", return_value="12: uniqueItems: true"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review, "call_model", return_value=decision):
@@ -3134,10 +3159,11 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
                     "index": 0,
                     "verdict": "unresolved",
                     "reason": "language version is missing",
+                    "blocked_on": "omitted-unit",
                     "requests": [{"path": "go.mod", "line": 3}],
                 }]
             }
-            repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "supported", "requests": []}]}
+            repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "supported", "requests": [], "citation": "go.mod:3"}]}
             with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}, clear=False), mock.patch.object(
                 pr_review, "fetch_file_context", return_value="12: regex"
             ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
@@ -3347,7 +3373,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         candidates = [pr_review.Finding("low", f"docs/{index}.md", 80, "title", "why", "fix") for index in range(5)]
         payload = {
             "findings": [
-                {"index": index, "verdict": "drop", "reason": "not a defect", "requests": []}
+                {"index": index, "verdict": "drop", "reason": "not a defect", "requests": [], "citation": f"docs/{index}.md:80"}
                 for index in range(len(candidates))
             ]
         }
@@ -3449,11 +3475,11 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         ]
         first = {
             "findings": [
-                {"index": 0, "verdict": "unresolved", "reason": "consumer not located"},
-                {"index": 1, "verdict": "unresolved", "reason": "consumer not located"},
+                {"index": 0, "verdict": "unresolved", "reason": "consumer not located", "blocked_on": "external-system"},
+                {"index": 1, "verdict": "unresolved", "reason": "consumer not located", "blocked_on": "external-system"},
             ]
         }
-        repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "caller closes premise"}]}
+        repaired = {"findings": [{"index": 0, "verdict": "drop", "reason": "caller closes premise", "citation": "a.go:12"}]}
         with mock.patch.object(pr_review, "fetch_file_context", return_value="\n" * 11 + "return nil"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("caller.go:8 invokes guard", False)
         ), mock.patch.object(pr_review, "call_model", side_effect=[first, repaired]):
@@ -3472,7 +3498,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
     def test_targeted_recheck_is_skipped_when_it_cannot_finish_before_deadline(self) -> None:
         binding = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
         candidate = pr_review.Finding("medium", "a.go", 12, "guard may skip", "caller unclear", "deny")
-        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "outside state required"}]}
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "outside state required", "blocked_on": "external-system"}]}
         with mock.patch.object(pr_review, "fetch_file_context", return_value="\n" * 11 + "return nil"), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review, "budget_allows", return_value=False) as budget, mock.patch.object(
@@ -3496,6 +3522,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
                 "index": 0,
                 "verdict": "unresolved",
                 "reason": "outside state required",
+                "blocked_on": "omitted-unit",
                 "requests": [{"path": "consumer.go"}],
             }]
         }
@@ -3567,7 +3594,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
 
     def test_deep_judge_reserves_reasoning_and_visible_output_tokens(self) -> None:
         payload = pr_review.build_llm_payload("gpt-6.1-sol", "system", "user", "deep", "judge")
-        self.assertEqual(payload["reasoning_effort"], "low")
+        self.assertEqual(payload["reasoning_effort"], "high")
         self.assertNotIn("temperature", payload)
         self.assertEqual(payload["max_completion_tokens"], 32_768)
         self.assertGreaterEqual(payload["max_completion_tokens"], 25_000)
@@ -3708,7 +3735,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         ]
         with mock.patch.object(pr_review, "fetch_file_context", return_value="line\n" * 10), mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", True)
-        ), mock.patch.object(pr_review, "call_model", side_effect=lambda _system, user, *args, **kwargs: {"findings": [{"index": item["index"], "verdict": "drop", "reason": "head code closes premise"} for item in json.loads(user)["candidates"]]}) as model:
+        ), mock.patch.object(pr_review, "call_model", side_effect=lambda _system, user, *args, **kwargs: {"findings": [{"index": item["index"], "verdict": "drop", "reason": "head code closes premise", "citation": cite(item)} for item in json.loads(user)["candidates"]]}) as model:
             verified, judged, _over_budget, over_files, unresolved, invalid = pr_review.judge_findings(
                 "owner/repo", "token", binding, "deep", candidates
             )
@@ -3807,7 +3834,7 @@ class JudgeEvidenceTest(OfflineReviewTestCase):
         ]
         decisions = {
             "findings": [
-                {"index": index, "verdict": "drop", "reason": "current code rejects the premise"}
+                {"index": index, "verdict": "drop", "reason": "current code rejects the premise", "citation": f"path/{index}.go:50"}
                 for index in range(len(candidates))
             ]
         }
@@ -3965,9 +3992,9 @@ class FailureDirectionTest(OfflineReviewTestCase):
         self.assertEqual(pr_review.model_for_phase("default", "review-chunk-1"), "gpt-6-luna")
         self.assertEqual(pr_review.reasoning_for_phase("default", "review-chunk-1"), "high")
         self.assertEqual(pr_review.model_for_phase("default", "judge"), "gpt-6.1-sol")
-        self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "low")
+        self.assertEqual(pr_review.reasoning_for_phase("default", "judge"), "high")
         self.assertEqual(pr_review.model_for_phase("deep", "judge"), "gpt-6.1-sol")
-        self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "low")
+        self.assertEqual(pr_review.reasoning_for_phase("deep", "judge"), "high")
 
     def test_discovery_output_budget_covers_its_reasoning_effort(self) -> None:
         """Reasoning tokens are drawn from the same allowance as the findings JSON.
@@ -4033,7 +4060,7 @@ class FailureDirectionTest(OfflineReviewTestCase):
 
         self.assertEqual(result, {"findings": []})
         self.assertEqual(post.call_args.kwargs["json"]["model"], "gpt-6.1-sol")
-        self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "low")
+        self.assertEqual(post.call_args.kwargs["json"]["reasoning_effort"], "high")
         usage_calls = [call for call in log_phase.call_args_list if call.args and call.args[0] == "judge-usage"]
         self.assertEqual(len(usage_calls), 1)
         self.assertEqual(usage_calls[0].kwargs["correlation"], "correlation")
@@ -4315,6 +4342,11 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
 
     @staticmethod
     def _decision(index: int, verdict: str = "drop", **fields: object) -> dict[str, object]:
+        # A drop cites the anchor line its candidate's head context shows.
+        if verdict == "drop" and type(index) is int:
+            fields.setdefault("citation", f"example/{index}.go:1")
+        if verdict == "unresolved":
+            fields.setdefault("blocked_on", "external-system")
         return {"index": index, "verdict": verdict, "reason": "Repository evidence settles this.", "requests": [], **fields}
 
     def test_prompt_states_existing_limits_for_both_passes(self) -> None:
@@ -4368,7 +4400,7 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
     def test_repair_feedback_uses_new_indices_and_preserves_other_decisions(self) -> None:
         raw = "DO NOT COPY PROVIDER TEXT " * 20
         first = {"findings": [self._decision(0, "keep"), self._decision(1, reason=raw), self._decision(2, "invalid")]}
-        repair = {"findings": [self._decision(0), self._decision(1, "keep")]}
+        repair = {"findings": [self._decision(0, citation="example/1.go:1"), self._decision(1, "keep")]}
         result, diagnostics, model, printed = self._judge(first, repair, count=3)
         verified, judged, _budget, _files, unresolved, invalid = result
         self.assertTrue(judged)
@@ -4454,7 +4486,7 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
             for index in range(2)
         ], "changes": [{"path": "a.go", "summary": "changed"}]}
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
-        first = {"findings": [self._decision(0), self._decision(1, reason="x" * 301)]}
+        first = {"findings": [self._decision(0, citation="a.go:1"), self._decision(1, reason="x" * 301, citation="a.go:1")]}
         for reason, expected_state in (("x" * 301, "partial"), ("Repository closes premise.", "clean")):
             with self.subTest(state=expected_state), mock.patch.object(
                 pr_review, "scan_status_comments", return_value=([], set(), True)
@@ -4467,7 +4499,7 @@ class JudgeValidationDiagnosticsTest(OfflineReviewTestCase):
             ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("source", False)), mock.patch.object(
                 pr_review, "requested_repository_evidence", return_value=("", False)
             ), mock.patch.object(pr_review, "call_model", side_effect=[
-                discovery, {"findings": []}, first, {"findings": [self._decision(0, reason=reason)]}
+                discovery, {"findings": []}, first, {"findings": [self._decision(0, reason=reason, citation="a.go:1")]}
             ]) as model, mock.patch.object(pr_review, "update_comment") as update:
                 state, progress = pr_review.run_review(
                     "owner/repo", "42", "dummy", "default", "c" * 40, binding=binding, status_comment_id=7
@@ -5541,7 +5573,7 @@ class RepeatReviewTest(OfflineReviewTestCase):
         payload = {
             "findings": [
                 {"index": 0, "verdict": "keep", "reason": "real", "confidence": 0.9},
-                {"index": 1, "verdict": "drop", "reason": "not real"},
+                {"index": 1, "verdict": "drop", "reason": "not real", "citation": "f1.go:2"},
             ],
             "summary": "an extra top-level key",
         }
@@ -5573,7 +5605,7 @@ class RepeatReviewTest(OfflineReviewTestCase):
     def test_a_partial_answer_publishes_what_was_decided(self) -> None:
         # Deciding 2 of 3 used to discard all three.
         candidates = self._cands(3)
-        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r"}]}
+        payload = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}, {"index": 1, "verdict": "drop", "reason": "r", "citation": "f1.go:2"}]}
         verified, judged, _excluded, _over_files, unresolved, invalid = self._judge(payload, candidates)
         self.assertTrue(judged)
         self.assertEqual([f.title for f in verified], ["T0"])
@@ -6557,7 +6589,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                 if isinstance(response, Exception):
                     raise response
                 return response
-            return {"findings": [{"index": item["index"], "verdict": "drop", "reason": "current code closes premise"} for item in prompt["candidates"]]}
+            return {"findings": [{"index": item["index"], "verdict": "drop", "reason": "current code closes premise", "citation": cite(item)} for item in prompt["candidates"]]}
         content = content if content is not None else "\n".join(f"line_{n}" for n in range(1, 1001))
         read = (lambda _repo, path, *_args: content.get(path)) if isinstance(content, dict) else (lambda *_args: content)
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
@@ -6632,8 +6664,8 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                     "sibling.go:9: sibling_only()\n")
                 with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
                     pr_review, "fetch_file_context", return_value=None
-                ), mock.patch.object(pr_review, "cross_file_evidence", return_value=(evidence, False)), mock.patch.object(
-                    pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                ), mock.patch.object(pr_review, "cross_file_evidence", side_effect=rendered_evidence(evidence)), mock.patch.object(
+                    pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided", "citation": "helper.go:2"}]}
                 ):
                     result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
                 record = options.evidence[owner]
@@ -6655,8 +6687,8 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                         evidence = "" if owner is None else f"CANDIDATE {pr_review.candidate_identifier(owner)} REPOSITORY EVIDENCE\nsample.go:900: deciding code\n"
                         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
                             pr_review, "fetch_file_context", return_value=content
-                        ), mock.patch.object(pr_review, "cross_file_evidence", return_value=(evidence, False)), mock.patch.object(
-                            pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                        ), mock.patch.object(pr_review, "cross_file_evidence", side_effect=rendered_evidence(evidence)), mock.patch.object(
+                            pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": verdict, "reason": "decided", "citation": "sample.go:900"}]}
                         ):
                             result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", [candidate], options=options)
                         record = options.evidence[pr_review.candidate_identifier(candidate)]
@@ -6736,7 +6768,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         for verdict in ("keep", "drop"):
             options = pr_review.JudgeOptions()
             result, _, _ = self.judge([candidate], content="package example", options=options,
-                responses=[{"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}])
+                responses=[{"findings": [{"index": 0, "verdict": verdict, "reason": "decided", "citation": "sample.go:1"}]}])
             self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].source, "file-start-fallback")
             self.assertEqual(result[4], [candidate])
             self.assertEqual(result[0], [])
@@ -6802,7 +6834,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
 
     def test_same_path_search_uses_unsupplied_ranges_and_isolates_failures(self):
         first, second = self.candidate(), self.candidate(900, title="second claim")
-        hits = [f"{self.binding.head_sha}:sample.go:10:near", f"{self.binding.head_sha}:sample.go:900:deciding"]
+        hits = [f"{self.binding.head_sha}:sample.go\x0010\x00near", f"{self.binding.head_sha}:sample.go\x00900\x00deciding"]
         def grep(_root, term, **kwargs):
             return ([], False, True) if term == "failed search" else (hits, False, False)
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
@@ -6886,7 +6918,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             candidate = self.candidate(90)
             options = pr_review.JudgeOptions(units=units)
             with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
-                pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "drop", "reason": "deletion decides the premise"}]}
+                pr_review, "call_model", return_value={"findings": [{"index": 0, "verdict": "drop", "reason": "deletion decides the premise", "citation": "sample.go:90"}]}
             ) as model:
                 result = pr_review.judge_findings("owner/repo", "dummy", binding, "default", [candidate], options=options)
             self.assertEqual(result, ([], True, [], [], [], []))
@@ -6972,7 +7004,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
             if phase.startswith("judge"):
                 if judge_payload is not None:
                     return judge_payload
-                return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied"} for item in json.loads(user)["candidates"]]}
+                return {"findings": [{"index": item["index"], "verdict": judge_verdict, "reason": "deciding code supplied", "citation": cite(item), "blocked_on": "external-system"} for item in json.loads(user)["candidates"]]}
             index = int(phase.split("-")[2]) - 1
             return {"findings": [], "changes": [{"path": f"{index}.go", "summary": "changed"}]}
         with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
@@ -7077,7 +7109,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         ), mock.patch.object(pr_review, "fetch_file_context", side_effect=fetch) as read, mock.patch.object(
             pr_review, "cross_file_evidence", return_value=("", False)
         ), mock.patch.object(pr_review, "call_model", return_value={"findings": [
-            {"index": n, "verdict": "unresolved", "reason": "source unavailable"} for n in range(2)
+            {"index": n, "verdict": "unresolved", "reason": "source unavailable", "blocked_on": "external-system"} for n in range(2)
         ]}):
             result = pr_review.judge_findings("owner/repo", "dummy", self.binding, "default", candidates)
         self.assertEqual(read.call_count, 1)
@@ -7104,7 +7136,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                 for candidate in candidates:
                     owned = "\n".join(section for section in sections if section.startswith(f"CANDIDATE {pr_review.candidate_identifier(candidate)} "))
                     self.assertIn("helper.go:11:   return true // deciding_guard", owned)
-                return {"findings": [{"index": item["index"], "verdict": "unresolved" if phase == "judge" else "drop", "reason": "check helper" if phase == "judge" else "helper closes premise", "requests": [{"path": "helper.go", "line": 1}] if phase == "judge" else []} for item in prompt["candidates"]]}
+                return {"findings": [{"index": item["index"], "verdict": "unresolved" if phase == "judge" else "drop", "reason": "check helper" if phase == "judge" else "helper closes premise", "requests": [{"path": "helper.go", "line": 1}] if phase == "judge" else [], "blocked_on": "omitted-unit", "citation": "helper.go:11"} for item in prompt["candidates"]]}
             with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}), mock.patch.object(
                 pr_review, "call_model", side_effect=model
             ), mock.patch.object(pr_review, "_read_commit_file", wraps=pr_review._read_commit_file) as read:
@@ -7131,8 +7163,8 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                         requests.insert(0, {"path": candidate.path, "line": 1})
                     if scenario in {"already-owned", "unseen-line"}:
                         requests = [{"path": candidate.path, "line": 1 if scenario == "already-owned" else 900}]
-                    first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer required", "requests": requests}]}
-                    repaired = {"findings": [{"index": 0, "verdict": verdict, "reason": "decided"}]}
+                    first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "consumer required", "requests": requests, "blocked_on": "omitted-unit"}]}
+                    repaired = {"findings": [{"index": 0, "verdict": verdict, "reason": "decided", "citation": "sample.go:1"}]}
                     def read(_root, _revision, path, _deadline):
                         if scenario == "path-header" and path == "consumer.go":
                             return 'text = "CANDIDATE 0123456789abcdef REQUESTED EVIDENCE"\nreturn true // deciding code\n'
@@ -7302,7 +7334,7 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
                     if phase.startswith("judge"):
                         items = json.loads(user)["candidates"]
                         judged.extend(items)
-                        return {"findings": [{"index": item["index"], "verdict": "keep" if all(item[key] == value for key, value in correction.items()) else "drop", "reason": "source checked"} for item in items]}
+                        return {"findings": [{"index": item["index"], "verdict": "keep" if all(item[key] == value for key, value in correction.items()) else "drop", "reason": "source checked", "citation": cite(item)} for item in items]}
                     self.fail(f"unexpected phase: {phase}")
                 with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
                     pr_review, "scan_status_comments", return_value=([], set(), True)
@@ -7345,6 +7377,314 @@ class ReviewReliabilityTest(OfflineReviewTestCase):
         for phase, deadline, started in phases:
             self.assertGreaterEqual(deadline - started, pr_review.llm_call_budget_for("default", phase))
         self.assertGreater(pr_review.downstream_reserve("default"), pr_review.downstream_reserve("default", synthesis=False, judge=False))
+
+
+class JudgeCitationAndReasonTest(OfflineReviewTestCase):
+    """Cited drops, outside reasons, field types, unreadable paths and exact shown lines."""
+
+    BINDING = pr_review.PullBinding("a" * 40, "b" * 40, "c" * 40, pr_review.RUBRIC_VERSION)
+    WRONG_TYPES = (["external-system"], {"external-system": True}, 5, 2.5, True)
+
+    @staticmethod
+    def git_repo(root: pathlib.Path, files: dict[str, str]) -> str:
+        init_git_fixture(root)
+        for name, text in files.items():
+            (root / name).write_text(text, encoding="utf-8")
+        subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(root), "commit", "-qm", "fixture"], check=True)
+        return subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
+
+    def judge(self, first: dict, repair: dict | None = None, *, content: str = "line\n" * 30,
+              candidate: object = None) -> tuple[tuple, object, object]:
+        candidate = candidate or pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        options = pr_review.JudgeOptions()
+        replies = [first] if repair is None else [first, repair]
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+            pr_review, "fetch_file_context", return_value=content
+        ), mock.patch.object(pr_review, "cross_file_evidence", return_value=("", False)), mock.patch.object(
+            pr_review, "call_model", side_effect=replies
+        ) as model:
+            result = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate], options=options)
+        return result, options, model
+
+    def test_the_judge_and_its_repair_run_at_high_effort_in_both_modes(self) -> None:
+        for mode in ("default", "deep"):
+            for phase in ("judge", "judge-repair"):
+                with self.subTest(mode=mode, phase=phase):
+                    self.assertEqual(pr_review.reasoning_for_phase(mode, phase), "high")
+        self.assertGreaterEqual(pr_review.JUDGE_REPAIR_MAX_COMPLETION_TOKENS, 16_384)
+        # The timeout covers that allowance at roughly 80 tokens a second.
+        self.assertGreaterEqual(pr_review.JUDGE_REPAIR_TIMEOUT_SECONDS * 80, pr_review.JUDGE_REPAIR_MAX_COMPLETION_TOKENS)
+
+    def test_the_prompt_states_the_citation_and_outside_reason_rules(self) -> None:
+        system, _ = pr_review.build_judge_prompt([pr_review.Finding("medium", "a.go", 1, "c", "w", "f")], {}, [], "")
+        self.assertIn('set citation to the deciding location as "path:line"', system)
+        for reason in sorted(pr_review.JUDGE_BLOCKED_ON):
+            self.assertIn(reason, system)
+        self.assertIn('"blocked_on"', system)
+
+    def test_a_wrong_typed_field_makes_only_that_decision_malformed(self) -> None:
+        base = {
+            "citation": {"index": 0, "verdict": "drop", "reason": "r", "citation": "a.go:1", "requests": []},
+            "blocked_on": {"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "external-system", "requests": []},
+            "requests": {"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "external-system", "requests": []},
+        }
+        for field_name, decision in base.items():
+            values: list[object] = [{"path": "a.go"}, 5, 2.5, True, "a.go"] if field_name == "requests" else [*self.WRONG_TYPES]
+            for value in values:
+                with self.subTest(field=field_name, value=value):
+                    sibling = {"index": 1, "verdict": "keep", "reason": "r", "requests": []}
+                    validation = pr_review.JudgeValidation()
+                    decisions = pr_review._parse_judge_decisions(
+                        {"findings": [{**decision, field_name: value}, sibling]}, 2, validation=validation
+                    )
+                    self.assertEqual(list(decisions), [1], "the well-formed decision is kept")
+                    self.assertEqual(validation.by_index[0], {"invalid-field-type"})
+                    self.assertEqual(validation.counts, {"invalid-field-type": 1})
+
+    def test_a_wrong_typed_field_goes_to_repair_then_needs_verification(self) -> None:
+        first = {"findings": [{"index": 0, "verdict": "drop", "reason": "r", "citation": 5}]}
+        repair = {"findings": [{"index": 0, "verdict": "drop", "reason": "r", "citation": ["a.go:5"]}]}
+        result, options, model = self.judge(first, repair)
+        self.assertEqual(model.call_count, 2)
+        repair_prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["invalid-field-type"]}])
+        self.assertEqual(result[0], [])
+        self.assertEqual(len(result[5]), 1, "a decision that never parses is invalid, not dropped")
+        self.assertEqual(options.dropped, [])
+
+    def test_only_a_listed_outside_reason_is_stored(self) -> None:
+        for value, stored in (("external-system", "external-system"), ("EXTERNAL-SYSTEM", None), ("elsewhere", None), (None, None)):
+            with self.subTest(value=value):
+                validation = pr_review.JudgeValidation()
+                decisions = pr_review._parse_judge_decisions(
+                    {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": value}]}, 1,
+                    validation=validation,
+                )
+                self.assertEqual(decisions[0].blocked_on, stored)
+                self.assertEqual("unresolved-without-outside-reason" in validation.counts, stored is None)
+
+    def test_unresolved_must_name_an_outside_reason(self) -> None:
+        candidate = pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        cases = (
+            (None, "line\n" * 30, "needs-verification"),
+            ("elsewhere", "line\n" * 30, "needs-verification"),
+            ("omitted-unit", "line\n" * 30, "needs-verification"),
+            ("omitted-unit", None, "unresolved"),
+            ("external-system", "line\n" * 30, "unresolved"),
+            ("runtime-behaviour", "line\n" * 30, "unresolved"),
+            ("published-artifact", "line\n" * 30, "unresolved"),
+        )
+        for blocked_on, content, outcome in cases:
+            with self.subTest(blocked_on=blocked_on, content=content is not None):
+                reply = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": blocked_on}]}
+                (verified, judged, _b, _f, unresolved, invalid), options, model = self.judge(reply, reply, content=content, candidate=candidate)
+                self.assertTrue(judged)
+                self.assertEqual(model.call_count, 2, "an unresolved verdict gets the one repair")
+                self.assertEqual(invalid, [])
+                if outcome == "unresolved":
+                    self.assertEqual((verified, unresolved), ([], [candidate]))
+                else:
+                    self.assertEqual(unresolved, [])
+                    self.assertEqual(verified, [pr_review._needs_verification(candidate)])
+                    self.assertTrue(verified[0].needs_verification)
+                    self.assertEqual(options.evidence[pr_review.candidate_identifier(candidate)].verdict, "needs-verification")
+                if blocked_on not in pr_review.JUDGE_BLOCKED_ON:
+                    self.assertEqual(options.diagnostics["judge"].get("unresolved-without-outside-reason"), 1)
+
+    def test_a_repair_that_names_an_outside_reason_withholds_the_candidate(self) -> None:
+        first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r"}]}
+        repair = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "external-system"}]}
+        (verified, _j, _b, _f, unresolved, _i), _options, model = self.judge(first, repair)
+        self.assertEqual((verified, len(unresolved)), ([], 1))
+        repair_prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["unresolved-without-outside-reason"]}])
+
+    def test_a_drop_needs_a_citation_to_a_line_the_judge_was_shown(self) -> None:
+        candidate = pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")
+        # Lines 1-30 of a.go are shown around the anchor.
+        for citation, dropped in (
+            ("a.go:5", True), ("./a.go:30", True), (" a.go:1 ", True), ("a.go:31", False), ("b.go:5", False),
+            ("a.go", False), ("a.go:05", False), ("a.go:0", False), ("a.go:5:", False), (None, False), ("", False),
+        ):
+            with self.subTest(citation=citation):
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": citation}]}
+                (verified, judged, _b, _f, unresolved, invalid), options, model = self.judge(reply, reply, candidate=candidate)
+                self.assertTrue(judged)
+                self.assertEqual((unresolved, invalid), ([], []))
+                if dropped:
+                    self.assertEqual(verified, [])
+                    self.assertEqual(model.call_count, 1, "a cited drop is settled on the first pass")
+                    self.assertEqual(options.dropped, [pr_review.DroppedCandidate(candidate, "a.go", int(citation.strip().rsplit(":", 1)[1]), "closed")])
+                else:
+                    self.assertEqual(model.call_count, 2, "an uncited drop gets the one repair")
+                    self.assertEqual(verified, [pr_review._needs_verification(candidate)])
+                    self.assertEqual(options.dropped, [])
+
+    def test_a_repair_can_supply_the_missing_citation(self) -> None:
+        first = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed"}]}
+        repair = {"findings": [{"index": 0, "verdict": "drop", "reason": "closed", "citation": "a.go:7"}]}
+        (verified, *_rest), options, model = self.judge(first, repair)
+        self.assertEqual(verified, [])
+        self.assertEqual(len(options.dropped), 1)
+        repair_prompt = json.loads(model.call_args_list[1].args[1])
+        self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["drop-without-citation"]}])
+
+    def test_every_cited_drop_is_listed_in_the_comment(self) -> None:
+        candidates = [pr_review.Finding("medium", "a.go", 5, f"claim {n}", "premise", "fix") for n in range(2)]
+        dropped = [pr_review.DroppedCandidate(item, "a`b.go", 9, "**see** <i>line</i> @octocat") for item in candidates]
+        progress = pr_review.ReviewProgress(expected_units=1, reviewed_units=1, dropped_candidates=dropped)
+        comment = pr_review.render_status(self.BINDING, "default", [], progress, "clean", [])
+        self.assertIn("<summary>Dropped by the judge with a citation (2; not findings)</summary>", comment)
+        section = comment.split("(2; not findings)</summary>", 1)[1].split("\n</details>", 1)[0]
+        entries = [line for line in section.splitlines() if line.startswith("- ")]
+        self.assertEqual(entries, [
+            f"- `a.go:5`: claim {n}. Cited `ab.go:9`. Reason: see (i)line(command) mention" for n in range(2)
+        ])
+        self.assertEqual(comment.splitlines().count("<details>"), comment.splitlines().count("</details>"))
+        self.assertNotIn("Dropped by the judge", pr_review.render_status(
+            self.BINDING, "default", [], pr_review.ReviewProgress(expected_units=1, reviewed_units=1), "clean", []))
+
+    def test_a_cited_drop_reaches_the_published_comment(self) -> None:
+        binding = self.BINDING
+        discovery = {"findings": [{"severity": "medium", "path": "a.go", "line": 1, "title": "dropped claim",
+                                   "why": "premise", "fix": "verify", "needs_verification": False}],
+                     "changes": [{"path": "a.go", "summary": "changed"}]}
+        diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1 @@\n-old\n+new\n"
+        verdict = {"findings": [{"index": 0, "verdict": "drop", "reason": "guard closes it", "citation": "a.go:1"}]}
+        with mock.patch.object(pr_review, "scan_status_comments", return_value=([], set(), True)), mock.patch.object(
+            pr_review, "get_pull_binding", return_value=binding
+        ), mock.patch.object(pr_review, "provider_configuration", return_value=("https://provider.example", "dummy")), mock.patch.object(
+            pr_review, "fetch_local_bound_diff", return_value=None
+        ), mock.patch.object(pr_review, "fetch_bound_diff", return_value=diff), mock.patch.object(
+            pr_review, "compare_incompleteness", return_value=None
+        ), mock.patch.object(pr_review, "fetch_file_context", return_value="source"), mock.patch.object(
+            pr_review, "cross_file_evidence", return_value=("", False)
+        ), mock.patch.object(pr_review, "call_model", side_effect=[discovery, {"findings": []}, verdict]), mock.patch.object(
+            pr_review, "update_comment"
+        ) as update:
+            state, progress = pr_review.run_review("owner/repo", "42", "dummy", "default", "c" * 40, binding=binding, status_comment_id=7)
+        self.assertEqual(state, "clean")
+        self.assertEqual([item.finding.title for item in progress.dropped_candidates], ["dropped claim"])
+        comment = update.call_args.args[3]
+        self.assertIn("- `a.go:1`: dropped claim. Cited `a.go:1`. Reason: guard closes it", comment)
+
+    def test_a_symlink_loop_is_an_unreadable_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory).resolve()
+            (root / "ok.go").write_text("package ok\n", encoding="utf-8")
+            os.symlink("loop.go", root / "loop.go")
+            os.symlink("b.go", root / "a.go")
+            os.symlink("a.go", root / "b.go")
+            os.symlink("..", root / "up")
+            for name in ("loop.go", "a.go", "b.go", "up/x.go", "missing.go", "nul\x00.go"):
+                with self.subTest(path=name):
+                    self.assertIsNone(pr_review._read_local_file(root, name))
+            self.assertEqual(pr_review._read_local_file(root, "ok.go"), "package ok\n")
+            with mock.patch.object(pathlib.Path, "resolve", side_effect=RuntimeError("Symlink loop")):
+                self.assertIsNone(pr_review._read_local_file(root, "ok.go"))
+
+    def test_a_symlink_loop_as_the_checkout_path_is_unreadable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            loop = pathlib.Path(directory) / "checkout"
+            os.symlink("checkout", loop)
+            candidate = pr_review.Finding("medium", "a.go", 1, "claim", "premise", "fix")
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(loop)}, clear=False):
+                self.assertIsNone(pr_review._local_review_root("b" * 40, "corr"))
+                with mock.patch.object(pathlib.Path, "resolve", side_effect=RuntimeError("Symlink loop")):
+                    self.assertIsNone(pr_review._local_review_root("b" * 40, "corr"))
+                evidence, unavailable = pr_review.cross_file_evidence(self.BINDING, [candidate], {})
+            self.assertEqual((evidence, unavailable), ("<repository-evidence-unavailable>", True))
+
+    def test_the_judge_is_honest_not_red_past_an_unreadable_checkout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            loop = pathlib.Path(directory) / "checkout"
+            os.symlink("checkout", loop)
+            candidate = pr_review.Finding("medium", "a.go", 1, "claim", "premise", "fix")
+            reply = {"findings": [{"index": 0, "verdict": "keep", "reason": "r"}]}
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(loop)}, clear=False), mock.patch.object(
+                pr_review, "fetch_file_context", return_value="line\n"
+            ), mock.patch.object(pr_review, "call_model", side_effect=[reply, reply]):
+                verified, judged, *_rest = pr_review.judge_findings("owner/repo", "token", self.BINDING, "default", [candidate])
+            self.assertTrue(judged)
+            self.assertEqual(verified, [candidate])
+
+    def test_grep_records_split_paths_and_line_numbers_exactly(self) -> None:
+        sha = "f" * 40
+        self.assertEqual(pr_review._grep_hit(f"{sha}:a:12:b.go\x003\x00x:7: y", sha), ("a:12:b.go", 3, "x:7: y"))
+        self.assertEqual(pr_review._grep_hit(f"{sha}:ok.go\x002\x00a\x00b", sha), ("ok.go", 2, "a\x00b"))
+        for raw in (f"{sha}:a:12:b.go:3:x", f"{sha}:cut.go\x007", "HEAD:ok.go\x002\x00t", f"{sha}:\x002\x00t",
+                    f"{sha}:ok.go\x00x\x00t", f"{sha}:ok.go\x00\u0663\x00t", f"{sha}:z\u2028y.go\x001\x00t", ""):
+            with self.subTest(raw=raw):
+                self.assertIsNone(pr_review._grep_hit(raw, sha))
+
+    def test_context_ranges_read_only_this_candidates_own_prefix(self) -> None:
+        self.assertEqual(pr_review._context_ranges("1: a:12: b\n2: x", "a.go"), [(1, 2)])
+        self.assertEqual(pr_review._context_ranges("a:12: b.go:5: x\na:12: b.go:6: y", "a:12: b.go"), [(5, 6)])
+        self.assertEqual(pr_review._context_ranges("a:12: b.go:5: x", "a.go"), [])
+        self.assertEqual(pr_review._context_ranges("other.go:9: x", "a.go"), [])
+
+    def test_a_filename_containing_a_line_marker_cannot_add_a_shown_location(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory).resolve()
+            head = self.git_repo(root, {
+                "a:12: b.go": "first\nneedle in a colon path\n",
+                "n.go": "needle at line one\n",
+                "m.go": "needle x:9: y\n",
+                "main.go": "package main\n",
+            })
+            binding = pr_review.PullBinding("a" * 40, head, "c" * 40, pr_review.RUBRIC_VERSION)
+            hits, truncated, failed = pr_review._bounded_git_grep(root, "needle", head)
+            self.assertEqual((truncated, failed), (False, False))
+            self.assertEqual(sorted(pr_review._grep_hit(raw, head) for raw in hits),
+                             [("a:12: b.go", 2, "needle in a colon path"), ("m.go", 1, "needle x:9: y"), ("n.go", 1, "needle at line one")])
+            candidate = pr_review.Finding("medium", "main.go", 1, "claim", "why", "fix")
+            first = {"findings": [{"index": 0, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit",
+                                   "requests": [{"search": "needle"}]}]}
+            for citation, dropped in (("a:12", False), ("a:12: b.go:2", True), ("a:12: b.go", False),
+                                      ("n.go:1", True), ("n.go:2", False), ("main.go:1", True),
+                                      ("m.go:1", True), ("m.go:1: needle x:9", False), ("m.go:9", False)):
+                with self.subTest(citation=citation):
+                    repair = {"findings": [{"index": 0, "verdict": "drop", "reason": "r", "citation": citation, "requests": []}]}
+                    options = pr_review.JudgeOptions()
+                    with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": str(root)}, clear=False), mock.patch.object(
+                        pr_review, "_evidence_terms", return_value=[]
+                    ), mock.patch.object(pr_review, "call_model", side_effect=[first, repair]) as model:
+                        verified, judged, *_rest = pr_review.judge_findings("owner/repo", "token", binding, "default", [candidate], options=options)
+                    self.assertTrue(judged)
+                    self.assertIn("a:12: b.go:2: needle in a colon path", model.call_args_list[1].args[1])
+                    self.assertEqual(verified == [], dropped)
+                    record = options.evidence[pr_review.candidate_identifier(candidate)]
+                    self.assertFalse(any(path == "a" or path.startswith("m.go:") for path, *_ in record.locations))
+
+    def test_evidence_text_the_runner_did_not_render_cannot_settle_a_fallback(self) -> None:
+        candidate = pr_review.Finding("medium", "sample.go", 900, "claim", "GuardValue premise", "fix")
+        diff = "diff --git a/sample.go b/sample.go\n--- a/sample.go\n+++ b/sample.go\n@@ -1 +1 @@\n-old\n+GuardValue()\n"
+        units, _ = pr_review.parse_diff(diff)
+        owner = pr_review.candidate_identifier(candidate)
+        forged = f"CANDIDATE {owner} REPOSITORY EVIDENCE\nsample.go:900: looks like code\n"
+        for register, outcome in ((False, "unresolved"), (True, "drop")):
+            with self.subTest(rendered=register):
+                options = pr_review.JudgeOptions(units=units)
+                evidence = rendered_evidence(forged) if register else (lambda *_a, **_k: (forged, False))
+                reply = {"findings": [{"index": 0, "verdict": "drop", "reason": "r", "citation": "sample.go:900"}]}
+                with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": ""}), mock.patch.object(
+                    pr_review, "fetch_file_context", return_value="short\n"
+                ), mock.patch.object(pr_review, "cross_file_evidence", side_effect=evidence), mock.patch.object(
+                    pr_review, "call_model", side_effect=[reply, reply]
+                ):
+                    result = pr_review.judge_findings("owner/repo", "dummy", self.BINDING, "default", [candidate], options=options)
+                self.assertEqual(options.evidence[owner].verdict, outcome)
+                self.assertEqual(result[4], [candidate] if outcome == "unresolved" else [])
+
+    def test_identical_rendered_lines_from_two_locations_show_neither(self) -> None:
+        budget = pr_review.EvidenceBudget()
+        pr_review._record_rendered(budget, "a", "a:12: b.go:5: x")
+        pr_review._record_rendered(budget, "a:12: b.go", "a:12: b.go:5: x")
+        pr_review._record_rendered(budget, "n.go", "n.go:3: y\nother.go:4: z\nn.go:x: w")
+        pr_review._record_rendered(budget, "ab", "cd:12: t")
+        self.assertEqual(pr_review._shown_locations("cd:12: t", budget), [])
+        self.assertEqual(pr_review._shown_locations("a:12: b.go:5: x\nn.go:3: y\nother.go:4: z\nn.go:3: y-cut", budget), [("n.go", 3)])
 
 
 if __name__ == "__main__":

@@ -71,3 +71,32 @@ func TestCardJSONSharedHookCorpus(t *testing.T) {
 		}
 	}
 }
+
+func TestCardJSONHookScalarLeaves(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := scanner.MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := "41111111" + "11111111"
+	groups := "4111,1111" + ",1111,1111"
+	for _, hook := range []string{HookPreToolCall, HookTransformToolResult, HookPreGatewayDispatch} {
+		for i, tt := range []struct {
+			input string
+			block bool
+		}{
+			{`{"result":"` + card + `e10001"}`, true},
+			{`{"result":"-` + card + `E-1"}`, true},
+			{`["` + card + `e10001","ordinary report"]`, true},
+			{`{"ids":[` + groups + `],"result":"` + card + `e10001"}`, true},
+			{`{"result":"1e10001"}`, false},
+			{`{"result":"0.` + "7" + `e5"}`, false},
+			{`{"ids":[` + groups + `],"note":"ordinary report"}`, false},
+		} {
+			result := evaluate(t.Context(), s, &HookEvent{HookEventName: hook, ToolName: "report", ToolInput: json.RawMessage(tt.input)})
+			if (result.Decision == DecisionBlock) != tt.block {
+				t.Fatalf("hook=%s case=%d decision=%s want block=%v", hook, i, result.Decision, tt.block)
+			}
+		}
+	}
+}

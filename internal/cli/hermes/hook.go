@@ -321,13 +321,10 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	// an inbound event would run the exfil checks and emit warn telemetry before
 	// being discarded. Injection scanning (ScanResponse) runs regardless: a
 	// poisoned tool result or operator message is the real inbound threat.
-	var dlp scanner.TextDLPResult
-	if dir == directionInbound {
-		dlp = sc.ScanTextForDLPInboundWithTypedCardView(ctx, text, cards)
-	} else {
-		dlp = sc.ScanTextForDLPWithTypedCardView(ctx, text, cards)
-	}
-	if !dlp.Clean && len(dlp.Matches) > 0 {
+	firstEnforceable := func(dlp scanner.TextDLPResult, scanned string) *scanner.TextDLPMatch {
+		if dlp.Clean || len(dlp.Matches) == 0 {
+			return nil
+		}
 		var enforceable []scanner.TextDLPMatch
 		for _, match := range dlp.Matches {
 			if match.IsNumberOnlyCardRun() {
@@ -337,10 +334,35 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 			}
 		}
 		if dir == directionInbound {
-			enforceable = scanner.EnforceableInboundTextDLPMatches(text, enforceable)
+			enforceable = scanner.EnforceableInboundTextDLPMatches(scanned, enforceable)
 		}
-		if len(enforceable) > 0 {
-			return blockDecision(dlpBlockReason(surface, enforceable[0]))
+		if len(enforceable) == 0 {
+			return nil
+		}
+		return &enforceable[0]
+	}
+	var dlp scanner.TextDLPResult
+	if dir == directionInbound {
+		dlp = sc.ScanTextForDLPInboundWithTypedCardView(ctx, text, cards)
+	} else {
+		dlp = sc.ScanTextForDLPWithTypedCardView(ctx, text, cards)
+	}
+	if match := firstEnforceable(dlp, text); match != nil {
+		return blockDecision(dlpBlockReason(surface, *match))
+	}
+	// A joined view cannot retain each leaf's scalar spelling, so a string
+	// leaf holding an exponent card spelling reads as ordinary text once a
+	// key precedes it. Inspect leaves independently with their card views,
+	// as MCP input and the scan API do.
+	for _, atom := range leaves.Atoms {
+		var leaf scanner.TextDLPResult
+		if dir == directionInbound {
+			leaf = sc.ScanTextForDLPInboundWithCardView(ctx, atom.Text, atom.Card)
+		} else {
+			leaf = sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
+		}
+		if match := firstEnforceable(leaf, atom.Text); match != nil {
+			return blockDecision(dlpBlockReason(surface, *match))
 		}
 	}
 

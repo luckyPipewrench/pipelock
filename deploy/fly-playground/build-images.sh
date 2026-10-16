@@ -130,7 +130,7 @@ pipelock_has_unrecorded_context_file() {
 	# The browser verifier is compiled on the host, outside Docker's context.
 	# Go publishes the actual selected sources and embed inputs via go list.
 	if [ "${build_broker}" -eq 1 ]; then
-		local flags goroot modcache sources input
+		local flags goroot modcache source_root sources input canonical
 		local -A ignored_paths=()
 		if ! flags="$(go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
 		case "${flags}" in
@@ -144,7 +144,22 @@ pipelock_has_unrecorded_context_file() {
 			rm -f -- "${ignored}"
 			return 2
 		fi
-		while IFS= read -r -d '' file; do ignored_paths["${REPO_ROOT}/${file}"]=1; done < "${ignored}"
+		# Compare physical paths: Go can retain a directory-replace symlink in
+		# .Dir, while normalizing trailing slashes and dot components elsewhere.
+		# The module cache need not exist yet when no dependency uses it.
+		if ! source_root="$(realpath -e -- "${REPO_ROOT}")" ||
+			! goroot="$(realpath -e -- "${goroot}")" ||
+			! modcache="$(realpath -m -- "${modcache}")"; then
+			rm -f -- "${ignored}"
+			return 2
+		fi
+		while IFS= read -r -d '' file; do
+			if ! canonical="$(realpath -m -- "${REPO_ROOT}/${file}")"; then
+				rm -f -- "${ignored}"
+				return 2
+			fi
+			ignored_paths["${canonical}"]=1
+		done < "${ignored}"
 		sources="$(mktemp)"
 		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .HFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
 			rm -f -- "${sources}" "${ignored}"
@@ -153,12 +168,16 @@ pipelock_has_unrecorded_context_file() {
 		# go list adds a newline between packages; filenames are NUL-delimited.
 		while IFS= read -r -d '' input; do
 			while [[ "${input}" == $'\n'* ]]; do input="${input#$'\n'}"; done
-			if [ -n "${ignored_paths["${input}"]+x}" ]; then
+			if ! canonical="$(realpath -e -- "${input}")"; then
+				rm -f -- "${sources}" "${ignored}"
+				return 2
+			fi
+			if [ -n "${ignored_paths["${canonical}"]+x}" ]; then
 				rm -f -- "${sources}" "${ignored}"
 				return 1
 			fi
-			case "${input}" in
-			"${REPO_ROOT}"/* | "${goroot}"/* | "${modcache}"/*) ;;
+			case "${canonical}" in
+			"${source_root}"/* | "${goroot}"/* | "${modcache}"/*) ;;
 			*)
 				echo "[build-images] browser verifier compiles ${input}, outside the recorded tree and module cache" >&2
 				rm -f -- "${sources}" "${ignored}"
@@ -342,7 +361,7 @@ fi
 # + cmd/pipelock-verifier-wasm (the WASM-verifier change). Fail closed if that
 # build path is absent or produces no .wasm, so the image cannot silently ship a
 # viewer whose inline-verify button points at missing browser-verifier assets.
-# go (with the js/wasm target) must be on PATH.
+# go (with the js/wasm target) and GNU realpath must be on PATH.
 if [ "${build_broker}" -eq 1 ] && [ ! -x deploy/wasm-verify/build.sh ]; then
 	echo "[build-images] ERROR: deploy/wasm-verify/build.sh absent; refusing to build a broker with potentially stale inline browser-verify UI" >&2
 	exit 1

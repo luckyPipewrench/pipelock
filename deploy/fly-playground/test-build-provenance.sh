@@ -182,6 +182,25 @@ printf 'package dep\n// not the recorded source\n' > "${tmp}/elsewhere/dep/dep.g
 printf 'go 1.26\n\nuse %s\n' "${tmp}/source" > "${tmp}/own.work"
 GOWORK="${tmp}/own.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
 jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+# Go retains directory-replace symlinks in its selected source paths. A link
+# under Docker-excluded docs must not make outside source look recorded.
+ln -s "${tmp}/elsewhere/dep" "${tmp}/source/docs/linked-dep"
+printf '/docs/linked-dep\n' >> "${tmp}/source/.git/info/exclude"
+printf 'replace dep.example => %s\n' "${tmp}/source/docs/linked-dep" | cat "${tmp}/own.work" - > "${tmp}/linked.work"
+if GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1; then
+	echo 'symlinked workspace replacement outside the tree was recorded as clean' >&2; exit 1
+fi
+grep -q 'outside the recorded tree' "${tmp}/linked.out"
+PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/linked.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/linked.out" 2>&1
+jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+rm -f -- "${tmp}/source/docs/linked-dep"
+# Equivalent physical roots remain clean, including a symlinked checkout.
+ln -s "${tmp}/source" "${tmp}/source-link"
+ln -s "$(go env GOROOT)" "${tmp}/goroot-link"
+for root in "${tmp}/goroot-link" "$(go env GOROOT)/" "$(go env GOROOT)/../$(basename "$(go env GOROOT)")"; do
+	GOROOT="${root}" "${tmp}/source-link/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/roots.out" 2>&1
+	jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+done
 printf 'replace dep.example => %s\n' "${tmp}/elsewhere/dep" | cat "${tmp}/own.work" - > "${tmp}/replace.work"
 if GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1; then
 	echo 'workspace replacement outside the tree was recorded as clean' >&2; exit 1

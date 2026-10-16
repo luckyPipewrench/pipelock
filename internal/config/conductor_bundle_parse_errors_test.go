@@ -62,6 +62,7 @@ func TestConductorBundleEmptyInputPreservesLocalDetections(t *testing.T) {
 	for _, input := range []string{"", "# no remote controls\n", "mode: strict\n"} {
 		t.Run(input, func(t *testing.T) {
 			oldCfg := Defaults()
+			oldBefore := oldCfg.Clone()
 			candidate := Defaults()
 			candidate.DLP.Patterns = nil
 			candidate.ResponseScanning.Patterns = nil
@@ -73,6 +74,11 @@ func TestConductorBundleEmptyInputPreservesLocalDetections(t *testing.T) {
 			}
 			if !reflect.DeepEqual(candidate.DLP, oldCfg.DLP) || !reflect.DeepEqual(candidate.ResponseScanning, oldCfg.ResponseScanning) {
 				t.Fatal("bundle without detection sections removed local protections")
+			}
+			candidate.DLP.Patterns[0].Regex = "changed-candidate-dlp"
+			candidate.ResponseScanning.Patterns[0].Regex = "changed-candidate-response"
+			if !reflect.DeepEqual(oldCfg, oldBefore) {
+				t.Fatal("candidate detection changes mutated the active configuration")
 			}
 		})
 	}

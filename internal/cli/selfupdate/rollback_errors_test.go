@@ -114,6 +114,19 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { _ = os.Chmod(dir, orig) })
+			probe, err := os.CreateTemp(dir, ".permission-probe-*")
+			if err == nil {
+				if err := probe.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(probe.Name()); err != nil {
+					t.Fatal(err)
+				}
+				t.Skip("directory write permission is not enforced here")
+			}
+			if !errors.Is(err, fs.ErrPermission) {
+				t.Fatalf("probe read-only directory: %v", err)
+			}
 			return target
 		}, want: "creating temp file", is: func(err error) bool { return errors.Is(err, fs.ErrPermission) }},
 	}

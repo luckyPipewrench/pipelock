@@ -78,6 +78,20 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 	if err := checkNoDuplicateKeys(body); err != nil {
 		return nil, nil, err
 	}
+	// Separate JSON numbers can carry one card even when each numeric scalar
+	// is clean. A rewrite cannot replace only those digits without changing
+	// JSON types, so use the existing numeric-scalar refusal.
+	runs, limit := jsonnumber.CardRunsWithLimit(string(body), lim.MaxDepth)
+	if limit == jsonnumber.CardRunNumberLimit {
+		return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(),
+			"JSON number exceeds card inspection budget")
+	}
+	for _, run := range runs {
+		if jsonnumber.ValidCardNumber(run) {
+			return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(),
+				"card pattern matched adjacent JSON scalar values")
+		}
+	}
 
 	var root interface{}
 	dec := json.NewDecoder(bytes.NewReader(body))

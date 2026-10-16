@@ -207,7 +207,7 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 		if truncated {
 			return blockDecision("pipelock: tool arguments exceed maximum inspectable nesting depth")
 		}
-		return scanCombinedViews(ctx, sc, text, cards,
+		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
 			fmt.Sprintf("tool %q arguments", event.ToolName), directionOutbound)
 	case HookTransformToolResult:
 		// Inbound: a tool result flowing back to the agent.
@@ -215,7 +215,7 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 		if truncated {
 			return blockDecision("pipelock: tool result exceeds maximum inspectable nesting depth")
 		}
-		return scanCombinedViews(ctx, sc, text, cards,
+		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
 			fmt.Sprintf("tool %q result", event.ToolName), directionInbound)
 	case HookPreGatewayDispatch:
 		// Inbound: an operator->agent message being dispatched.
@@ -223,7 +223,7 @@ func evaluate(ctx context.Context, sc *scanner.Scanner, event *HookEvent) HookDe
 		if truncated {
 			return blockDecision("pipelock: gateway dispatch exceeds maximum inspectable nesting depth")
 		}
-		return scanCombinedViews(ctx, sc, text, cards,
+		return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: cards, raw: event.ToolInput},
 			"inbound gateway dispatch", directionInbound)
 	case HookOnSessionStart, HookOnSessionEnd:
 		// Observer hooks. The current release emits no decision; a follow-up
@@ -266,12 +266,21 @@ const (
 const hermesTerminalTool = "terminal"
 
 func scanCombined(ctx context.Context, sc *scanner.Scanner, text, surface string, dir scanDirection) HookDecision {
-	return scanCombinedViews(ctx, sc, text, text, surface, dir)
+	return scanCombinedViews(ctx, sc, hookScanViews{text: text, cards: text}, surface, dir)
 }
 
-func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, text, cards, surface string, dir scanDirection) HookDecision {
+type hookScanViews struct {
+	text, cards string
+	raw         json.RawMessage
+}
+
+func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanViews, surface string, dir scanDirection) HookDecision {
+	text, cards := views.text, views.cards
 	if strings.TrimSpace(text) == "" {
 		return allowDecision()
+	}
+	if matches := sc.ScanJSONCardRuns(ctx, string(views.raw)); len(matches) > 0 {
+		return blockDecision(dlpBlockReason(surface, matches[0]))
 	}
 
 	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-

@@ -282,7 +282,11 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	views := []string{joined, resourceURIs}
 	var dlpViews []responseDLPView
 	if includeDLP {
-		dlpViews = []responseDLPView{{joined, joinResponseText(cardText, envelopeText)}}
+		dlpViews = []responseDLPView{
+			{joined, joinResponseText(cardText, envelopeText)},
+			{text, cardText},
+			{envelopeText, envelopeText},
+		}
 	}
 	result, dlpMatches, droppedDLP := scanResponseViewsWithCards(context.Background(), sc, opts, views, dlpViews)
 	if result.Failed() {
@@ -305,6 +309,9 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	}
 	if includeDLP {
 		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
+		for _, raw := range []json.RawMessage{rpc.Result, rpc.Error, rpc.Params} {
+			dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, sc.ScanJSONCardRuns(context.Background(), string(raw)))
+		}
 	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}

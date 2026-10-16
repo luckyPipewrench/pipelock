@@ -87,6 +87,19 @@ func TestCardJSONKnownValues(t *testing.T) {
 	}
 }
 
+func TestCardJSONNumberBudgetFailsClosed(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	text := `{"n":` + strings.Repeat("9", 4097) + `}`
+	result := s.ScanTextForDLPWithCardView(t.Context(), text, jsonnumber.CardView(text, extract.MaxExtractDepth))
+	if result.Clean || len(result.Matches) == 0 || result.Matches[0].PatternName != "Uninspectable JSON number" {
+		t.Fatalf("over-budget number was treated as clean: %+v", result)
+	}
+}
+
 func TestCardJSONKnownSecretAndValidatorIdentity(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil

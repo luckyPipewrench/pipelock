@@ -17,35 +17,26 @@ import (
 	"github.com/gobwas/ws"
 	"github.com/gobwas/ws/wsutil"
 	"github.com/luckyPipewrench/pipelock/internal/audit"
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
-func cardTransportCases() []struct {
-	name, body string
-	clean      bool
-} {
+func cardTransportCases() []cardtest.JSONCase {
 	card := "41111111" + "11111111"
-	groups := "4111,1111" + ",1111,1111"
-	return []struct {
-		name, body string
-		clean      bool
-	}{
-		{"metric", `{"n":0.` + card + `}`, true},
-		{"root integer array", `[` + groups + `]`, true},
-		{"integer", `{"n":` + card + `}`, false},
-		{"integer part", `{"n":-` + card + `.1}`, false},
-		{"string", `{"n":"0.` + card + `"}`, false},
-		{"encoded", `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, false},
-		{"decoy", `{"n":0.` + card + `,"s":"` + card + `"}`, false},
-	}
+	return append(cardtest.JSONCases(), []cardtest.JSONCase{
+		{Name: "integer part", Body: `{"n":-` + card + `.1}`, Clean: false},
+		{Name: "dotted string", Body: `{"n":"0.` + card + `"}`, Clean: false},
+		{Name: "encoded", Body: `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, Clean: false},
+		{Name: "decoy", Body: `{"n":0.` + card + `,"s":"` + card + `"}`, Clean: false},
+	}...)
 }
 
 func TestCardJSONHTTPRequests(t *testing.T) {
 	for _, surface := range []string{"forward", "intercept"} {
 		for _, tt := range cardTransportCases() {
-			t.Run(surface+"/"+tt.name, func(t *testing.T) {
+			t.Run(surface+"/"+tt.Name, func(t *testing.T) {
 				cfg := testScannerConfig()
 				cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
 				cfg.DLP.ScanEnv = false
@@ -65,14 +56,14 @@ func TestCardJSONHTTPRequests(t *testing.T) {
 					if readErr != nil {
 						return nil, readErr
 					}
-					if string(body) != tt.body {
+					if string(body) != tt.Body {
 						t.Fatalf("forwarded body changed: %q", body)
 					}
 					forwarded = true
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("accepted")), Request: r}, nil
 				})
 				p.client = &http.Client{Transport: rt}
-				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/metrics", strings.NewReader(tt.body))
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/metrics", strings.NewReader(tt.Body))
 				r.Header.Set("Content-Type", "application/json")
 				w := httptest.NewRecorder()
 				if surface == "forward" {
@@ -81,10 +72,10 @@ func TestCardJSONHTTPRequests(t *testing.T) {
 					newInterceptHandler(&InterceptContext{TargetHost: "api.vendor.example", TargetPort: "443", Config: cfg, Scanner: s, Logger: audit.NewNop(), Metrics: m, ClientIP: "192.0.2.1", RequestID: "card-number", Proxy: p}, rt).ServeHTTP(w, r)
 				}
 				want := http.StatusForbidden
-				if tt.clean {
+				if tt.Clean {
 					want = http.StatusOK
 				}
-				if forwarded != tt.clean || w.Code != want {
+				if forwarded != tt.Clean || w.Code != want {
 					t.Fatalf("forwarded=%v status=%d want=%d body=%s", forwarded, w.Code, want, w.Body.String())
 				}
 			})
@@ -94,12 +85,9 @@ func TestCardJSONHTTPRequests(t *testing.T) {
 
 func TestCardJSONWebSocketRequests(t *testing.T) {
 	cases := cardTransportCases()
-	cases = append(cases, struct {
-		name, body string
-		clean      bool
-	}{"scalar decimal", "0." + "41111111" + "11111111", false})
+	cases = append(cases, cardtest.JSONCase{Name: "scalar decimal", Body: "0." + "41111111" + "11111111", Clean: false})
 	for _, tt := range cases {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.Name, func(t *testing.T) {
 			cfg := testScannerConfig()
 			cfg.DLP.ScanEnv = false
 			s := scanner.MustNew(cfg)
@@ -110,11 +98,11 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 			}
 			t.Cleanup(p.Close)
 			var wire bytes.Buffer
-			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.body)); err != nil {
+			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.Body)); err != nil {
 				t.Fatal(err)
 			}
 			// A complete numeric message keeps its type in the retained tail.
-			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.body)); err != nil {
+			if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(tt.Body)); err != nil {
 				t.Fatal(err)
 			}
 			source := &receiptFrameConn{input: bytes.NewReader(wire.Bytes())}
@@ -123,8 +111,8 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			_, _, _, blocked := r.clientToUpstream(ctx, cancel, time.Minute)
-			if blocked == tt.clean {
-				t.Fatalf("blocked=%v want=%v", blocked, !tt.clean)
+			if blocked == tt.Clean {
+				t.Fatalf("blocked=%v want=%v", blocked, !tt.Clean)
 			}
 			frames := bytes.NewReader(sink.output.Bytes())
 			delivered := false
@@ -136,13 +124,52 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 				if frame.Header.OpCode == ws.OpText {
 					ws.Cipher(frame.Payload, frame.Header.Mask, 0)
 					delivered = true
-					if string(frame.Payload) != tt.body {
+					if string(frame.Payload) != tt.Body {
 						t.Fatal("numeric data changed")
 					}
 				}
 			}
-			if delivered != tt.clean {
-				t.Fatalf("delivered=%v want=%v", delivered, tt.clean)
+			if delivered != tt.Clean {
+				t.Fatalf("delivered=%v want=%v", delivered, tt.Clean)
+			}
+		})
+	}
+}
+
+func TestCardJSONWebSocketNumberSeam(t *testing.T) {
+	card := "4111" + "1111" + "1111" + "1111"
+	for _, tt := range []struct {
+		name, first, last string
+		blocked           bool
+	}{
+		{"card pieces", card[:8], card[8:], true},
+		{"ordinary telemetry", "12003400", "56007800", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := testScannerConfig()
+			cfg.DLP.ScanEnv = false
+			s := scanner.MustNew(cfg)
+			t.Cleanup(s.Close)
+			p, err := New(cfg, audit.NewNop(), s, metrics.New())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(p.Close)
+			var wire bytes.Buffer
+			for _, piece := range []string{tt.first, tt.last} {
+				message := `{"data":{"value":` + piece + `}}`
+				if err := wsutil.WriteClientMessage(&wire, ws.OpText, []byte(message)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			source := &receiptFrameConn{input: bytes.NewReader(wire.Bytes())}
+			sink := &receiptFrameConn{input: bytes.NewReader(nil)}
+			r := &wsRelay{proxy: p, cfg: cfg, scanner: s, hostname: "api.vendor.example", targetURL: "wss://api.vendor.example/metrics", maxMsg: cfg.WebSocketProxy.MaxMessageBytes, scanText: true, clientConn: source, upstreamConn: sink}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			_, _, _, blocked := r.clientToUpstream(ctx, cancel, time.Minute)
+			if blocked != tt.blocked {
+				t.Fatalf("blocked=%v want=%v", blocked, tt.blocked)
 			}
 		})
 	}

@@ -3,7 +3,12 @@
 
 package redact
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
+)
 
 func TestRewriteJSONCardNumbers(t *testing.T) {
 	for _, tt := range []struct {
@@ -32,6 +37,53 @@ func TestRewriteJSONCardNumbers(t *testing.T) {
 				}
 			} else if err != nil || string(out) != string(body) {
 				t.Fatalf("numeric data changed: out=%s error=%v", out, err)
+			}
+		})
+	}
+}
+
+func TestRewriteJSONSplitCardNumbers(t *testing.T) {
+	for _, tt := range []struct {
+		name, body string
+		block      bool
+	}{
+		{"array", `{"ids":[4111,1111,1111,1111]}`, true},
+		{"sibling fields", `{"a":4111,"b":1111,"c":1111,"d":1111}`, true},
+		{"mixed pieces", `{"a":"4111","b":1111,"c":1111,"d":1111}`, true},
+		{"ordinary telemetry", `{"bbox":[1200.21,3400.22,5600.23,7800.24]}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, _, err := RewriteJSON([]byte(tt.body), NewDefaultMatcher(), NewRedactor(), Limits{})
+			if tt.block {
+				be, ok := asBlockError(err)
+				if !ok || be.Reason != ReasonSecretInNumericScalar {
+					t.Fatalf("split card was not blocked: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("ordinary telemetry blocked: %v", err)
+			}
+		})
+	}
+}
+
+func TestRewriteJSONNumberBudgetFailsClosed(t *testing.T) {
+	body := []byte(`{"n":` + strings.Repeat("9", 4097) + `}`)
+	_, _, err := RewriteJSON(body, NewDefaultMatcher(), NewRedactor(), Limits{})
+	be, ok := asBlockError(err)
+	if !ok || be.Reason != ReasonSecretInNumericScalar {
+		t.Fatalf("over-budget number was not blocked: %v", err)
+	}
+}
+
+func TestRewriteJSONSharedCardCorpus(t *testing.T) {
+	for _, tt := range cardtest.JSONCases() {
+		t.Run(tt.Name, func(t *testing.T) {
+			_, report, err := RewriteJSON([]byte(tt.Body), NewDefaultMatcher(), NewRedactor(), Limits{})
+			if tt.Clean && err != nil {
+				t.Fatalf("benign JSON blocked: %v", err)
+			}
+			if !tt.Clean && err == nil && (report == nil || !report.Applied) {
+				t.Fatal("card neither redacted nor refused")
 			}
 		})
 	}

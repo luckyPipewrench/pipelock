@@ -93,17 +93,17 @@ func (c *sseCancelOnErrContext) Err() error {
 
 func TestGenericSSEJSONCardNumberContext(t *testing.T) {
 	card := "41111111" + "11111111"
-	groups := `4111,1111,1111,1111`
+	groups := "4111,1111" + ",1111,1111"
 	for _, tt := range []struct {
 		name, event string
 		clean       bool
 	}{
-		{"ids", `{"ids":[` + groups + `]}`, true},
-		{"bbox", `{"bbox":[` + groups + `]}`, true},
-		{"root groups", `[` + groups + `]`, true},
-		{"empty key", `{"": [` + groups + `]}`, true},
-		{"dash key", `{"-": [` + groups + `]}`, true},
-		{"prefix key", `{"x-": [` + groups + `]}`, true},
+		{"ids", `{"ids":[` + groups + `]}`, false},
+		{"bbox", `{"bbox":[` + groups + `]}`, false},
+		{"root groups", `[` + groups + `]`, false},
+		{"empty key", `{"": [` + groups + `]}`, false},
+		{"dash key", `{"-": [` + groups + `]}`, false},
+		{"prefix key", `{"x-": [` + groups + `]}`, false},
 		{"fraction", `{"n":0.` + card + `}`, true},
 		{"structured fraction with whitespace", "  {\"n\":0." + card + `}`, true},
 		{"scalar decimal", "0." + card, false},
@@ -148,7 +148,7 @@ func TestGenericSSECardAcrossEvents(t *testing.T) {
 	}{
 		{"bare digits", first, last, true},
 		{"text then bare digits", "card " + first, last, true},
-		{"integer arrays", `[` + first + `]`, `[` + last + `]`, false},
+		{"integer arrays", `[` + first + `]`, `[` + last + `]`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testA2AScanner(t)

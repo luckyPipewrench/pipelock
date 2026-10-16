@@ -817,7 +817,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 			// No allow is collected here: redaction may rewrite the credential
 			// before forwarding, and a credential that survives redaction is
 			// collected again by the post-redaction scan below.
-			preRedactionDLP = scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{extracted.Texts, extracted.CardTexts, extracted.Atoms}, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
+			preRedactionDLP = scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: bodyJSONCardView(buf, extracted.Atoms)}, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)
 			preRedactionDLP = append(preRedactionDLP, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, extracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabled, allowEmbeddedSigV4, onDropped, audienceSurface, nil)...)
 		}
 	}
@@ -900,7 +900,7 @@ func scanRequestBody(ctx context.Context, req BodyScanRequest) (_ []byte, final 
 
 	// Scan each extracted string individually (catches per-field encoded secrets).
 	disabledDLP := bodyDLPDisabledSet(req.DisablePatterns)
-	matches := scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{dlpExtracted.Texts, dlpExtracted.CardTexts, dlpExtracted.Atoms}, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
+	matches := scanBodyTextViewsForDLPWithAudience(ctx, req.Scanner, bodyDLPViews{texts: dlpExtracted.Texts, cards: dlpExtracted.CardTexts, atoms: dlpExtracted.Atoms, rawJSON: bodyJSONCardView(buf, dlpExtracted.Atoms)}, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)
 	matches = append(matches, scanProviderOpaqueTextsForDLPWithAudience(ctx, req.Scanner, dlpExtracted.ProviderOpaqueTexts, req.suppressTarget(), req.Suppress, disabledDLP, allowEmbeddedSigV4, onDropped, audienceSurface, collectAudienceAllow)...)
 	matches = uniqueBodyDLPMatches(matches)
 	if len(matches) > 0 {
@@ -1407,6 +1407,14 @@ func scanBodyTextsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, t
 type bodyDLPViews struct {
 	texts, cards []string
 	atoms        []extract.DLPAtom
+	rawJSON      string
+}
+
+func bodyJSONCardView(body []byte, atoms []extract.DLPAtom) string {
+	if len(atoms) == 0 {
+		return ""
+	}
+	return string(body)
 }
 
 func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanner, views bodyDLPViews, target string, suppress []config.SuppressEntry, disabled map[string]struct{}, allowEmbeddedSigV4 bool, onDropped func(scanner.TextDLPMatch, string), audienceSurface string, onAudienceAllow func(scanner.CredentialAudienceAllow)) []scanner.TextDLPMatch {
@@ -1434,6 +1442,9 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		audienceAllows = append(audienceAllows, allows...)
 		return filterBodyDLPMatches(matches, target, suppress, disabled, collectDropped)
 	}
+	if views.rawJSON != "" {
+		allMatches = append(allMatches, filterMatches(sc.ScanJSONCardRuns(ctx, views.rawJSON))...)
+	}
 	for i, text := range texts {
 		var result scanner.TextDLPResult
 		if allowEmbeddedSigV4 {
@@ -1444,6 +1455,25 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		if !result.Clean {
 			if matches := filterMatches(result.Matches); len(matches) > 0 {
 				allMatches = append(allMatches, matches...)
+			}
+		}
+	}
+	// The sorted join below catches order-independent cross-field secrets.
+	// Numeric card runs also need the JSON document's original scalar order.
+	if len(atoms) > 1 {
+		var hasNumber bool
+		for _, atom := range atoms {
+			hasNumber = hasNumber || atom.Number
+		}
+		if hasNumber {
+			var ordered scanner.TextDLPResult
+			if allowEmbeddedSigV4 {
+				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, atoms, bodyDLPJoinSeparator)
+			} else {
+				ordered = sc.ScanTextForDLPWithCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
+			}
+			if !ordered.Clean {
+				allMatches = append(allMatches, filterMatches(ordered.Matches)...)
 			}
 		}
 	}

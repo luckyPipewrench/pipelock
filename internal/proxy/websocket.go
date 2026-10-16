@@ -2546,6 +2546,8 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 	frag := &plwsutil.FragmentState{MaxBytes: r.maxMsg}
 	var crossMsgTail []byte // rolling tail for text-message DLP scanning
 	var crossMsgCardTail []byte
+	var crossMsgNumberTail []byte
+	var crossMsgNumberCardTail []byte
 	var controlMsgTail []byte // separate tail for Ping/Pong payload DLP scanning
 	log := r.proxy.logger.With("agent", r.agent).WithCorrelation(r.correlation)
 	redactionEnabled := r.redaction != nil && r.redaction.required
@@ -2848,6 +2850,24 @@ func (r *wsRelay) clientToUpstream(ctx context.Context, cancel context.CancelFun
 		if isTextMessage && r.scanText {
 			prevTail := crossMsgTail
 			prevCardTail := crossMsgCardTail
+			numberText, numberCard := extract.JSONNumberStreamViews(msg)
+			if len(crossMsgNumberTail) > 0 && numberText != "" {
+				if redactionEnabled {
+					if r.scanClientCrossMessageTextViews(ctx, log, crossMsgNumberTail, []byte(numberText), crossMsgNumberCardTail, []byte(jsonnumber.NumberBoundary+numberCard)) {
+						blocked = true
+						return
+					}
+				} else if r.scanClientTextWithCardView(ctx, log, append(append([]byte(nil), crossMsgNumberTail...), numberText...), append(append([]byte(nil), crossMsgNumberCardTail...), []byte(jsonnumber.NumberBoundary+numberCard)...)) {
+					blocked = true
+					return
+				}
+			}
+			if numberText == "" {
+				crossMsgNumberTail, crossMsgNumberCardTail = nil, nil
+			} else {
+				crossMsgNumberTail = updateWSCrossMessageTail(crossMsgNumberTail, []byte(numberText))
+				crossMsgNumberCardTail = updateWSCrossMessageTail(crossMsgNumberCardTail, []byte(jsonnumber.NumberBoundary+numberCard))
+			}
 			// Only the complete original message establishes numeric provenance.
 			// Retained suffixes and incomplete text are never parsed as numbers.
 			cardMsg := []byte(jsonnumber.StructuredCardView(string(msg), extract.MaxExtractDepth))

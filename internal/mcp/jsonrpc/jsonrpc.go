@@ -244,7 +244,7 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 			// Non-text blocks (image, resource) may carry prompt injection
 			// in their text field.
 			if block.Text != "" {
-				documents[len(texts)] = jsonnumber.CardView(block.Text, extract.MaxExtractDepth)
+				documents[len(texts)] = jsonnumber.StructuredCardView(block.Text, extract.MaxExtractDepth)
 				texts = append(texts, block.Text)
 			}
 			// Embedded resources carry their rendered text under resource.text,
@@ -252,7 +252,7 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 			// agent-visible response content while deliberately excluding opaque
 			// resource blobs from prompt scanning.
 			if block.Resource != nil && block.Resource.Text != "" {
-				documents[len(texts)] = jsonnumber.CardView(block.Resource.Text, extract.MaxExtractDepth)
+				documents[len(texts)] = jsonnumber.StructuredCardView(block.Resource.Text, extract.MaxExtractDepth)
 				texts = append(texts, block.Resource.Text)
 			}
 			// resource_link metadata is also rendered to the agent. Keep URI

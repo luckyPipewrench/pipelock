@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
@@ -536,6 +537,39 @@ func (s *Scanner) ScanTextForDLPInboundWithCardView(ctx context.Context, text, c
 	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{emitWarns: true})
 }
 
+// ScanJSONCardRuns checks adjacent scalar pieces in a typed JSON document
+// without admitting its numeric leaves to prompt or non-card pattern scans.
+func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMatch {
+	if !s.hasGenericCardPatterns() {
+		return nil
+	}
+	var matches []TextDLPMatch
+	runs, limit := jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+	if limit != jsonnumber.CardRunWithinBudget {
+		return []TextDLPMatch{uninspectableJSONNumberMatch()}
+	}
+	for _, run := range runs {
+		if !jsonnumber.ValidCardNumber(run) {
+			continue
+		}
+		var memo decodingMemo
+		result := s.scanTextForDLPWithDecodes(ctx, run, textDLPOptions{patterns: textDLPCardPatterns}, &memo)
+		for i := range result.Matches {
+			result.Matches[i].span.ViewLabel = spanViewLabel("json_number_run", result.Matches[i].span.ViewLabel)
+		}
+		matches = append(matches, result.Matches...)
+	}
+	return matches
+}
+
+// UninspectableJSONNumberPattern identifies a valid JSON number that exceeds
+// the typed card inspection budget and must be refused by its transport.
+const UninspectableJSONNumberPattern = "Uninspectable JSON number"
+
+func uninspectableJSONNumberMatch() TextDLPMatch {
+	return TextDLPMatch{PatternName: UninspectableJSONNumberPattern, Severity: config.SeverityHigh}
+}
+
 func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, opts textDLPOptions) TextDLPResult {
 	var originalDecodes decodingMemo
 	if !s.hasGenericCardPatterns() {
@@ -567,6 +601,32 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		if text != cardView && original.InformationalMatches[i].genericCard {
 			original.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_integer", original.InformationalMatches[i].span.ViewLabel)
 		}
+	}
+	// The ordinary view keeps typed number boundaries apart. Inspect each
+	// adjacent scalar run separately with the configured card rules.
+	seenRuns := make(map[string]struct{})
+	runs, limit := jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+	if limit != jsonnumber.CardRunWithinBudget {
+		original.Matches = append(original.Matches, uninspectableJSONNumberMatch())
+	}
+	for _, run := range append(runs, jsonnumber.BoundaryCardRuns(cardView)...) {
+		if !jsonnumber.ValidCardNumber(run) {
+			continue
+		}
+		if _, seen := seenRuns[run]; seen {
+			continue
+		}
+		seenRuns[run] = struct{}{}
+		var runDecodes decodingMemo
+		runResult := s.scanTextForDLPWithDecodes(ctx, run, opts, &runDecodes)
+		for i := range runResult.Matches {
+			runResult.Matches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.Matches[i].span.ViewLabel)
+		}
+		for i := range runResult.InformationalMatches {
+			runResult.InformationalMatches[i].span.ViewLabel = spanViewLabel("json_number_run", runResult.InformationalMatches[i].span.ViewLabel)
+		}
+		original.Matches = append(original.Matches, runResult.Matches...)
+		original.InformationalMatches = append(original.InformationalMatches, runResult.InformationalMatches...)
 	}
 	original.Clean = len(original.Matches) == 0
 	if emit {

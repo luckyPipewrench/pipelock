@@ -276,6 +276,15 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 	// it against the per-leaf findings. Raw-pass evidence must not disappear just
 	// because an earlier leaf was already dirty.
 	if !budgetExceeded {
+		if matches := sc.ScanJSONCardRuns(ctx, string(body)); len(matches) > 0 {
+			result.Clean = false
+			result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, matches)
+			if a2aDLPForcesBlock(matches) {
+				action = config.StrongestAction(action, config.ActionBlock)
+			} else {
+				action = config.StrongestAction(action, defaultFindingAction)
+			}
+		}
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 		if extracted.Truncated {
 			return A2AScanResult{
@@ -370,16 +379,20 @@ func a2aPartTextViews(body []byte) []string {
 // whether a finding must block; an incomplete pass sets result.ScanError,
 // which the caller resolves to block.
 func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, result *A2AScanResult) bool {
+	forceBlock := false
+	if matches := sc.ScanJSONCardRuns(ctx, string(body)); len(matches) > 0 {
+		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, matches)
+		forceBlock = a2aDLPForcesBlock(matches)
+	}
 	extracted := extract.AllStringsFromJSONResult(json.RawMessage(body))
 	if extracted.Truncated {
 		result.ScanError = "a2a: overflow inspection exceeds maximum nesting depth"
 		return true
 	}
 	if len(extracted.Strings) == 0 {
-		return false
+		return forceBlock
 	}
 	joined := strings.Join(extracted.Strings, "\n")
-	forceBlock := false
 	injectResult := sc.ScanResponse(ctx, joined)
 	if injectResult.Failed() {
 		result.ScanError = injectResult.ScanError
@@ -414,7 +427,15 @@ func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentE
 // the core predicate cannot classify falls through to the configured action;
 // a positive core match only ever raises the action to block.
 func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
-	return scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches)
+	if scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches) {
+		return true
+	}
+	for _, match := range matches {
+		if match.PatternName == scanner.UninspectableJSONNumberPattern {
+			return true
+		}
+	}
+	return false
 }
 
 // appendUniqueA2ADLPFindings mirrors the scanner's match identity at the A2A
@@ -1206,6 +1227,8 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 	var injectionTail string
 	var dlpTail string
 	var cardTail string
+	var numberTail string
+	var numberCardTail string
 	var previousLastNumber bool
 
 	for {
@@ -1283,13 +1306,29 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			combined := dlpTail + currentText
 			cardBoundary := ""
 			if previousLastNumber || currentFirstNumber {
-				cardBoundary = ","
+				cardBoundary = jsonnumber.NumberBoundary
 			}
 			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
 			if !dlpResult.Clean {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
+		}
+		// A2A status and part wrappers put string metadata before each numeric
+		// value. Carry the typed numeric leaves across the event seam so that
+		// those wrapper fields cannot hide a split card.
+		numberText, numberCard := extract.JSONNumberStreamViews(event)
+		if numberTail != "" && numberText != "" {
+			result := sc.ScanTextForDLPWithCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
+			if !result.Clean {
+				return fmt.Errorf("%w: cross-event dlp detected: %s", ErrA2AStreamFinding, sseDLPMatchNames(result.Matches))
+			}
+		}
+		if numberText == "" {
+			numberTail, numberCardTail = "", ""
+		} else {
+			numberTail = advanceSSERollingTail(numberTail, []byte(numberText), false, "")
+			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
 
 		// Update rolling tails.

@@ -5,9 +5,64 @@ package jsonnumber
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 )
+
+func TestCardRuns(t *testing.T) {
+	card := "4111" + "1111" + "1111" + "1111"
+	groups := "4111,1111" + ",1111,1111"
+	for _, tt := range []struct {
+		name, input string
+		want        bool
+	}{
+		{"array siblings", `[` + groups + `]`, true},
+		{"object siblings", `{"a":4111,"b":1111,"c":1111,"d":1111}`, true},
+		{"nested values", `{"a":[4111,{"b":1111}],"c":[1111,1111]}`, true},
+		{"mixed string and number", `{"a":"4111","b":1111,"c":1111,"d":1111}`, true},
+		{"envelope prefix", `{"id":1,"params":{"ids":[` + groups + `]}}`, true},
+		{"separate decimals", `[4111.21,1111.22,1111.23,1111.24]`, true},
+		{"single decimal", `{"n":0.` + card + `}`, false},
+		{"non-digit value breaks run", `{"a":4111,"b":"ordinary","c":1111,"d":1111,"e":1111}`, false},
+		{"ordinary telemetry", `[1200.21,3400.22,5600.23,7800.24]`, false},
+		{"malformed", `[` + groups, false},
+		{"over depth", `[[` + groups + `]]`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			depth := 64
+			if tt.name == "over depth" {
+				depth = 1
+			}
+			if got := slices.Contains(CardRuns(tt.input, depth), card); got != tt.want {
+				t.Fatalf("candidate found=%v want=%v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCardRunsOverLimit(t *testing.T) {
+	for _, input := range []string{
+		`{"n":` + strings.Repeat("9", maxNumberChars+1) + `}`,
+		`[[1]]`,
+	} {
+		depth := 64
+		if input == `[[1]]` {
+			depth = 1
+		}
+		if _, limit := CardRunsWithLimit(input, depth); limit == CardRunWithinBudget {
+			t.Fatal("valid JSON exceeded the typed inspection limit without reporting it")
+		}
+	}
+}
+
+func TestBoundaryCardRuns(t *testing.T) {
+	card := "4111" + "1111" + "1111" + "1111"
+	view := "4111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,,"
+	if !slices.Contains(BoundaryCardRuns(view), card) {
+		t.Fatal("decimal scalar pieces were not joined")
+	}
+}
 
 func TestIntegralView(t *testing.T) {
 	for _, tt := range []struct{ input, want string }{

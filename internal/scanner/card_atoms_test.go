@@ -22,7 +22,7 @@ func TestRequestBodyCardAtomsKeepNumericBoundaries(t *testing.T) {
 		number    bool
 		clean     bool
 	}{
-		{"number atoms", ".", true, true},
+		{"number atoms", ".", true, false},
 		{"string atoms", ".", false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

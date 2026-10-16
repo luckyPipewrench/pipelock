@@ -404,6 +404,12 @@ func (h *Handler) scanToolCall(
 			resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
 		}
 	}
+	if resp.Decision == DecisionAllow {
+		if matches := sc.ScanJSONCardRuns(ctx, string(req.Input.Arguments)); len(matches) > 0 {
+			resp.Decision = DecisionDeny
+			resp.Findings = append(resp.Findings, dlpFindings(scanner.TextDLPResult{Matches: matches}, req.Options)...)
+		}
+	}
 
 	// Stage 3: Policy check.
 	if policyCfg != nil {

@@ -39,7 +39,7 @@ func TestCardJSONNumericJoinsMaintainBarriers(t *testing.T) {
 	cfg.DLP.ScanEnv = false
 	s := MustNew(cfg)
 	t.Cleanup(s.Close)
-	parts := []string{"4111.21", "1111.22", "1111.23", "1111.24"}
+	parts := []string{"1200.21", "3400.22", "5600.23", "7800.24"}
 	cards := make([]string, len(parts))
 	for i, part := range parts {
 		cards[i] = jsonnumber.IntegralView(json.Number(part))
@@ -68,5 +68,17 @@ func TestCardJSONScalarViews(t *testing.T) {
 		if result := s.ScanTextForDLPWithCardView(t.Context(), number, view); result.Clean {
 			t.Fatalf("written integer escaped scalar scan: %q view=%q result=%+v", number, view, result)
 		}
+	}
+}
+
+func TestCardAfterDottedText(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := "4111" + "1111" + "1111" + "1111"
+	if result := s.ScanTextForDLPInbound(t.Context(), "x."+card); result.Clean {
+		t.Fatal("dotted card text escaped inbound DLP")
 	}
 }

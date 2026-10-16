@@ -10,6 +10,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/addressprotect"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
 // DLPValidators maps validator names from config.DLPPattern.Validator to
@@ -171,87 +172,11 @@ func validateAWSAccessIDCandidate(candidate string) bool {
 	return awsCredentialPrefixRe.MatchString(candidate)
 }
 
-// validateLuhn implements the Luhn algorithm (ISO/IEC 7812) for credit card
-// number validation. Strips non-digit characters (spaces, dashes), validates
-// the issuer prefix (BIN range), and checks the Luhn checksum. Returns false
-// for non-card digit strings. Issuer validation is done in Go code instead of
-// the regex so it's maintainable and testable without 8-file regex propagation.
-func validateLuhn(s string) bool {
-	// Extract digits only - cards can be space/dash separated.
-	var digits [19]byte // stack-allocated, max 19 digits
-	n := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' {
-			if n >= 19 {
-				return false
-			}
-			digits[n] = s[i] - '0'
-			n++
-		}
-	}
+// validateLuhn preserves the scanner validator contract while the shared
+// number helper keeps redaction and detection on the same issuer/checksum rule.
+func validateLuhn(s string) bool { return jsonnumber.ValidCardNumber(s) }
 
-	if n < 15 || n > 19 {
-		return false
-	}
-
-	// Validate issuer prefix (BIN range). Keeps regex simple while correctly
-	// covering all major card networks. New networks: add a case here.
-	if !validCardIssuer(digits[:n], n) {
-		return false
-	}
-
-	// Luhn: from rightmost digit, double every second digit.
-	// If doubling produces >9, subtract 9 (equivalent to digit-sum).
-	// Valid if total sum mod 10 == 0.
-	sum := 0
-	for i := n - 1; i >= 0; i-- {
-		d := int(digits[i])
-		if (n-i)%2 == 0 {
-			d *= 2
-			if d > 9 {
-				d -= 9
-			}
-		}
-		sum += d
-	}
-
-	return sum%10 == 0
-}
-
-// validCardIssuer checks the first digits against known card network BIN
-// ranges. This replaces complex regex alternation groups with readable Go.
-func validCardIssuer(digits []byte, n int) bool {
-	d0 := digits[0]
-
-	// 4-digit prefix for range checks.
-	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
-	prefix6 := prefix4*100 + int(digits[4])*10 + int(digits[5])
-
-	switch d0 {
-	case 4: // Visa: starts with 4, 16/19 digits (13-digit Visa retired in the '90s)
-		return n == 16 || n == 19
-	case 5: // Mastercard: 51-55, 16 digits
-		return digits[1] >= 1 && digits[1] <= 5 && n == 16
-	case 3: // Amex (34/37): 15 digits. JCB (3528-3589): 16-19 digits.
-		if digits[1] == 4 || digits[1] == 7 {
-			return n == 15 // Amex
-		}
-		if prefix4 >= 3528 && prefix4 <= 3589 {
-			return n >= 16 && n <= 19 // JCB
-		}
-		return false
-	case 6: // Discover: 6011, 622126-622925, 644-649, 65xx, 16/19 digits
-		if prefix4 == 6011 || (prefix4 >= 6440 && prefix4 <= 6499) ||
-			(prefix6 >= 622126 && prefix6 <= 622925) || digits[1] == 5 {
-			return n == 16 || n == 19
-		}
-		return false
-	case 2: // Mastercard 2-series: 2221-2720, 16 digits
-		return prefix4 >= 2221 && prefix4 <= 2720 && n == 16
-	default:
-		return false
-	}
-}
+func validCardIssuer(digits []byte, n int) bool { return jsonnumber.ValidCardIssuer(digits, n) }
 
 // validateMod97 implements ISO 7064 mod-97 validation for IBAN numbers.
 // Uses iterative modular arithmetic - no math/big needed. Rearranges the

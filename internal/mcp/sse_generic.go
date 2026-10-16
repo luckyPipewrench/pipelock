@@ -156,6 +156,8 @@ func ScanGenericSSEStreamWithOptions(
 	var injectionTail string
 	var payloadTail string
 	var cardPayloadTail string
+	var numberTail string
+	var numberCardTail string
 	var payloadInjectionTail string
 	// Stream-scoped on purpose. injectionTail carries bytes from one event into
 	// the next event's scan, so a finding in event N is presented again by
@@ -241,6 +243,7 @@ func ScanGenericSSEStreamWithOptions(
 		cardIDDataText := sseIDDataEventText(cardText, "")
 		idDataInjectionText := sseIDDataEventText(text, " ")
 		payloadText := string(event)
+		numberText, numberCard := extract.JSONNumberStreamViews(event)
 
 		clearDLPTailAfterCurrent := false
 		clearInjectionTailAfterCurrent := false
@@ -406,6 +409,28 @@ func ScanGenericSSEStreamWithOptions(
 					return findingErr
 				}
 			}
+		}
+		if !skipTailDLP && !resetDLPTail && numberTail != "" && numberText != "" {
+			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard), opts.Target, opts.Suppress)
+			if err := checkSSEDLPContext(ctx); err != nil {
+				return err
+			}
+			droppedDLP.record(droppedMatches)
+			if !result.Clean {
+				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
+				if cfg.Action == config.ActionWarn {
+					onFinding(findingErr)
+					resetDLPTail = true
+				} else {
+					return findingErr
+				}
+			}
+		}
+		if numberText == "" || clearDLPTailAfterCurrent || resetDLPTail {
+			numberTail, numberCardTail = "", ""
+		} else {
+			numberTail = advanceSSERollingTail(numberTail, []byte(numberText), false, "")
+			numberCardTail = advanceSSERollingTail(numberCardTail, []byte(numberCard), false, jsonnumber.NumberBoundary)
 		}
 
 		if clearDLPTailAfterCurrent {

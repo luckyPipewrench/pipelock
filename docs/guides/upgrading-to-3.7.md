@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 Upgrade the binary before loading configurations that use new fields. Keep older fleet members on compatible bundles until their binaries are updated. The [3.7.0 changelog](../../CHANGELOG.md#370---2026-10-14) covers the full release; this guide covers changes that need an operator action.
 
-Installation examples target v3.7.0 after its artifacts are published. Action commit pins identify source, not the eventual tag; the binary `version` input selects the release.
+Installation examples target the published v3.7.0 release. Action commit pins identify source, not the release tag; the binary `version` input selects the release, and the action defaults it to `latest` when omitted.
 
 ## Receipt verification and automation
 

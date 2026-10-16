@@ -4,32 +4,28 @@ Pipelock sits between your AI agent and the OpenClaw gateway when the agent's MC
 
 ## Why
 
-CVE-2026-25253 (CVSS 8.8) is a cross-site WebSocket hijacking attack against OpenClaw gateways. The attack chain:
+[CVE-2026-25253](https://github.com/openclaw/openclaw/security/advisories/GHSA-g8p2-7wf7-98mq) affects OpenClaw through version 2026.1.28. Its Control UI accepts an unvalidated gateway URL and automatically sends the stored gateway token when connecting. Token theft can lead to gateway compromise even when the gateway listens only on loopback. Upgrade to 2026.1.29 or later; the fix requires confirmation of a new gateway URL before connecting.
 
-1. Victim clicks a malicious link
-2. Attacker's page opens a WebSocket to the victim's localhost gateway (no origin validation)
-3. Browser auto-sends the gateway auth token
-4. Attacker steals the token, connects to the gateway, disables sandbox and safety guardrails
-5. Attacker invokes `node.invoke` for arbitrary code execution on the host
-
-Pipelock blocks the post-compromise steps of this chain: tool policy blocks dangerous tool invocations, input scanning catches secret exfiltration in tool arguments, and response scanning detects injection in tool results. Pipelock does not currently perform handshake-level DLP on inbound WebSocket connections (that requires listener mode, which is planned but not yet implemented for WS upstreams).
+For MCP calls routed through its proxy, Pipelock applies configured tool policy, input scanning, and response scanning to tool invocations, arguments, and results. These controls don't protect direct gateway connections. Pipelock doesn't provide an inbound WebSocket MCP listener; WebSocket upstreams require stdio mode.
 
 ## Quick Start
 
 **1. Install pipelock:**
 
-Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
+
+Run the archive commands in a fresh directory. If verification fails or provenance cannot be retrieved, stop without extracting or installing the archive. Use another fresh directory before retrying so an existing download does not prevent the commands from running.
 
 ```bash
 # From source (Go 1.26+)
 git clone --branch v3.7.0 --depth 1 https://github.com/luckyPipewrench/pipelock.git
 make -C pipelock install
 
-# Or download the v3.7.0 Linux amd64 archive after publication
-gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz
-gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml
-tar xzf pipelock_3.7.0_linux_amd64.tar.gz
-sudo install -m 0755 pipelock /usr/local/bin/pipelock
+# Or download the v3.7.0 Linux amd64 archive
+gh release download v3.7.0 --repo luckyPipewrench/pipelock --pattern pipelock_3.7.0_linux_amd64.tar.gz &&
+  gh attestation verify pipelock_3.7.0_linux_amd64.tar.gz --repo luckyPipewrench/pipelock --signer-workflow luckyPipewrench/pipelock/.github/workflows/release.yaml &&
+  tar xzf pipelock_3.7.0_linux_amd64.tar.gz &&
+  sudo install -m 0755 pipelock /usr/local/bin/pipelock
 
 # Or Homebrew (macOS)
 brew install luckyPipewrench/tap/pipelock
@@ -268,21 +264,21 @@ spec:
         - port: 8888
 ```
 
-## What Pipelock Mitigates
+## Controls for Mediated Traffic
 
-Mapped to the CVE-2026-25253 attack chain:
+These controls apply when the relevant traffic passes through Pipelock. They do not intercept an attacker's direct connection to the OpenClaw gateway in the CVE-2026-25253 attack chain.
 
-| Attack Step | Pipelock Defense | Layer |
+| Traffic or Operation | Pipelock Control | Layer |
 |---|---|---|
-| Token theft via WS handshake | Not yet mitigated (requires WS listener mode, planned) | -- |
-| Sandbox disable via tool call | Tool policy blocks dangerous tool invocations | MCP proxy |
-| RCE via `node.invoke` | Tool policy deny rules for shell/exec tools | MCP proxy |
+| Gateway token theft through a direct WebSocket connection | Outside MCP wrapper coverage; upgrade OpenClaw to the fixed release | -- |
+| Sandbox disable via a mediated MCP tool call | Configured tool policy can deny matching tool invocations | MCP proxy |
+| Shell/exec operation via a mediated MCP tool call | Configured tool policy can deny matching tool names and arguments; direct gateway `node.invoke` calls bypass it | MCP proxy |
 | Data exfiltration via tool args | Input scanning catches secrets in outbound calls | MCP proxy |
 | Prompt injection in tool results | Response scanning detects injection attempts | MCP proxy |
 | Read-then-exfil tool sequences | Chain detection catches multi-step patterns | MCP proxy |
 | Outbound HTTP exfiltration | Ordered URL scanning, DLP on request URLs | HTTP proxy |
 
-Pipelock does not patch the CVE itself (that requires OpenClaw origin validation). It adds defense-in-depth by scanning the mediated traffic between agent and gateway, catching exploitation attempts at multiple points in the attack chain.
+Pipelock does not patch the CVE itself; upgrade OpenClaw as described above. Pipelock scans traffic routed through its proxies; direct gateway connections remain outside that coverage.
 
 ## TLS Interception
 

@@ -15,7 +15,7 @@ updates your cluster.
 
 ## Get the exact image set
 
-After v3.7.0 is published, this downloads its immutable image set into the current directory.
+This downloads the v3.7.0 immutable image set into the current directory.
 Replace the version only after selecting a released version.
 
 ```bash
@@ -29,7 +29,7 @@ release tag against the remote repository, verifies the bundle attestation, and
 then verifies the main Pipelock image named in the bundle. It requires a current
 GitHub CLI login and registry access when the image is not public.
 
-Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 ```bash
 PIPELOCK_RELEASE=v3.7.0

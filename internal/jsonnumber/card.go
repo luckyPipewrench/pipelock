@@ -264,6 +264,21 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 	}
 }
 
+// ScalarIntegerCardRuns returns the single-number card candidate of one bare
+// JSON number that exceeds the typed budget. It only cuts the written
+// spelling, so no exponent is evaluated and the budget is not needed; an
+// oversized exponent or fraction cannot hide an integer component card.
+func ScalarIntegerCardRuns(number string) []CardRun {
+	integer, _, _ := strings.Cut(strings.TrimSpace(number), ".")
+	integer, _, _ = strings.Cut(integer, "e")
+	integer, _, _ = strings.Cut(integer, "E")
+	integer = strings.TrimPrefix(integer, "-")
+	if !allDigits(integer) || len(integer) > cardRunMaxDigits {
+		return nil
+	}
+	return appendCardSubruns(nil, []cardPiece{{digits: integer, number: true}})
+}
+
 func allDigits(value string) bool {
 	if value == "" {
 		return false

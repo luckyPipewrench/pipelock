@@ -662,9 +662,14 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 		runs, limit = jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
 	}
 	// Only a structured document is refused over budget. Scalar text such as a
-	// string value of digits keeps its ordinary checks, as StructuredCardView does.
-	if limit != jsonnumber.CardRunWithinBudget && structured {
-		original.Matches = append(original.Matches, uninspectableJSONNumberMatch())
+	// string value of digits keeps its ordinary checks, as StructuredCardView
+	// does, and an over-budget bare number still contributes its integer card.
+	if limit != jsonnumber.CardRunWithinBudget {
+		if structured {
+			original.Matches = append(original.Matches, uninspectableJSONNumberMatch())
+		} else {
+			runs = jsonnumber.ScalarIntegerCardRuns(trimmed)
+		}
 	}
 	boundaryRuns := jsonnumber.BoundaryCardRuns(cardView)
 	for i := range boundaryRuns {

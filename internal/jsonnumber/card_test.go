@@ -135,3 +135,18 @@ func BenchmarkCardView(b *testing.B) {
 		_ = CardView(body, 64)
 	}
 }
+
+func TestScalarIntegerCardRuns(t *testing.T) {
+	card := "4111" + "1111" + "1111" + "1111"
+	for _, number := range []string{card, card + "e10001", "-" + card + ".25", " " + card + "E+3 "} {
+		runs := ScalarIntegerCardRuns(number)
+		if len(runs) != 1 || runs[0].Digits != card || runs[0].NumberOnly {
+			t.Fatalf("number %.24q runs=%+v", number, runs)
+		}
+	}
+	for _, number := range []string{strings.Repeat("7", 4097), "0." + card, card[:15] + "e5", card + "1", "-", ""} {
+		if runs := ScalarIntegerCardRuns(number); len(runs) != 0 {
+			t.Fatalf("number %.24q produced runs %+v", number, runs)
+		}
+	}
+}

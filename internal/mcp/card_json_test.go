@@ -140,10 +140,11 @@ func TestCardJSONInputStringScalarNotRefused(t *testing.T) {
 			t.Fatalf("string argument %.12s was refused: %+v", arg, v.Matches)
 		}
 	}
-	for _, arg := range []string{strings.Repeat("7", 4097), `1e10001`} {
+	card := "4111" + "1111" + "1111" + "1111"
+	for _, arg := range []string{strings.Repeat("7", 4097), `1e10001`, `"` + card + `e10001"`} {
 		v := ScanRequest(t.Context(), request(arg), s, config.ActionBlock, config.ActionBlock)
 		if v.Clean || v.Action != config.ActionBlock {
-			t.Fatalf("over-budget number %.12s was not refused: %+v", arg, v)
+			t.Fatalf("over-budget number or scalar card %.12s was not refused: %+v", arg, v)
 		}
 	}
 }

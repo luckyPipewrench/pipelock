@@ -147,9 +147,11 @@ func TestCardRunBudgetRefusesOnlyStructuredText(t *testing.T) {
 			t.Fatalf("structured over-budget text %.12q was not refused", text)
 		}
 	}
-	// An in-budget scalar still contributes its integer component.
+	// A scalar still contributes its integer component, in or over budget.
 	card := "4111" + "1111" + "1111" + "1111"
-	if result := s.ScanTextForDLP(t.Context(), card+"e-2"); result.Clean || OnlyNumberOnlyCardRuns(result.Matches) {
-		t.Fatal("scalar exponent card lost enforcement")
+	for _, text := range []string{card + "e-2", card + "e10001", " -" + card + ".5E-10001", card + "." + strings.Repeat("7", 4097)} {
+		if result := s.ScanTextForDLP(t.Context(), text); result.Clean || OnlyNumberOnlyCardRuns(result.Matches) || result.Matches[0].PatternName == UninspectableJSONNumberPattern {
+			t.Fatalf("scalar card %.24q lost enforcement: %+v", text, result.Matches)
+		}
 	}
 }

@@ -154,6 +154,7 @@ func TestShieldImageMediaSurface(t *testing.T) {
 			for _, mediaEnabled := range []bool{false, true} {
 				t.Run(name+"/"+transport+map[bool]string{false: "/media off", true: "/media on"}[mediaEnabled], func(t *testing.T) {
 					statuses := map[bool]int{}
+					responses := map[bool]string{}
 					for _, shieldEnabled := range []bool{false, true} {
 						cfg := shieldRewriteMarkerConfig()
 						enableShieldRewriteMarkerCategories(cfg)
@@ -161,7 +162,7 @@ func TestShieldImageMediaSurface(t *testing.T) {
 						cfg.MediaPolicy.Enabled = ptrBool(mediaEnabled)
 						cfg.ResponseScanning.Enabled = true
 						cfg.ResponseScanning.Action = config.ActionBlock
-						statuses[shieldEnabled], _ = requestShieldScan(t, cfg, transport, body, "text/html")
+						statuses[shieldEnabled], responses[shieldEnabled] = requestShieldScan(t, cfg, transport, body, "text/html")
 					}
 					switch {
 					case !mediaEnabled:
@@ -173,6 +174,36 @@ func TestShieldImageMediaSurface(t *testing.T) {
 						// Media policy removes the carrying bytes, so nothing is left to retain.
 						if statuses[false] != http.StatusOK || statuses[true] != http.StatusOK {
 							t.Fatalf("media on: shield off=%d on=%d, want both 200", statuses[false], statuses[true])
+						}
+					default:
+						if statuses[false] != http.StatusOK {
+							t.Fatalf("media policy without Shield: status=%d, want 200", statuses[false])
+						}
+						// These images are labeled HTML. Shield can rewrite metadata
+						// before media policy parses it; damaged images must be refused.
+						// Reverse proxy strips metadata first, so no rewrite remains.
+						want := http.StatusForbidden
+						if transport == TransportReverse {
+							want = http.StatusOK
+						}
+						if statuses[true] != want {
+							t.Fatalf("media policy with Shield: status=%d, want %d", statuses[true], want)
+						}
+						if want == http.StatusForbidden && !strings.Contains(responses[true], "media_policy: image parse error") {
+							t.Fatalf("rewritten image refused for unexpected reason: %s", responses[true])
+						}
+					}
+					if mediaEnabled {
+						cfg := shieldRewriteMarkerConfig()
+						cfg.MediaPolicy.Enabled = ptrBool(true)
+						surface := shieldScanSurface(cfg, "text/html", body, http.Header{"Content-Type": {"text/html"}}, "https://api.vendor.example")
+						if bytes.Equal(surface, body) || bytes.Contains(surface, []byte(shieldScanDirective)) {
+							t.Fatal("media policy scan surface retained image metadata or trailing content")
+						}
+						for _, shieldEnabled := range []bool{false, true} {
+							if statuses[shieldEnabled] == http.StatusOK && strings.Contains(responses[shieldEnabled], shieldScanDirective) {
+								t.Fatalf("shield=%v: delivered image retained directive", shieldEnabled)
+							}
 						}
 					}
 				})
@@ -595,6 +626,45 @@ func TestRetainShieldScan(t *testing.T) {
 	}
 }
 
+func TestRetainedShieldScanErrorDisposition(t *testing.T) {
+	for _, action := range []string{config.ActionBlock, config.ActionWarn, config.ActionStrip, config.ActionAsk} {
+		t.Run(action, func(t *testing.T) {
+			cfg := shieldRewriteMarkerConfig()
+			cfg.ResponseScanning.Enabled = true
+			cfg.ResponseScanning.Action = action
+			p := newTestProxyWithConfig(t, cfg)
+			for _, exempt := range []bool{false, true} {
+				for _, failedOriginal := range []bool{false, true} {
+					original := scanner.ResponseScanResult{Matches: []scanner.ResponseMatch{{PatternName: "Prompt Injection", MatchText: shieldScanDirective}}}
+					current := scanner.ResponseScanResult{Clean: true}
+					if failedOriginal {
+						original.ScanError = "original scan incomplete"
+					} else {
+						current.ScanError = "final scan incomplete"
+					}
+					body := "<!-- " + shieldScanDirective + " -->"
+					result := retainShieldScan(&original, current, []byte(body))
+					if !result.Failed() || result.Clean || len(result.Matches) != 1 {
+						t.Fatalf("retention lost error or finding: %+v", result)
+					}
+					w := httptest.NewRecorder()
+					blocked, out, found, layer := p.filterAndActOnResponseScan(responseScanContext{
+						requestContext: t.Context(), writer: w, result: result, content: body,
+						displayURL: "https://api.vendor.example", scanner: p.scannerPtr.Load(),
+						config: cfg, logger: p.logger, exempt: exempt, clientIP: "192.0.2.1", requestID: "scan-error",
+					})
+					if !blocked || out != "" || found || layer != "response_scan_error" || w.Code != http.StatusServiceUnavailable {
+						t.Fatalf("exempt=%v original error=%v: blocked=%v out=%q found=%v layer=%q status=%d", exempt, failedOriginal, blocked, out, found, layer, w.Code)
+					}
+					if strings.Contains(w.Body.String(), shieldScanDirective) {
+						t.Fatal("scan error response delivered original content")
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestShieldOriginalScanMalformedAndUnchanged(t *testing.T) {
 	cfg := shieldRewriteMarkerConfig()
 	enableShieldRewriteMarkerCategories(cfg)
@@ -813,6 +883,9 @@ func requestShieldScan(t *testing.T, cfg *config.Config, transport string, body 
 		var result FetchResponse
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
+		}
+		if result.Blocked {
+			return w.Code, result.BlockReason
 		}
 		return w.Code, result.Content
 	case TransportForward:

@@ -7744,6 +7744,19 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         self.assertFalse(omitted)
         self.assertEqual(budget.cut_owners, set())
 
+    def test_evidence_too_small_for_its_header_records_the_candidate_as_cut(self) -> None:
+        binding = self.BINDING
+        candidate = pr_review.Finding("medium", "caller.go", 1, "helper omits fields", "helper body unclear", "fix helper")
+        budget = pr_review.EvidenceBudget()
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(pr_review, "_evidence_terms", return_value=["absent"]), mock.patch.object(
+            pr_review, "_bounded_git_grep", return_value=([], False, False)
+        ):
+            evidence, _omitted = pr_review.cross_file_evidence(binding, [candidate], {}, max_tokens=20, budget=budget)
+        self.assertIn("<evidence-omitted>", evidence)
+        self.assertEqual(budget.cut_owners, {pr_review.candidate_identifier(candidate)})
+
     def test_prompt_shrinking_marks_the_evidence_omitted(self) -> None:
         owner = pr_review.candidate_identifier(pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix"))
         text = f"CANDIDATE {owner} REPOSITORY EVIDENCE\n" + "\n".join(f"b.go:{n}: value_{n}" for n in range(1, 200))

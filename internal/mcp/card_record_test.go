@@ -91,9 +91,13 @@ func TestCardJSONAdaptiveInputWarn(t *testing.T) {
 		t.Fatal("stdio number-only warning did not forward")
 	}
 	httpRec := &mockRecorder{level: 1}
-	result := scanHTTPInputDecision([]byte(line), &bytes.Buffer{}, "card-session", "card-session", MCPProxyOpts{Scanner: s, InputCfg: newHTTPInputCfg(config.ActionBlock), Rec: httpRec, AdaptiveCfg: adaptive})
+	var httpLog bytes.Buffer
+	result := scanHTTPInputDecision([]byte(line), &httpLog, "card-session", "card-session", MCPProxyOpts{Scanner: s, InputCfg: newHTTPInputCfg(config.ActionBlock), Rec: httpRec, AdaptiveCfg: adaptive})
 	if result.Blocked != nil {
 		t.Fatal("HTTP number-only warning did not forward")
+	}
+	if !strings.Contains(httpLog.String(), "input: warning") {
+		t.Fatalf("HTTP number-only warning left no operator record: %q", httpLog.String())
 	}
 	if len(stdioRec.signals) != 0 || len(httpRec.signals) != 0 {
 		t.Fatal("number-only input changed the adaptive score")

@@ -34,6 +34,7 @@ if [ "$1" = build ]; then
 	for arg in "$@"; do
 		case "${arg}" in
 		type=local,dest=*)
+			if [ "${DOCKER_CONTEXT_FAIL:-}" = 1 ]; then exit 1; fi
 			context="${arg#type=local,dest=}"
 			mkdir -p "${context}"
 			cp -a . "${context}/"
@@ -170,6 +171,17 @@ jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.js
 printf 'excluded binary\n' > "${tmp}/source/pipelock"
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/excluded.out" 2>&1
 jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+for failure in docker go-list; do
+	if [ "${failure}" = docker ]; then
+		failure_env=(DOCKER_CONTEXT_FAIL=1)
+	else
+		failure_env=(GOFLAGS=-unknown-build-flag)
+	fi
+	if env "${failure_env[@]}" PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/inspection.out" 2>&1; then
+		echo "${failure} inspection error was accepted" >&2; exit 1
+	fi
+	grep -q 'cannot inspect Docker build context' "${tmp}/inspection.out"
+done
 rm -f -- "${tmp}/source/pipelock"
 
 # Ignored files are still copied into the viewer image and need dirty provenance.

@@ -263,19 +263,12 @@ func TestShieldFetchHiddenFailureEvidence(t *testing.T) {
 						if strings.Contains(w.Body.String(), shieldScanDirective) {
 							t.Fatal("refusal restored hidden content")
 						}
-						signal := session.SignalBlock
-						if action == config.ActionWarn {
-							signal = session.SignalNearMiss
+						if !strings.Contains(w.Body.String(), "fail-closed") {
+							t.Fatalf("refusal reason did not name the representation failure: %s", w.Body.String())
 						}
-						if action == config.ActionStrip {
-							signal = session.SignalStrip
-							if enabled {
-								// Shield removed the entire body, so there is no strip
-								// representation and the existing helper upgrades to block.
-								signal = session.SignalBlock
-							}
-						}
-						wantScore := session.SignalPoints[signal]
+						// The caller always refuses this representation. A warn or
+						// strip signal would describe a delivery that did not happen.
+						wantScore := session.SignalPoints[session.SignalBlock]
 						if exempt {
 							wantScore = 0
 						}
@@ -291,17 +284,21 @@ func TestShieldFetchHiddenFailureEvidence(t *testing.T) {
 						if err := rec.Close(); err != nil {
 							t.Fatal(err)
 						}
-						found := false
+						refusals := 0
 						for _, got := range extractReceiptsFromDir(t, dir) {
-							if got.ActionRecord.Layer == responseScanLayer && got.ActionRecord.Verdict == config.ActionBlock {
-								found = true
-								if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") {
-									t.Errorf("refusal receipt lost finding: %s", got.ActionRecord.Pattern)
-								}
+							if got.ActionRecord.Layer != responseScanLayer {
+								continue
+							}
+							if got.ActionRecord.Verdict != config.ActionBlock {
+								t.Errorf("response_scan receipt verdict=%q for a refused response", got.ActionRecord.Verdict)
+							}
+							refusals++
+							if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") || !strings.Contains(got.ActionRecord.Pattern, "fail-closed") {
+								t.Errorf("refusal receipt lost the finding or the representation failure: %s", got.ActionRecord.Pattern)
 							}
 						}
-						if !found {
-							t.Fatal("response-scan refusal receipt missing")
+						if refusals != 1 {
+							t.Errorf("response_scan receipts=%d, want one refusal", refusals)
 						}
 					})
 				}
@@ -363,8 +360,8 @@ func TestShieldFetchHiddenFailureAskIsNotOffered(t *testing.T) {
 						t.Errorf("response_scan receipt verdict=%q for a refused response", got.ActionRecord.Verdict)
 					}
 					refusals++
-					if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") {
-						t.Errorf("refusal receipt lost finding: %s", got.ActionRecord.Pattern)
+					if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") || !strings.Contains(got.ActionRecord.Pattern, "fail-closed") {
+						t.Errorf("refusal receipt lost the finding or the representation failure: %s", got.ActionRecord.Pattern)
 					}
 				}
 				if refusals != 1 {

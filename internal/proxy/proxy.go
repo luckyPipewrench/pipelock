@@ -7019,7 +7019,8 @@ type responseScanContext struct {
 	sessionLevel   int
 	exempt         bool
 	// refusing marks a caller that refuses delivery whatever the action
-	// decides, so a decision prompt it could not honor is not offered.
+	// decides. The helper records the hard-block signal and leaves the
+	// single refusal receipt and response to that caller.
 	refusing bool
 }
 
@@ -7084,22 +7085,21 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 	// overrides adaptive escalation. This prevents death spirals where LLM
 	// responses naturally contain instruction-like text.
 	action := sc.ResponseAction()
-	if exempt {
-		action = config.ActionWarn
-	}
-	originalAction := action
-	if !exempt {
-		action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
-	}
-	if action != originalAction {
-		sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
-		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
-	}
-	if action == config.ActionStrip && result.TransformedContent == "" {
-		action = config.ActionBlock
-	}
-	if in.refusing && action == config.ActionAsk {
-		action = config.ActionBlock
+	if !in.refusing {
+		if exempt {
+			action = config.ActionWarn
+		}
+		originalAction := action
+		if !exempt {
+			action = decide.UpgradeAction(action, sessionLevel, &cfg.AdaptiveEnforcement)
+		}
+		if action != originalAction {
+			sessionKey := sessionKeyFor(cfg, agent, clientIP, actorAuth)
+			recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
+		}
+		if action == config.ActionStrip && result.TransformedContent == "" {
+			action = config.ActionBlock
+		}
 	}
 
 	// recordResponseSignal records an adaptive enforcement signal for the
@@ -7125,6 +7125,13 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 				RequestID: requestID,
 			})
 		}
+	}
+	if in.refusing {
+		// SignalBlock is the hard-block signal in session.SignalPoints.
+		// Warn, strip, and an exempt warn pin describe deliveries this
+		// caller does not make, so none of those verdicts is signed.
+		recordResponseSignal(session.SignalBlock)
+		return false, "", true, ""
 	}
 
 	switch action {

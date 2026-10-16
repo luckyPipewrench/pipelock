@@ -114,7 +114,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_container_keeps_hardening_and_uses_hosted_runner_uid(self):
         job = WORKFLOW["jobs"]["review"]
-        # Hosted Ubuntu's runner UID is documented by actions/runner-images#10936.
+        # Hosted Ubuntu's runner UID was announced in actions/runner-images#10936.
         self.assertEqual("ubuntu-latest", job["runs-on"])
         self.assertCountEqual([
             "--user", "1001:1001", "--cap-drop=ALL", "--security-opt=no-new-privileges",

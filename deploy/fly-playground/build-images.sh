@@ -83,7 +83,17 @@ if [ "${build_broker}" -eq 1 ]; then
 		echo "[build-images] ERROR: cannot inspect site viewer work tree" >&2
 		exit 1
 	fi
-	if [ -n "${site_status}" ]; then
+	# The image copies ignored files too. Only these three generated outputs are
+	# replaced in staging; other ignored inputs are not described by SITE_COMMIT.
+	if ! ignored_site_files="$(git -C "${SITE_ROOT}" ls-files --others --ignored --exclude-standard -- \
+		":(literal)${VIEWER_PATH}" \
+		":(exclude,literal)${VIEWER_PATH}/pipelock-verifier.wasm" \
+		":(exclude,literal)${VIEWER_PATH}/wasm_exec.js" \
+		":(exclude,literal)${VIEWER_PATH}/build-info.json")"; then
+		echo "[build-images] ERROR: cannot inspect ignored site viewer files" >&2
+		exit 1
+	fi
+	if [ -n "${site_status}" ] || [ -n "${ignored_site_files}" ]; then
 		SITE_DIRTY=true
 	fi
 fi

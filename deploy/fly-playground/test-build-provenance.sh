@@ -91,6 +91,40 @@ for label in org.opencontainers.image.revision org.opencontainers.image.version 
 	fi
 done
 
+# Ignored files are still copied into the viewer image and need dirty provenance.
+mkdir -p "${tmp}/site/.git/info"
+printf '/static/playground/demo/test-bundle.tar.gz\n' > "${tmp}/site/.git/info/exclude"
+printf 'unrecorded bundle\n' > "${PLAYGROUND_UI_DIR}/test-bundle.tar.gz"
+if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/ignored.out" 2>&1; then
+	echo 'ignored viewer file was accepted as clean source' >&2
+	exit 1
+fi
+PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/ignored.out"
+python3 - "${tmp}/capture/build-info.json" <<'CHECK'
+import json
+import sys
+info = json.load(open(sys.argv[1], encoding="utf-8"))
+assert info["dirty"] is True and info["site_dirty"] is True
+assert "test-bundle.tar.gz" in info["files"]
+CHECK
+mv "${PLAYGROUND_UI_DIR}/test-bundle.tar.gz" "${tmp}/ignored-bundle.tar.gz"
+
+# Generated outputs are replaced in staging and must not make a clean build dirty.
+for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
+	printf '/static/playground/demo/%s\n' "${generated}" >> "${tmp}/site/.git/info/exclude"
+	printf 'stale output\n' > "${PLAYGROUND_UI_DIR}/${generated}"
+done
+"${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/generated.out"
+python3 - "${tmp}/capture/build-info.json" <<'CHECK'
+import json
+import sys
+info = json.load(open(sys.argv[1], encoding="utf-8"))
+assert info["dirty"] is False and info["site_dirty"] is False
+CHECK
+for generated in pipelock-verifier.wasm wasm_exec.js build-info.json; do
+	mv "${PLAYGROUND_UI_DIR}/${generated}" "${tmp}/${generated}"
+done
+
 printf 'changed\n' >> "${PLAYGROUND_UI_DIR}/index.html"
 if "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/dirty.out" 2>&1; then
 	echo 'dirty site viewer was accepted' >&2

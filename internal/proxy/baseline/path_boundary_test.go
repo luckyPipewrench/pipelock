@@ -1,0 +1,111 @@
+// Copyright 2026 Josh Waldrep
+// SPDX-License-Identifier: Apache-2.0
+
+package baseline
+
+import (
+	"errors"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestTrustedRootRelativePathBoundary(t *testing.T) {
+	root := t.TempDir()
+	canonical, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingRoot := filepath.Join(root, "absent")
+	tests := []struct {
+		name    string
+		root    string
+		path    string
+		wantRel string
+		want    string // empty means success expected
+		is      error
+	}{
+		{name: "child path accepted", root: root, path: filepath.Join(root, "profiles", "agent.json"), wantRel: filepath.Join("profiles", "agent.json")},
+		{name: "empty trusted root", root: "", path: filepath.Join(root, "x"), want: "trusted root is empty"},
+		{name: "root itself is not a file path", root: root, path: root, want: "escapes trusted root"},
+		{name: "parent escape", root: root, path: filepath.Dir(root), want: "escapes trusted root"},
+		{name: "sibling escape", root: root, path: filepath.Join(filepath.Dir(root), "other", "x"), want: "escapes trusted root"},
+		{name: "missing root cannot be canonicalized", root: missingRoot, path: filepath.Join(missingRoot, "x"), want: "canonicalize trusted root", is: fs.ErrNotExist},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotRoot, gotRel, err := trustedRootRelativePath(tt.root, filepath.Clean(tt.path), "profile")
+			if tt.want == "" {
+				if err != nil {
+					t.Fatalf("trustedRootRelativePath: %v", err)
+				}
+				if gotRoot != canonical || gotRel != tt.wantRel {
+					t.Fatalf("got (%q, %q), want (%q, %q)", gotRoot, gotRel, canonical, tt.wantRel)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %v, want %q", err, tt.want)
+			}
+			if tt.is != nil && !errors.Is(err, tt.is) {
+				t.Fatalf("error %v does not wrap %v", err, tt.is)
+			}
+			if gotRoot != "" || gotRel != "" {
+				t.Fatalf("got (%q, %q) alongside error, want empty", gotRoot, gotRel)
+			}
+		})
+	}
+}
+
+func TestPathWithinBoundary(t *testing.T) {
+	dir := filepath.Join(string(os.PathSeparator), "srv", "profiles")
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "dir itself", path: dir, want: true},
+		{name: "nested child", path: filepath.Join(dir, "a", "b"), want: true},
+		{name: "dot-dot named child", path: filepath.Join(dir, "..hidden"), want: true},
+		{name: "parent", path: filepath.Dir(dir), want: false},
+		{name: "shared-prefix sibling", path: dir + "-other", want: false},
+		{name: "traversal out", path: dir + string(os.PathSeparator) + filepath.Join("..", "..", "etc"), want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathWithin(tt.path, dir)
+			if err != nil {
+				t.Fatalf("pathWithin: %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("pathWithin(%q, %q) = %t, want %t", tt.path, dir, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeLogAttrValueKinds(t *testing.T) {
+	tests := []struct {
+		name string
+		in   any
+		want any
+	}{
+		{name: "plain value untouched", in: 42, want: 42},
+		{name: "string newline flattened", in: "a\nforged", want: "a forged"},
+		{name: "error text flattened", in: errors.New("a\rforged"), want: "a forged"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sanitizeLogAttrValue(tt.in); got != tt.want {
+				t.Fatalf("sanitizeLogAttrValue(%#v) = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+	got, ok := sanitizeLogAttrValue(slog.String("k", "a\nforged")).(slog.Attr)
+	if !ok || got.Value.String() != "a forged" {
+		t.Fatalf("nested attr sanitized to %#v, want value %q", got, "a forged")
+	}
+}

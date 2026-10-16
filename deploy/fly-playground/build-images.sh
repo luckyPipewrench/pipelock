@@ -36,7 +36,8 @@ source "$(dirname "$0")/viewer-generated.sh"
 # exclude_generated skips the three viewer outputs staging replaces.
 worktree_matches_head() {
 	local root="$1" prefix="$2" exclude_generated="$3"
-	local list entry mode oid path rel work file_oid differs=0
+	local list entry mode oid path rel work differs=0 i j hashes
+	local -a works=() oids=() modes=() batch=() batch_index=() hashed=() results=()
 	list="$(mktemp)"
 	if [ -n "${prefix}" ]; then
 		if ! git -C "${root}" ls-tree -r -z HEAD -- ":(literal)${prefix}" > "${list}"; then
@@ -71,19 +72,46 @@ worktree_matches_head() {
 			differs=1
 			break
 		fi
-		if ! file_oid="$(git -C "${root}" hash-object --no-filters -- "${work}")"; then
-			rm -f -- "${list}"
-			return 2
-		fi
-		if [ "${file_oid}" != "${oid}" ] ||
-			{ [ "${mode}" = 100755 ] && [ ! -x "${work}" ]; } ||
-			{ [ "${mode}" = 100644 ] && [ -x "${work}" ]; }; then
-			differs=1
-			break
-		fi
+		works+=("${work}")
+		oids+=("${oid}")
+		modes+=("${mode}")
 	done < "${list}"
 	rm -f -- "${list}"
-	return "${differs}"
+	if [ "${differs}" -ne 0 ] || [ "${#works[@]}" -eq 0 ]; then
+		return "${differs}"
+	fi
+	# One hash-object process for the whole tree. It reads one path per line,
+	# so a path containing a newline is hashed on its own.
+	for i in "${!works[@]}"; do
+		if [[ "${works[$i]}" == *$'\n'* ]]; then
+			if ! hashed[i]="$(git -C "${root}" hash-object --no-filters -- "${works[$i]}")"; then
+				return 2
+			fi
+		else
+			batch+=("${works[$i]}")
+			batch_index+=("${i}")
+		fi
+	done
+	if [ "${#batch[@]}" -gt 0 ]; then
+		if ! hashes="$(printf '%s\n' "${batch[@]}" | git -C "${root}" hash-object --no-filters --stdin-paths)"; then
+			return 2
+		fi
+		mapfile -t results <<< "${hashes}"
+		if [ "${#results[@]}" -ne "${#batch[@]}" ]; then
+			return 2
+		fi
+		for j in "${!batch_index[@]}"; do
+			hashed[batch_index[j]]="${results[$j]}"
+		done
+	fi
+	for i in "${!works[@]}"; do
+		if [ "${hashed[$i]}" != "${oids[$i]}" ] ||
+			{ [ "${modes[$i]}" = 100755 ] && [ ! -x "${works[$i]}" ]; } ||
+			{ [ "${modes[$i]}" = 100644 ] && [ -x "${works[$i]}" ]; }; then
+			return 1
+		fi
+	done
+	return 0
 }
 
 # Files cp will copy that HEAD does not contain. The three staging outputs are

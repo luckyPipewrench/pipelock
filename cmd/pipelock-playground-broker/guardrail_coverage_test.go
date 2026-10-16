@@ -90,7 +90,9 @@ func TestBuildImagesOnlyVMDoesNotRequireViewer(t *testing.T) {
 		t.Fatalf("read docker log: %v", err)
 	}
 	logText := string(logBytes)
-	if !strings.Contains(logText, "Dockerfile") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
+	// The provenance check runs its own context export first, so match the VM
+	// recipe itself rather than any line that mentions a Dockerfile.
+	if !strings.Contains(logText, "-f deploy/fly-playground/Dockerfile -t registry.example/playground:vm-") || strings.Contains(logText, "Dockerfile.broker") || strings.Contains(logText, " run ") {
 		t.Fatalf("VM-only docker calls = %q", logText)
 	}
 }

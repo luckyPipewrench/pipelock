@@ -103,6 +103,43 @@ func TestPathWithinBoundary(t *testing.T) {
 	}
 }
 
+// Relative inputs are resolved against the working directory, the way a
+// relative integrity key path from config is. Not parallel: it changes cwd.
+func TestPathWithinRelativeInputs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	tests := []struct {
+		name string
+		path string
+		dir  string
+		want bool
+	}{
+		{name: "relative child inside", path: filepath.Join("profiles", "keys", "k"), dir: "profiles", want: true},
+		{name: "relative dir itself", path: "profiles", dir: "profiles", want: true},
+		{name: "relative path outside", path: filepath.Join("keys", "k"), dir: "profiles", want: false},
+		{name: "relative path against absolute dir", path: filepath.Join("profiles", "k"), dir: filepath.Join(mustGetwd(t), "profiles"), want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathWithin(tt.path, tt.dir)
+			if err != nil {
+				t.Fatalf("pathWithin(%q, %q) error: %v", tt.path, tt.dir, err)
+			}
+			if got != tt.want {
+				t.Fatalf("pathWithin(%q, %q) = %t, want %t", tt.path, tt.dir, got, tt.want)
+			}
+		})
+	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wd
+}
+
 func TestSanitizeLogAttrValueKinds(t *testing.T) {
 	tests := []struct {
 		name string

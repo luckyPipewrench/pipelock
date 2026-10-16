@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -74,7 +75,15 @@ func makeZip(t *testing.T, entries map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
-	for name, data := range entries {
+	// Map iteration order is random; write entries in sorted order so the
+	// archive layout (and which extraction branches run) is deterministic.
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data := entries[name]
 		w, err := zw.Create(name)
 		if err != nil {
 			t.Fatalf("zip create: %v", err)

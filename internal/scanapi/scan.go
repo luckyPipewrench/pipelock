@@ -355,7 +355,8 @@ func (h *Handler) scanToolCall(
 	// Stage 1: Key+value extraction from arguments.
 	// Uses extract.AllStringsFromJSON (keys AND values) because secrets
 	// can be encoded as JSON object keys. See spec: tool_call wiring detail.
-	var argStrings, cardStrings []string
+	var argStrings []string
+	var cardAtoms []extract.DLPAtom
 	if len(req.Input.Arguments) > 0 && string(req.Input.Arguments) != jsonNull {
 		extracted := extract.AllStringsFromJSONResult(json.RawMessage(req.Input.Arguments))
 		if extracted.Truncated {
@@ -369,7 +370,7 @@ func (h *Handler) scanToolCall(
 			return resp, http.StatusOK
 		}
 		argStrings = extracted.Strings
-		cardStrings = extracted.CardStrings
+		cardAtoms = extracted.Atoms
 	}
 	scanText := strings.Join(argStrings, " ")
 
@@ -385,7 +386,7 @@ func (h *Handler) scanToolCall(
 	// kinds (url / dlp / prompt_injection) all scan unconditionally; tool_call
 	// now matches that contract.
 	if scanText != "" {
-		dlpResult := sc.ScanTextForDLPWithCardView(ctx, scanText, strings.Join(cardStrings, " "))
+		dlpResult := sc.ScanTextForDLPWithCardView(ctx, scanText, extract.JoinCardAtoms(cardAtoms, " "))
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

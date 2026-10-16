@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/transport"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -150,8 +153,11 @@ func ScanGenericSSEStreamWithOptions(
 
 	reader := transport.NewSSEReader(body)
 	var tail string
+	var cardTail string
 	var injectionTail string
 	var payloadTail string
+	var cardPayloadTail string
+	var lastPayloadJSON bool
 	var payloadInjectionTail string
 	// Stream-scoped on purpose. injectionTail carries bytes from one event into
 	// the next event's scan, so a finding in event N is presented again by
@@ -226,11 +232,19 @@ func ScanGenericSSEStreamWithOptions(
 		// prompt-injection content placed in the metadata fields
 		// rides through unscanned (external review finding #2).
 		text := canonicalSSEEventText(event, reader)
+		cardPayloadText := jsonnumber.CardView(string(event), extract.MaxExtractDepth)
+		cardBoundary := ""
+		if lastPayloadJSON || json.Valid(event) {
+			cardBoundary = ","
+		}
+		cardText := canonicalSSEEventText([]byte(cardPayloadText), reader)
 		rollingText := sseRollingEventText(text, "")
+		cardRollingText := sseRollingEventText(cardText, "")
 		rollingInjectionText := sseRollingEventText(text, " ")
 		// The rolling view leaves the id out so a persisted id cannot split
 		// an event/data value; this view joins the id to the data instead.
 		idDataText := sseIDDataEventText(text, "")
+		cardIDDataText := sseIDDataEventText(cardText, "")
 		idDataInjectionText := sseIDDataEventText(text, " ")
 		payloadText := string(event)
 
@@ -265,7 +279,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 
-		dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, text), opts.Target, opts.Suppress)
+		dlpResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, text, cardText), opts.Target, opts.Suppress)
 		if err := checkSSEDLPContext(ctx); err != nil {
 			return err
 		}
@@ -276,17 +290,17 @@ func ScanGenericSSEStreamWithOptions(
 			// metadata visibility, while the joined payload catches
 			// split-secret patterns that are easier to recognize before
 			// those prefixes are reintroduced.
-			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, string(event)), opts.Target, opts.Suppress)
+			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, string(event), cardPayloadText), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
 			droppedDLP.record(droppedMatches)
 		}
-		for _, view := range []string{rollingText, idDataText} {
-			if !dlpResult.Clean || view == "" {
+		for _, view := range [][2]string{{rollingText, cardRollingText}, {idDataText, cardIDDataText}} {
+			if !dlpResult.Clean || view[0] == "" {
 				continue
 			}
-			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, view), opts.Target, opts.Suppress)
+			dlpResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, view[0], view[1]), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
@@ -360,13 +374,13 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				droppedDLP.markSeen(priorTailDrops)
 			}
-			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, combined), opts.Target, opts.Suppress)
+			tailDLPResult, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+cardBoundary+cardRollingText), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
 			droppedDLP.record(droppedMatches)
 			if tailDLPResult.Clean && idDataText != "" {
-				tailDLPResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, tail+idDataText), opts.Target, opts.Suppress)
+				tailDLPResult, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, tail+idDataText, cardTail+cardBoundary+cardIDDataText), opts.Target, opts.Suppress)
 				if err := checkSSEDLPContext(ctx); err != nil {
 					return err
 				}
@@ -384,7 +398,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 		}
 		if !skipTailDLP && !resetDLPTail && payloadTail != "" {
-			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLP(ctx, payloadTail+payloadText), opts.Target, opts.Suppress)
+			result, droppedMatches := keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, payloadTail+payloadText, cardPayloadTail+cardBoundary+cardPayloadText), opts.Target, opts.Suppress)
 			if err := checkSSEDLPContext(ctx); err != nil {
 				return err
 			}
@@ -404,11 +418,19 @@ func ScanGenericSSEStreamWithOptions(
 			if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
 				rollingText = rollingText[boundary+1:]
 			}
+			if boundary := strings.LastIndexByte(cardRollingText, ' '); boundary >= 0 {
+				cardRollingText = cardRollingText[boundary+1:]
+			}
 			if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
 				payloadText = payloadText[boundary+1:]
 			}
+			if boundary := strings.LastIndexByte(cardPayloadText, ' '); boundary >= 0 {
+				cardPayloadText = cardPayloadText[boundary+1:]
+			}
 			tail = advanceSSERollingTail("", []byte(rollingText), true, "")
+			cardTail = advanceSSERollingTail("", []byte(cardRollingText), true, "")
 			payloadTail = advanceSSERollingTail("", []byte(payloadText), true, "")
+			cardPayloadTail = advanceSSERollingTail("", []byte(cardPayloadText), true, "")
 		} else {
 			if resetDLPTail {
 				// The prior tail held the prefix that just fired, and the reset
@@ -417,12 +439,20 @@ func ScanGenericSSEStreamWithOptions(
 				if boundary := strings.LastIndexByte(rollingText, ' '); boundary >= 0 {
 					rollingText = rollingText[boundary+1:]
 				}
+				if boundary := strings.LastIndexByte(cardRollingText, ' '); boundary >= 0 {
+					cardRollingText = cardRollingText[boundary+1:]
+				}
 				if boundary := strings.LastIndexByte(payloadText, ' '); boundary >= 0 {
 					payloadText = payloadText[boundary+1:]
 				}
+				if boundary := strings.LastIndexByte(cardPayloadText, ' '); boundary >= 0 {
+					cardPayloadText = cardPayloadText[boundary+1:]
+				}
 			}
 			tail = advanceSSERollingTail(tail, []byte(rollingText), resetDLPTail, "")
+			cardTail = advanceSSERollingTail(cardTail, []byte(cardRollingText), resetDLPTail, "")
 			payloadTail = advanceSSERollingTail(payloadTail, []byte(payloadText), resetDLPTail, "")
+			cardPayloadTail = advanceSSERollingTail(cardPayloadTail, []byte(cardPayloadText), resetDLPTail, "")
 		}
 		if clearDLPTailAfterCurrent || resetDLPTail {
 			// A fragment with no whitespace boundary can still hold the whole
@@ -433,7 +463,13 @@ func ScanGenericSSEStreamWithOptions(
 			if tail, err = dropSelfMatchingSSETail(ctx, sc, tail, opts); err != nil {
 				return err
 			}
+			if cardTail, err = dropSelfMatchingSSETail(ctx, sc, cardTail, opts); err != nil {
+				return err
+			}
 			if payloadTail, err = dropSelfMatchingSSETail(ctx, sc, payloadTail, opts); err != nil {
+				return err
+			}
+			if cardPayloadTail, err = dropSelfMatchingSSETail(ctx, sc, cardPayloadTail, opts); err != nil {
 				return err
 			}
 		}
@@ -469,6 +505,7 @@ func ScanGenericSSEStreamWithOptions(
 		if flusher != nil {
 			flusher.Flush()
 		}
+		lastPayloadJSON = json.Valid(event)
 	}
 }
 

@@ -91,6 +91,51 @@ func (c *sseCancelOnErrContext) Err() error {
 
 // --- Happy paths: real-world LLM provider SSE shapes ---
 
+func TestGenericSSEJSONCardNumberContext(t *testing.T) {
+	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
+	for _, tt := range []struct {
+		name, event string
+		clean       bool
+	}{
+		{"ids", `{"ids":[` + groups + `]}`, true},
+		{"bbox", `{"bbox":[` + groups + `]}`, true},
+		{"root groups", `[` + groups + `]`, true},
+		{"empty key", `{"": [` + groups + `]}`, true},
+		{"dash key", `{"-": [` + groups + `]}`, true},
+		{"prefix key", `{"x-": [` + groups + `]}`, true},
+		{"fraction", `{"n":0.` + card + `}`, true},
+		{"card string", `{"n":"` + card + `"}`, false},
+		{"card integer", `{"n":` + card + `}`, false},
+		{"integer component", `{"n":` + card + `.1}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testA2AScanner(t)
+			t.Cleanup(s.Close)
+			stream := "data: " + tt.event + "\n\ndata: " + tt.event + "\n\n"
+			var out bytes.Buffer
+			err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg())
+			if (err == nil) != tt.clean {
+				t.Fatalf("event=%s error=%v want clean=%v", tt.event, err, tt.clean)
+			}
+			if tt.clean && out.String() != stream {
+				t.Fatalf("clean event changed: %q", out.String())
+			}
+		})
+	}
+}
+
+func TestGenericSSEPlainTextCard(t *testing.T) {
+	card := "41111111" + "11111111"
+	s := testA2AScanner(t)
+	t.Cleanup(s.Close)
+	stream := "data: " + card + "\n\n"
+	var out bytes.Buffer
+	if err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg()); err == nil {
+		t.Fatal("plain-text card was not detected")
+	}
+}
+
 func TestScanGenericSSEStream_OpenAI_HappyPath(t *testing.T) {
 	// Realistic openai chat.completions stream: a few delta tokens then [DONE].
 	body := strings.Join([]string{

@@ -347,7 +347,7 @@ func extractToolInputViews(raw json.RawMessage) (string, string, bool) {
 	if len(strs) == 0 {
 		return "", "", extracted.Truncated
 	}
-	return strings.Join(strs, "\n"), strings.Join(extracted.CardStrings, " "), extracted.Truncated
+	return strings.Join(strs, "\n"), extract.JoinCardAtoms(extracted.Atoms, " "), extracted.Truncated
 }
 
 // readAllWithCtx is io.ReadAll bounded by ctx and a byte ceiling. If ctx fires

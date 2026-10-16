@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/normalize"
 	"github.com/luckyPipewrench/pipelock/internal/seedprotect"
 )
@@ -437,18 +438,28 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardViews(ctx context.Context, par
 	if len(cards) != len(parts) {
 		cards = parts
 	}
-	scrubbedCards := make([]string, 0, len(parts))
+	atoms := make([]extract.DLPAtom, len(parts))
+	for i := range parts {
+		atoms[i] = extract.DLPAtom{Text: parts[i], Card: cards[i]}
+	}
+	return s.ScanRequestBodyTextPartsWithCardAtoms(ctx, atoms, separator)
+}
 
-	scrubbedParts := make([]string, 0, len(parts))
+// ScanRequestBodyTextPartsWithCardAtoms retains JSON number boundaries while
+// preserving the per-part SigV4 exception and its expiry warning.
+func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, atoms []extract.DLPAtom, separator string) TextDLPResult {
+	scrubbedCards := make([]extract.DLPAtom, 0, len(atoms))
+
+	scrubbedParts := make([]string, 0, len(atoms))
 	var detections []sigV4Detection
-	for i, part := range parts {
-		card, _ := scrubEmbeddedSigV4Credentials(cards[i])
-		scrubbedCards = append(scrubbedCards, card)
-		scrubbed, partDetections := scrubEmbeddedSigV4Credentials(part)
+	for _, atom := range atoms {
+		card, _ := scrubEmbeddedSigV4Credentials(atom.Card)
+		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Card: card, Number: atom.Number})
+		scrubbed, partDetections := scrubEmbeddedSigV4Credentials(atom.Text)
 		scrubbedParts = append(scrubbedParts, scrubbed)
 		detections = append(detections, partDetections...)
 	}
-	result := s.scanTextDLPViews(ctx, strings.Join(scrubbedParts, separator), strings.Join(scrubbedCards, separator), textDLPOptions{emitWarns: true, scanSecretLeak: true})
+	result := s.scanTextDLPViews(ctx, strings.Join(scrubbedParts, separator), extract.JoinCardAtoms(scrubbedCards, separator), textDLPOptions{emitWarns: true, scanSecretLeak: true})
 
 	for _, detection := range detections {
 		if detection.Expires <= sigV4LongExpiryThreshold {

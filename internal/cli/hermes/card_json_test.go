@@ -18,13 +18,26 @@ func TestCardJSONHookTypes(t *testing.T) {
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
 	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
+	stringGroups := `"4111","1111","1111","1111"`
+	halves := `"41111111","11111111"`
 	for _, hook := range []string{HookPreToolCall, HookTransformToolResult, HookPreGatewayDispatch} {
 		for _, tt := range []struct {
 			input string
 			block bool
 		}{
 			{`{"n":0.` + card + `}`, false},
+			{`{"ids":[` + groups + `]}`, false},
+			{`{"bbox":[` + groups + `]}`, false},
+			{`[` + groups + `]`, false},
+			{`{"":[` + groups + `]}`, false},
+			{`{"-":[` + groups + `]}`, false},
+			{`{"x-":[` + groups + `]}`, false},
+			{`{"n":"` + card + `"}`, true},
+			{`{"n":` + card + `}`, true},
 			{`{"n":` + card + `.1}`, true},
+			{`[` + stringGroups + `]`, true},
+			{`[` + halves + `]`, true},
 			{`{"n":"0.` + card + `"}`, true},
 			{`"0.` + card + `"`, true},
 			{`{"n":"{\"n\":0.` + card + `}"}`, true},

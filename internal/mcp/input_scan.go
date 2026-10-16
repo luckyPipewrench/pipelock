@@ -367,7 +367,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		joined := joinStrings(strs)
 
 		// Run DLP on joined strings first (catches raw patterns).
-		dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
+		dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 
 		// Catch secrets split across multiple JSON fields.
 		dlpResult = scanSplitSecret(ctx, trimmed, joined, sc, dlpResult)
@@ -462,10 +462,12 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	}
 	strs := extracted.Strings
 	cards := extracted.CardStrings
+	atoms := extracted.Atoms
 	if len(strs) == 0 {
 		// Fallback: serialize params to string for non-string JSON values.
 		strs = []string{string(rpc.Params)}
 		cards = []string{jsonnumber.CardView(string(rpc.Params), extract.MaxExtractDepth)}
+		atoms = []extract.DLPAtom{{Text: strs[0], Card: cards[0]}}
 	}
 
 	// Include method name and ID in DLP scan - agents can exfiltrate
@@ -473,16 +475,21 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	if rpc.Method != "" {
 		strs = append(strs, rpc.Method)
 		cards = append(cards, rpc.Method)
+		atoms = append(atoms, extract.DLPAtom{Text: rpc.Method, Card: rpc.Method})
 	}
 	if len(rpc.ID) > 0 && string(rpc.ID) != jsonrpc.Null {
 		strs = append(strs, string(rpc.ID))
-		cards = append(cards, jsonnumber.CardView(string(rpc.ID), extract.MaxExtractDepth))
+		cardID := jsonnumber.CardView(string(rpc.ID), extract.MaxExtractDepth)
+		cards = append(cards, cardID)
+		idRaw := bytes.TrimSpace(rpc.ID)
+		idNumber := len(idRaw) > 0 && (idRaw[0] == '-' || idRaw[0] >= '0' && idRaw[0] <= '9')
+		atoms = append(atoms, extract.DLPAtom{Text: string(rpc.ID), Card: cardID, Number: idNumber})
 	}
 
 	joined := joinStrings(strs)
 
 	// Run DLP patterns + env leak checks.
-	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(atoms, " "))
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(ctx, trimmed, joined, sc, dlpResult)
@@ -584,7 +591,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	cards := extracted.CardStrings
 	joined := joinStrings(strs)
 
-	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, joinStrings(cards))
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 
 	// Catch secrets split across multiple JSON fields.
 	dlpResult = scanSplitSecret(ctx, raw, joined, sc, dlpResult)

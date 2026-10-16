@@ -815,8 +815,10 @@ func appendJSONLeafValuePartial(state *jsonLeafPartialState, path []byte, value 
 type JSONStringsResult struct {
 	// CardStrings parallels Strings only for type-aware extraction; literal strings are unchanged.
 	CardStrings []string
-	Strings     []string
-	Truncated   bool
+	// Atoms preserves JSON number provenance for joins of the card view.
+	Atoms     []DLPAtom
+	Strings   []string
+	Truncated bool
 }
 
 // AllStringsFromJSON recursively extracts all string values AND keys from
@@ -835,6 +837,12 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		return JSONStringsResult{}
 	}
 	var result, cards []string
+	var atoms []DLPAtom
+	appendAtom := func(text, card string, number bool) {
+		result = append(result, text)
+		cards = append(cards, card)
+		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number})
+	}
 	truncated := false
 	var extract func(v interface{}, depth int)
 	extract = func(v interface{}, depth int) {
@@ -844,14 +852,12 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		}
 		switch val := v.(type) {
 		case string:
-			result = append(result, val)
-			cards = append(cards, val)
+			appendAtom(val, val, false)
 		case json.Number:
-			result = append(result, val.String())
-			cards = append(cards, jsonnumber.IntegralView(val))
+			appendAtom(val.String(), jsonnumber.IntegralView(val), true)
 		case bool:
-			result = append(result, strconv.FormatBool(val))
-			cards = append(cards, strconv.FormatBool(val))
+			text := strconv.FormatBool(val)
+			appendAtom(text, text, false)
 		case []interface{}:
 			for _, item := range val {
 				extract(item, depth+1)
@@ -866,8 +872,7 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				result = append(result, k)
-				cards = append(cards, k)
+				appendAtom(k, k, false)
 				extract(val[k], depth+1)
 			}
 		}
@@ -878,7 +883,7 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 	if err := dec.Decode(&parsed); err == nil {
 		extract(parsed, 0)
 	}
-	return JSONStringsResult{Strings: result, CardStrings: cards, Truncated: truncated}
+	return JSONStringsResult{Strings: result, CardStrings: cards, Atoms: atoms, Truncated: truncated}
 }
 
 // AllStringsFromJSONOrdered extracts string-ish JSON tokens in source order,

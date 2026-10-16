@@ -65,11 +65,22 @@ func TestCardJSONInputTypes(t *testing.T) {
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
 	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
 	for _, tt := range []struct {
 		name, params string
 		clean        bool
 	}{
 		{"numeric metric", `{"n":0.` + card + `}`, true},
+		{"ids", `{"ids":[` + groups + `]}`, true},
+		{"bbox", `{"bbox":[` + groups + `]}`, true},
+		{"root groups", `[` + groups + `]`, true},
+		{"empty key", `{"": [` + groups + `]}`, true},
+		{"dash key", `{"-": [` + groups + `]}`, true},
+		{"prefix key", `{"x-": [` + groups + `]}`, true},
+		{"card string", `{"n":"` + card + `"}`, false},
+		{"card integer", `{"n":` + card + `}`, false},
+		{"string groups", `["4111","1111","1111","1111"]`, false},
+		{"string halves", `["41111111","11111111"]`, false},
 		{"written integer", `{"n":` + card + `.1}`, false},
 		{"integer exponent", `{"n":` + card + `e-2}`, false},
 		{"fraction split", `{"n":41111111.11111111}`, true},
@@ -120,12 +131,23 @@ func TestCardJSONA2ANumericTypes(t *testing.T) {
 	s := testA2AScanner(t)
 	t.Cleanup(s.Close)
 	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
 	for _, tt := range []struct {
 		body  string
 		clean bool
 	}{
 		{`{"metric":0.` + card + `}`, true},
+		{`{"ids":[` + groups + `]}`, true},
+		{`{"bbox":[` + groups + `]}`, true},
+		{`[` + groups + `]`, true},
+		{`{"":[` + groups + `]}`, true},
+		{`{"-":[` + groups + `]}`, true},
+		{`{"x-":[` + groups + `]}`, true},
+		{`{"metric":"` + card + `"}`, false},
+		{`{"metric":` + card + `}`, false},
 		{`{"metric":` + card + `.1}`, false},
+		{`["4111","1111","1111","1111"]`, false},
+		{`["41111111","11111111"]`, false},
 		{`{"metric":"0.` + card + `"}`, false},
 	} {
 		result := ScanA2ARequestBody(t.Context(), []byte(tt.body), s, enabledA2ACfg())
@@ -139,11 +161,20 @@ func TestCardJSONA2AStreamTypes(t *testing.T) {
 	s := testA2AScanner(t)
 	t.Cleanup(s.Close)
 	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
 	for _, tt := range []struct {
 		event string
 		clean bool
 	}{
 		{`{"metric":0.` + card + `}`, true},
+		{`{"ids":[` + groups + `]}`, true},
+		{`{"bbox":[` + groups + `]}`, true},
+		{`[` + groups + `]`, true},
+		{`{"":[` + groups + `]}`, true},
+		{`{"-":[` + groups + `]}`, true},
+		{`{"x-":[` + groups + `]}`, true},
+		{`{"metric":"` + card + `"}`, false},
+		{`{"metric":` + card + `}`, false},
 		{`{"metric":` + card + `.1}`, false},
 		{`{"metric":"0.` + card + `"}`, false},
 	} {

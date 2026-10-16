@@ -288,7 +288,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		texts := extracted.Strings
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
-			dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, strings.Join(extracted.CardStrings, " "))
+			dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 			if !dlpResult.Clean {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
@@ -389,7 +389,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		result.InjectFindings = appendUniqueResponseViewMatches(result.InjectFindings, injectResult.Matches)
 		forceBlock = true
 	}
-	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, strings.Join(extracted.CardStrings, " "))
+	dlpResult := sc.ScanTextForDLPWithCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
 	if !dlpResult.Clean {
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 		if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -1280,7 +1280,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		}
 		if dlpTail != "" && currentText != "" {
 			combined := dlpTail + currentText
-			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+currentCardText)
+			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+","+currentCardText)
 			if !dlpResult.Clean {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
@@ -1323,7 +1323,7 @@ func extractTextViewsFromEvent(event []byte) (string, string, bool) {
 	if len(texts) == 0 {
 		return "", "", extracted.Truncated
 	}
-	return strings.Join(texts, " "), strings.Join(extracted.CardStrings, " "), extracted.Truncated
+	return strings.Join(texts, " "), extract.JoinCardAtoms(extracted.Atoms, " "), extracted.Truncated
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the

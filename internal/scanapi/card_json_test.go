@@ -14,12 +14,23 @@ import (
 func TestCardJSONToolCallTypes(t *testing.T) {
 	h := newTestHandler(t)
 	card := "41111111" + "11111111"
+	groups := `4111,1111,1111,1111`
 	for _, tt := range []struct {
 		args string
 		deny bool
 	}{
 		{`{"n":0.` + card + `}`, false},
+		{`{"ids":[` + groups + `]}`, false},
+		{`{"bbox":[` + groups + `]}`, false},
+		{`[` + groups + `]`, false},
+		{`{"":[` + groups + `]}`, false},
+		{`{"-":[` + groups + `]}`, false},
+		{`{"x-":[` + groups + `]}`, false},
+		{`{"n":"` + card + `"}`, true},
+		{`{"n":` + card + `}`, true},
 		{`{"n":` + card + `.1}`, true},
+		{`["4111","1111","1111","1111"]`, true},
+		{`["41111111","11111111"]`, true},
 		{`{"n":"0.` + card + `"}`, true},
 		{`{"n":"{\"n\":0.` + card + `}"}`, true},
 	} {

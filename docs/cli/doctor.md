@@ -66,6 +66,6 @@ Default settings can produce warnings, so a valid default config does not necess
 - Run without `sudo` when checking service-user file readability. When run as root, DAC checks reflect root's view and may make unreadable service files look reachable. The file-sentry check names the user it checked; run it as the service user before a restart.
 - `doctor` does not prove that an agent launcher has consumed `PIPELOCK_MCP_PROXY_URL` or `PIPELOCK_MCP_CONFIG`; it tells you that MCP wrapper-dependent protections require that proof.
 - `doctor` does not prove Kubernetes NetworkPolicy enforcement. Pair it with cluster smoke tests for direct-egress fail-closed behavior.
-- Use `--startup` on the host where Pipelock runs, with its mounted files present. It adds secrets-file loading and TLS CA parsing checks; it does not test every runtime prerequisite. `pipelock check` validates config shape and path permissions, but not whether an existing file can be loaded.
+- Use `--startup` on the host where Pipelock runs, with its mounted files present. It adds secrets-file loading and TLS CA parsing checks; it does not test every runtime prerequisite. Config-only `pipelock check` validates config shape and path permissions without parsing the configured secrets or TLS CA files. With `--url`, it also loads the configured secrets file.
 - Use `--no-color` to disable colored terminal output.
 - Use `--json` for CI gates and dashboards. The JSON report includes per-check `configured`, `reachable`, `enforcing`, `detail`, and `next` fields.

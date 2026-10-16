@@ -206,7 +206,7 @@ asyncio.run(main())
 
 Download and verify the v3.7.0 [Linux amd64 archive](https://github.com/luckyPipewrench/pipelock/releases/download/v3.7.0/pipelock_3.7.0_linux_amd64.tar.gz) in the build directory.
 
-Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 Run these commands in a fresh directory. If verification fails or provenance cannot be retrieved, stop without extracting the archive or building the image. Use another fresh directory before retrying so an existing download does not prevent the commands from running.
 

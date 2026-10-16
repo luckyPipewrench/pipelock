@@ -12,7 +12,7 @@ For MCP calls routed through its proxy, Pipelock applies configured tool policy,
 
 **1. Install pipelock:**
 
-Use GitHub CLI v2.97.0 or later for attestation verification; older versions have a [signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-mm27-mwq9-fr5g).
+Use GitHub CLI v2.102.0 or later for attestation verification; this release fixes a [workflow signer-matching vulnerability](https://github.com/cli/cli/security/advisories/GHSA-wjmr-j3rp-mh2g).
 
 Run the archive commands in a fresh directory. If verification fails or provenance cannot be retrieved, stop without extracting or installing the archive. Use another fresh directory before retrying so an existing download does not prevent the commands from running.
 

@@ -6571,10 +6571,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 		if !sc.ResponseScanningEnabled() {
 			return nil
 		}
-		originalType := responseContentType(headers)
-		surface := shieldScanSurface(cfg, originalType, original, headers, resp.Request.URL.String())
-		scanned := scanFetchResponse(r.Context(), sc, cfg, deriveFetchResponse(surface, originalType, resp.Request.URL), resp.Request.URL.String())
-		scanned.result.TransformedContent = ""
+		scanned := scanFetchBeforeShield(r.Context(), sc, cfg, original, headers, resp.Request.URL)
 		preShieldScan = &scanned
 		return &scanned.result
 	}

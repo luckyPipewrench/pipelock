@@ -101,19 +101,28 @@ func scanBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Conf
 	if shieldLeavesBodyUnchanged(detectShieldPipelineForResponse(contentType, body, headers)) {
 		return nil
 	}
-	surface := shieldScanSurface(cfg, contentType, body, headers, target)
-	var result scanner.ResponseScanResult
 	if transport == TransportFetch {
 		parsed, err := url.Parse(target)
 		if err != nil {
 			return nil
 		}
-		result = scanFetchResponse(ctx, sc, cfg, deriveFetchResponse(surface, contentType, parsed), target).result
-	} else {
-		result = sc.ScanResponseBodyWithSuppress(ctx, surface, target, cfg.Suppress)
+		scanned := scanFetchBeforeShield(ctx, sc, cfg, body, headers, parsed)
+		return &scanned.result
 	}
+	result := sc.ScanResponseBodyWithSuppress(ctx, shieldScanSurface(cfg, contentType, body, headers, target), target, cfg.Suppress)
 	result.TransformedContent = "" // Original bytes are classification-only.
 	return &result
+}
+
+// scanFetchBeforeShield is the single fetch derivation of pre-Shield bytes. The
+// fetch handler's lazy Shield callback calls it directly because it also keeps
+// the hidden-fragment result for the readability-failure refusal.
+func scanFetchBeforeShield(ctx context.Context, sc *scanner.Scanner, cfg *config.Config, original []byte, headers http.Header, target *url.URL) fetchResponseScan {
+	contentType := responseContentType(headers)
+	surface := shieldScanSurface(cfg, contentType, original, headers, target.String())
+	scanned := scanFetchResponse(ctx, sc, cfg, deriveFetchResponse(surface, contentType, target), target.String())
+	scanned.result.TransformedContent = "" // Original bytes are classification-only.
+	return scanned
 }
 
 // shieldScanSurface returns the bytes the transport's own scan reads for this

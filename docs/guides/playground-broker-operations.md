@@ -285,6 +285,10 @@ Build and deploy sequence:
    hides that change. Ignored viewer files also count as source changes, except for the
    WASM verifier, its shim, and the build record, which are replaced in staging;
    `PLAYGROUND_ALLOW_DIRTY=1` is only for an explicitly marked diagnostic build.
+   The record describes those source trees and the files the image builds
+   consume. It does not describe the host Go toolchain or its settings, such as
+   `GOFLAGS`, `GOEXPERIMENT` or the module cache, so build from a shell with no
+   custom Go settings.
    Set `PLAYGROUND_UI_DIR` to the site's `static/playground/demo` directory and
    `PLAYGROUND_REGISTRY` to the image registry prefix. Run
    `deploy/fly-playground/build-images.sh` with `PLAYGROUND_PUSH=1`. It prints

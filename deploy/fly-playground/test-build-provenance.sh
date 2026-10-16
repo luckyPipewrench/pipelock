@@ -168,6 +168,33 @@ if GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/b
 fi
 PLAYGROUND_ALLOW_DIRTY=1 GOFLAGS="-overlay=${tmp}/overlay.json" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/overlay.out" 2>&1
 jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+# A workspace or GOPATH can compile module source from outside this tree even
+# when no file in it is ignored. A workspace naming only this tree is clean.
+mkdir -p "${tmp}/source/third_party/dep" "${tmp}/elsewhere/dep" "${tmp}/gopath/src/dep.example" "${tmp}/gopath/src/fixture.example/docs"
+printf 'module dep.example\n\ngo 1.26\n' > "${tmp}/source/third_party/dep/go.mod"
+printf 'package dep\n' > "${tmp}/source/third_party/dep/dep.go"
+printf 'require dep.example v0.0.0\n\nreplace dep.example => ./third_party/dep\n' >> "${tmp}/source/go.mod"
+printf 'package main\nimport _ "fixture.example/docs/wasm"\nimport _ "dep.example"\nfunc main() {}\n' > "${tmp}/source/cmd/pipelock-verifier-wasm/main.go"
+git -C "${tmp}/source" add go.mod third_party cmd/pipelock-verifier-wasm/main.go
+git -C "${tmp}/source" -c user.name=Test -c user.email=test@example.invalid commit -qm 'module dependency fixture'
+cp "${tmp}/source/third_party/dep/go.mod" "${tmp}/elsewhere/dep/go.mod"
+printf 'package dep\n// not the recorded source\n' > "${tmp}/elsewhere/dep/dep.go"
+printf 'go 1.26\n\nuse %s\n' "${tmp}/source" > "${tmp}/own.work"
+GOWORK="${tmp}/own.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
+jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null
+printf 'replace dep.example => %s\n' "${tmp}/elsewhere/dep" | cat "${tmp}/own.work" - > "${tmp}/replace.work"
+if GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1; then
+	echo 'workspace replacement outside the tree was recorded as clean' >&2; exit 1
+fi
+grep -q 'outside the recorded tree' "${tmp}/work.out"
+PLAYGROUND_ALLOW_DIRTY=1 GOWORK="${tmp}/replace.work" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/work.out" 2>&1
+jq -e '.dirty == true and .pipelock_dirty == true' "${tmp}/capture/build-info.json" > /dev/null
+cp "${tmp}/elsewhere/dep/dep.go" "${tmp}/gopath/src/dep.example/dep.go"
+cp -R "${tmp}/source/docs/wasm" "${tmp}/gopath/src/fixture.example/docs/wasm"
+if GO111MODULE=off GOPATH="${tmp}/gopath" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/gopath.out" 2>&1; then
+	echo 'GOPATH-mode source outside the tree was recorded as clean' >&2; exit 1
+fi
+grep -q 'outside the recorded tree' "${tmp}/gopath.out"
 printf 'excluded binary\n' > "${tmp}/source/pipelock"
 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/excluded.out" 2>&1
 jq -e '.dirty == false and .pipelock_dirty == false' "${tmp}/capture/build-info.json" > /dev/null

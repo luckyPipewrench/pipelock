@@ -127,22 +127,26 @@ pipelock_has_unrecorded_context_file() {
 		rm -f -- "${ignored}"
 		return 2
 	fi
+	# The browser verifier is compiled on the host, outside Docker's context.
+	# Go publishes the actual selected sources and embed inputs via go list.
 	if [ "${build_broker}" -eq 1 ]; then
-		local flags
+		local flags goroot modcache sources input
+		local -A ignored_paths=()
 		if ! flags="$(go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
 		case "${flags}" in
 		*-overlay*|*-modfile*) rm -f -- "${ignored}"; return 1 ;;
 		esac
-	fi
-	if [ ! -s "${ignored}" ]; then rm -f -- "${ignored}"; return 0; fi
-	# The browser verifier is compiled on the host, outside Docker's context.
-	# Go publishes the actual selected sources and embed inputs via go list.
-	if [ "${build_broker}" -eq 1 ]; then
-		local sources input
-		local -A ignored_paths=()
+		# A workspace file (GOWORK or any parent go.work), GOPATH mode or a
+		# directory replace can compile source the record does not name. Only
+		# this tree, the toolchain and the go.sum-verified module cache count.
+		if ! goroot="$(go env GOROOT)" || ! modcache="$(go env GOMODCACHE)" ||
+			[ -z "${goroot}" ] || [ -z "${modcache}" ]; then
+			rm -f -- "${ignored}"
+			return 2
+		fi
 		while IFS= read -r -d '' file; do ignored_paths["${REPO_ROOT}/${file}"]=1; done < "${ignored}"
 		sources="$(mktemp)"
-		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
+		if ! GOOS=js GOARCH=wasm go list -deps -f '{{ $dir := .Dir }}{{range .GoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .HFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .SysoFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}{{range .EmbedFiles}}{{printf "%s/%s\x00" $dir .}}{{end}}' ./cmd/pipelock-verifier-wasm > "${sources}"; then
 			rm -f -- "${sources}" "${ignored}"
 			return 2
 		fi
@@ -153,9 +157,18 @@ pipelock_has_unrecorded_context_file() {
 				rm -f -- "${sources}" "${ignored}"
 				return 1
 			fi
+			case "${input}" in
+			"${REPO_ROOT}"/* | "${goroot}"/* | "${modcache}"/*) ;;
+			*)
+				echo "[build-images] browser verifier compiles ${input}, outside the recorded tree and module cache" >&2
+				rm -f -- "${sources}" "${ignored}"
+				return 1
+				;;
+			esac
 		done < "${sources}"
 		rm -f -- "${sources}"
 	fi
+	if [ ! -s "${ignored}" ]; then rm -f -- "${ignored}"; return 0; fi
 	snapshot="$(mktemp -d)"
 	printf 'FROM scratch\nCOPY . /\n' > "${snapshot}/Dockerfile"
 	for recipe in "${CONTEXT_RECIPES[@]}"; do

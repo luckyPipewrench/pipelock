@@ -161,9 +161,13 @@ pipelock_has_unrecorded_context_file() {
 		local flags goroot modcache source_root sources input canonical
 		local -A recorded_paths=()
 		if ! flags="$(GOWORK=off go env GOFLAGS)"; then rm -f -- "${ignored}"; return 2; fi
-		case "${flags}" in
-		*-overlay*|*-modfile*) rm -f -- "${ignored}"; return 1 ;;
-		esac
+		# Any GOFLAGS value can change what the host compiles (-toolexec,
+		# -overlay, -modfile, -ldflags), so a clean record requires none.
+		if [ -n "${flags}" ]; then
+			echo "[build-images] note: GOFLAGS is set; unset it for a clean build record" >&2
+			rm -f -- "${ignored}"
+			return 1
+		fi
 		# Ignore workspaces for inspection and compilation: they can select a
 		# cached module version that this commit does not require. GOPATH mode
 		# and directory replaces can still select source outside the record.
@@ -491,6 +495,24 @@ if [ "${build_broker}" -eq 1 ]; then
 
 	echo "[build-images] validating broker/viewer image contract"
 	docker run --rm "${BROKER_TAG}" "${BROKER_PREFLIGHT_ARGS[@]}"
+fi
+
+# The record describes the inputs checked before the build. Check them again
+# before pushing, so an edit made while the images built cannot ship under a
+# clean record. A check that cannot run counts as a change.
+if [ "${PIPELOCK_DIRTY}" = false ] && [ "${SITE_DIRTY}" = false ]; then
+	changed=0
+	if ! after_status="$(git status --porcelain --untracked-files=all)" || [ -n "${after_status}" ]; then changed=1; fi
+	worktree_matches_head "${REPO_ROOT}" "" 0 || changed=1
+	if [ "${build_broker}" -eq 1 ]; then
+		if ! after_status="$(git -C "${SITE_ROOT}" status --porcelain --untracked-files=all -- ":(literal)${VIEWER_PATH}")" || [ -n "${after_status}" ]; then changed=1; fi
+		worktree_matches_head "${SITE_ROOT}" "${VIEWER_PATH}" 1 || changed=1
+		viewer_has_unrecorded_file || changed=1
+	fi
+	if [ "${changed}" -ne 0 ]; then
+		echo "[build-images] ERROR: source changed during the build; nothing was pushed. Rebuild from unchanged checkouts" >&2
+		exit 1
+	fi
 fi
 
 if [ "${PLAYGROUND_PUSH:-}" = "1" ]; then

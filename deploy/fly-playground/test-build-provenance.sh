@@ -50,6 +50,7 @@ if [ "$1" = build ]; then
 		if [ "$1" = --build-context ]; then
 			shift
 			cp -a "${1#ui=}/." "${CAPTURE_DIR}/"
+			if [ -n "${DOCKER_EDIT_DURING_BUILD:-}" ]; then printf 'edited mid-build\n' >> "${DOCKER_EDIT_DURING_BUILD}"; fi
 			break
 		fi
 		shift
@@ -136,6 +137,24 @@ fi
 printf 'viewer asset\n' > "${PLAYGROUND_UI_DIR}/asset file.txt"
 git -C "${tmp}/site" update-index --no-skip-worktree -- "static/playground/demo/asset file.txt"
 rm -f -- "${tmp}/site/.git/info/attributes"
+# Any GOFLAGS value can change what the host compiles, so a clean record needs none.
+if GOFLAGS=-trimpath "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/goflags.out" 2>&1; then
+	echo 'a GOFLAGS value was accepted as clean' >&2; exit 1
+fi
+grep -q 'GOFLAGS is set' "${tmp}/goflags.out" || { echo 'GOFLAGS refusal does not name GOFLAGS' >&2; exit 1; }
+GOFLAGS=-trimpath PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > /dev/null 2>&1
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if d["dirty"] and d["pipelock_dirty"] else 1)' "${tmp}/capture/build-info.json" ||
+	{ echo 'GOFLAGS diagnostic build was not recorded dirty' >&2; exit 1; }
+# An edit made while the images build must not ship under a clean record.
+for edited in "${tmp}/source/scripts/git-version.sh" "${PLAYGROUND_UI_DIR}/asset file.txt"; do
+	cp -p "${edited}" "${tmp}/edit-original"
+	if DOCKER_EDIT_DURING_BUILD="${edited}" "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/midbuild.out" 2>&1; then
+		echo "an edit during the build was accepted as clean: ${edited}" >&2; exit 1
+	fi
+	grep -q 'source changed during the build' "${tmp}/midbuild.out" || { echo "mid-build edit refused for another reason: ${edited}" >&2; cat "${tmp}/midbuild.out" >&2; exit 1; }
+	cp -p "${tmp}/edit-original" "${edited}"
+done
+"${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > /dev/null
 
 mkdir -p "${tmp}/source/configs" "${tmp}/source/.git/info"
 printf '/ignored.go\n/configs/extra.yaml\n/pipelock\n' >> "${tmp}/source/.git/info/exclude"
@@ -294,7 +313,12 @@ for failure in docker go-list; do
 	if [ "${failure}" = docker ]; then
 		failure_env=(DOCKER_CONTEXT_FAIL=1)
 	else
-		failure_env=(GOFLAGS=-unknown-build-flag)
+		# A go that fails only for `list`; GOFLAGS cannot inject this any more
+		# because any GOFLAGS value already refuses a clean record.
+		mkdir -p "${tmp}/failgo"
+		printf '#!/usr/bin/env bash\nif [ "$1" = list ]; then exit 1; fi\nexec %q "$@"\n' "$(command -v go)" > "${tmp}/failgo/go"
+		chmod +x "${tmp}/failgo/go"
+		failure_env=(PATH="${tmp}/failgo:${PATH}")
 	fi
 	if env "${failure_env[@]}" PLAYGROUND_ALLOW_DIRTY=1 "${tmp}/source/deploy/fly-playground/build-images.sh" --only broker > "${tmp}/inspection.out" 2>&1; then
 		echo "${failure} inspection error was accepted" >&2; exit 1

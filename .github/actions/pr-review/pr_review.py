@@ -3005,11 +3005,12 @@ def cross_file_evidence(
     if not os.environ.get("REVIEWED_REPOSITORY_PATH", ""):
         return "", False
     evidence_deadline = min(deadline or float("inf"), time.monotonic() + MAX_REQUESTED_EVIDENCE_SECONDS)
+    budget = budget if budget is not None else EvidenceBudget()
     root = _local_review_root(binding.head_sha, binding.correlation, evidence_deadline)
     if root is None:
+        budget.cut_owners.update(candidate_identifier(item) for item in candidates)
         return "<repository-evidence-unavailable>", True
-    budget = budget if budget is not None else EvidenceBudget()
-    terms = [_evidence_terms(item, contexts.get(_context_key(item, candidates), "")) for item in candidates]
+    terms =[_evidence_terms(item, contexts.get(_context_key(item, candidates), "")) for item in candidates]
     hits: list[list[tuple[int, str, int, str]]] = [[] for _ in candidates]
     cuts = [False for _ in candidates]
     failures = [False for _ in candidates]
@@ -3470,7 +3471,10 @@ def judge_findings(
         evidence, unavailable = cross_file_evidence(binding, items, contexts, change_summaries, max_tokens=evidence_budget, budget=shared, deadline=automatic_deadline)
         if unavailable:
             evidence += "\n<some-candidate-repository-evidence-unavailable>"
-        clipped = unavailable
+        # cross_file_evidence records each candidate it cut or could not
+        # search in shared.cut_owners, so its single flag is not read here: one
+        # candidate's failure must not count as an omission for its siblings.
+        clipped = False
         requested = ""
         if requested_budget:
             requested, _ = requested_repository_evidence(binding, repair_decisions, max_tokens=requested_budget, deadline=retrieval_deadline, budget=shared, owners={index: candidate_identifier(candidates[index]) for index in selected}, records=options.evidence)

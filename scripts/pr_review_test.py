@@ -7692,9 +7692,15 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         def cut(*_args, budget=None, **_kwargs):
             budget.cut_owners.add(pr_review.candidate_identifier(pr_review.Finding("medium", "a.go", 5, "claim", "premise", "fix")))
             return "", False
+        real = pr_review.cross_file_evidence
+        def unreadable(*args, **kwargs):
+            with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+                pr_review, "_local_review_root", return_value=None
+            ):
+                return real(*args, **kwargs)
         for name, kwargs in (
             ("cross-file evidence cut for this candidate", {"evidence": cut}),
-            ("cross-file evidence unavailable", {"evidence": lambda *_a, **_k: ("", True)}),
+            ("cross-file evidence unavailable", {"evidence": unreadable}),
             ("own context truncated", {"content": "\n".join("x" * 4_000 for _ in range(30))}),
             ("own context unavailable", {"content": None}),
         ):
@@ -7709,6 +7715,27 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
         (verified, _j, _b, _f, unresolved, _i), record, candidate = self.unresolved_omitted(evidence=cut)
         self.assertFalse(record.omitted)
         self.assertEqual((verified, unresolved), ([pr_review._needs_verification(candidate)], []))
+
+    def test_another_candidates_failed_search_is_not_this_candidates_omission(self) -> None:
+        failing = pr_review.Finding("medium", "a.go", 5, "failing claim", "premise", "fix")
+        whole = pr_review.Finding("medium", "b.go", 5, "whole claim", "premise", "fix")
+        def grep(_root, term, *_args, **_kwargs):
+            return ([], False, "failterm" in term)
+        reply = {"findings": [{"index": index, "verdict": "unresolved", "reason": "r", "blocked_on": "omitted-unit"} for index in range(2)]}
+        options = pr_review.JudgeOptions()
+        with mock.patch.dict(pr_review.os.environ, {"REVIEWED_REPOSITORY_PATH": "/reviewed"}), mock.patch.object(
+            pr_review, "_local_review_root", return_value=pathlib.Path("/reviewed")
+        ), mock.patch.object(
+            pr_review, "_evidence_terms", side_effect=lambda item, _c: ["failterm"] if item is failing else ["okterm"]
+        ), mock.patch.object(pr_review, "_bounded_git_grep", side_effect=grep), mock.patch.object(
+            pr_review, "_read_commit_file", return_value="line\n" * 30
+        ), mock.patch.object(pr_review, "call_model", side_effect=[reply, reply]):
+            verified, _j, _b, _f, unresolved, _i = pr_review.judge_findings(
+                "owner/repo", "token", self.BINDING, "default", [failing, whole], options=options)
+        self.assertTrue(options.evidence[pr_review.candidate_identifier(failing)].omitted)
+        self.assertFalse(options.evidence[pr_review.candidate_identifier(whole)].omitted)
+        self.assertEqual(unresolved, [failing])
+        self.assertEqual(verified, [pr_review._needs_verification(whole)])
 
     def test_cross_file_evidence_records_which_candidates_were_cut(self) -> None:
         binding = self.BINDING
@@ -7864,6 +7891,22 @@ class JudgeCitationAndReasonTest(OfflineReviewTestCase):
                 self.assertEqual(options.dropped, [])
                 repair_prompt = json.loads(model.call_args_list[1].args[1])
                 self.assertEqual(repair_prompt["prior_response_validation"], [{"index": 0, "rejections": ["drop-without-citation"]}])
+
+    def test_the_citation_bound_is_exact_and_applies_where_it_is_stored(self) -> None:
+        limit = pr_review.MAX_JUDGE_CITATION_CHARS
+        at_limit = "p" * (limit - len(":12")) + ":12"
+        over_limit = "p" + at_limit
+        self.assertEqual((len(at_limit), len(over_limit)), (limit, limit + 1))
+        self.assertEqual(pr_review._cited_location(at_limit), ("p" * (limit - 3), 12))
+        self.assertIsNone(pr_review._cited_location(over_limit))
+        for citation, stored in ((at_limit, at_limit), (over_limit, None)):
+            with self.subTest(length=len(citation)):
+                validation = pr_review.JudgeValidation()
+                decisions = pr_review._parse_judge_decisions(
+                    {"findings": [{"index": 0, "verdict": "drop", "reason": "r", "citation": citation}]}, 1, validation=validation
+                )
+                self.assertEqual(decisions[0].citation, stored)
+                self.assertEqual("drop-without-citation" in validation.counts, stored is None)
 
     def test_a_drop_citing_a_line_this_change_adds_needs_verification(self) -> None:
         diff = "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -3,3 +3,4 @@\n ctx3\n-old\n+new4\n+new5\n ctx6\n"

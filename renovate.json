@@ -46,6 +46,21 @@
       "allowedVersions": "2.0.2"
     },
     {
+      "description": "Keep the TypeScript verifier on he 1.2.0. Version 2 is ESM-only and requires Node 22, while the published verifier uses its CommonJS default export and declares Node 20. Revisit this pin with the next verifier release after reviewing the Node floor, import migration, and cross-language conformance together.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["sdk/verifiers/ts/**"],
+      "matchPackageNames": ["he"],
+      "allowedVersions": "1.2.0"
+    },
+    {
+      "description": "Allow security-fix proposals to override the he maintenance hold; migration and conformance checks still apply.",
+      "matchManagers": ["npm"],
+      "matchFileNames": ["sdk/verifiers/ts/**"],
+      "matchPackageNames": ["he"],
+      "matchJsonata": ["isVulnerabilityAlert = true"],
+      "allowedVersions": "*"
+    },
+    {
       "description": "Hold TypeScript at 5.x in the verifier. TS 6.0 needs tsconfig and source migrations we have not scoped.",
       "matchManagers": ["npm"],
       "matchFileNames": ["sdk/verifiers/ts/**"],

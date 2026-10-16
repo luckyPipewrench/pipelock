@@ -75,9 +75,9 @@ func TestExtractBinary_SkipsNonMatchingEntries(t *testing.T) {
 	dir := t.TempDir()
 	// tar.gz with a README and a dir-like prefixed entry before the real binary.
 	archive := makeTarGz(t, map[string][]byte{
-		"README.md":  []byte("docs"),
-		"sub/notbin": []byte("noise"),
-		binaryName:   fakeBinaryBytes("2.8.0"),
+		"README.md":    []byte("docs"),
+		"a/sub/notbin": []byte("noise"),
+		binaryName:     fakeBinaryBytes("2.8.0"),
 	})
 	tmp, err := extractBinary(archive, false, dir, binaryName)
 	if err != nil {

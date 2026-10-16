@@ -53,6 +53,27 @@ func TestCardViewDocumentBoundaries(t *testing.T) {
 	}
 }
 
+func TestStructuredCardView(t *testing.T) {
+	for _, tt := range []struct{ name, input, want string }{
+		{"object", `{"n":0.5}`, `{"n":0,,}`},
+		{"array", "[0.5,2]", "[0,,,2]"},
+		{"padded array", "\n\t [1.5] ", "\n\t [1,,] "},
+		{"root number", "0.25", "0.25"},
+		{"padded root number", " 0.25 ", " 0.25 "},
+		{"root string", `"0.25"`, `"0.25"`},
+		{"plain text", "total 0.25", "total 0.25"},
+		{"empty", "", ""},
+		{"whitespace", " \n", " \n"},
+		{"malformed array", "[0.5", "[0.5"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := StructuredCardView(tt.input, 2); got != tt.want {
+				t.Fatalf("got %q want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func BenchmarkCardView(b *testing.B) {
 	body := `{"rows":[{"ctr":0.125,"position":4.25,"name":"ordinary report"}]}`
 	for b.Loop() {

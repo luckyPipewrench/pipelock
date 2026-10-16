@@ -390,6 +390,25 @@ func (h *Handler) scanToolCall(
 	// now matches that contract.
 	if scanText != "" {
 		dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, scanText, extract.JoinCardAtoms(cardAtoms, " "))
+		// A joined view cannot retain each leaf's scalar or encoded spelling.
+		// Inspect leaves independently, preserving numeric card views as the
+		// inline MCP input scanner does. Number-only evidence must not skip
+		// a later enforcing finding.
+		if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+			for _, atom := range cardAtoms {
+				if err := ctx.Err(); err != nil {
+					return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
+				}
+				leaf := sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card)
+				if !leaf.Clean {
+					dlpResult.Matches = append(dlpResult.Matches, leaf.Matches...)
+					dlpResult.Clean = false
+					if !scanner.OnlyNumberOnlyCardRuns(leaf.Matches) {
+						break
+					}
+				}
+			}
+		}
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/hitl"
 	"github.com/luckyPipewrench/pipelock/internal/killswitch"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/receipt"
@@ -305,6 +306,71 @@ func TestShieldFetchHiddenFailureEvidence(t *testing.T) {
 					})
 				}
 			}
+		}
+	}
+}
+
+// TestShieldFetchHiddenFailureAskIsNotOffered pins the refusal as final: when
+// hidden injection can't be delivered through readability, an operator prompt
+// would offer allow or strip choices the fail-closed refusal then overrides.
+// The outcome must be one refusal, with no prompt and no allow-path receipt.
+func TestShieldFetchHiddenFailureAskIsNotOffered(t *testing.T) {
+	for _, answer := range []string{"y\n", "s\n"} {
+		for _, enabled := range []bool{false, true} {
+			t.Run(strings.TrimSpace(answer)+map[bool]string{false: "/off", true: "/on"}[enabled], func(t *testing.T) {
+				cfg := adaptiveConfig()
+				cfg.BrowserShield.Enabled = enabled
+				enableShieldRewriteMarkerCategories(cfg)
+				cfg.ResponseScanning.Enabled = true
+				cfg.ResponseScanning.Action = config.ActionAsk
+				cfg.FlightRecorder.RequireReceipts = true
+				sc := scanner.MustNew(cfg)
+				t.Cleanup(sc.Close)
+				prompt := &bytes.Buffer{}
+				approver := hitl.New(5, hitl.WithInput(strings.NewReader(answer)), hitl.WithOutput(prompt), hitl.WithTerminal(true))
+				t.Cleanup(approver.Close)
+				p, err := New(cfg, audit.NewNop(), sc, metrics.New(), WithApprover(approver))
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(p.Close)
+				dir := t.TempDir()
+				emitter, rec, _ := newCoverageEmitter(t, dir)
+				p.receiptEmitterPtr.Store(emitter)
+				t.Cleanup(func() { _ = rec.Close() })
+				upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					w.Header().Set("Content-Type", "text/html")
+					_, _ = io.WriteString(w, "<!-- "+shieldScanDirective+" -->")
+				}))
+				t.Cleanup(upstream.Close)
+				w := httptest.NewRecorder()
+				p.handleFetch(w, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil))
+				if w.Code != http.StatusForbidden {
+					t.Fatalf("hidden-only fetch status=%d: %s", w.Code, w.Body.String())
+				}
+				if prompt.Len() != 0 {
+					t.Errorf("operator was offered a decision the refusal overrides: %q", prompt.String())
+				}
+				if err := rec.Close(); err != nil {
+					t.Fatal(err)
+				}
+				refusals := 0
+				for _, got := range extractReceiptsFromDir(t, dir) {
+					if got.ActionRecord.Layer != responseScanLayer {
+						continue
+					}
+					if got.ActionRecord.Verdict != config.ActionBlock {
+						t.Errorf("response_scan receipt verdict=%q for a refused response", got.ActionRecord.Verdict)
+					}
+					refusals++
+					if !strings.Contains(got.ActionRecord.Pattern, "Prompt Injection") {
+						t.Errorf("refusal receipt lost finding: %s", got.ActionRecord.Pattern)
+					}
+				}
+				if refusals != 1 {
+					t.Errorf("response_scan receipts=%d, want one refusal", refusals)
+				}
+			})
 		}
 	}
 }

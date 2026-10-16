@@ -6748,6 +6748,7 @@ func (p *Proxy) handleFetch(w http.ResponseWriter, r *http.Request) {
 			logger:         log,
 			sessionLevel:   recEscalationLevel(fetchRec),
 			exempt:         responseScanExempt,
+			refusing:       true,
 		})
 		if blocked {
 			layer := firstNonEmptyString(failureLayer, responseScanLayer)
@@ -7017,6 +7018,9 @@ type responseScanContext struct {
 	logger         *audit.Logger
 	sessionLevel   int
 	exempt         bool
+	// refusing marks a caller that refuses delivery whatever the action
+	// decides, so a decision prompt it could not honor is not offered.
+	refusing bool
 }
 
 // filterAndActOnResponseScan applies suppression filtering and the configured
@@ -7092,6 +7096,9 @@ func (p *Proxy) filterAndActOnResponseScan(in responseScanContext) (blocked bool
 		recordAdaptiveUpgrade(log, p.metrics, adaptiveUpgrade{SessionKey: sessionKey, Level: session.EscalationLabel(sessionLevel), FromAction: originalAction, ToAction: action, Scanner: responseScanLayer, ClientIP: clientIP, RequestID: requestID})
 	}
 	if action == config.ActionStrip && result.TransformedContent == "" {
+		action = config.ActionBlock
+	}
+	if in.refusing && action == config.ActionAsk {
 		action = config.ActionBlock
 	}
 

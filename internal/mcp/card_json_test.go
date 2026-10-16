@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -194,5 +195,33 @@ func TestCardJSONA2AStreamTypes(t *testing.T) {
 		if err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg()); err == nil || forwarded.Len() != 0 {
 			t.Fatalf("string metadata received numeric relief: field=%s error=%v bytes=%d", field, err, forwarded.Len())
 		}
+	}
+}
+
+func TestCardJSONA2ACrossEventBoundaries(t *testing.T) {
+	first := "4111" + "1111"
+	last := "1111" + "1111"
+	for _, tt := range []struct {
+		name, firstEvent, lastEvent string
+		wantFinding                 bool
+	}{
+		{"root strings", `"` + first + `"`, `"` + last + `"`, true},
+		{"object then array", `{"part":"` + first + `"}`, `["` + last + `"]`, true},
+		{"root integer arrays", `[` + first + `]`, `[` + last + `]`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testA2AScanner(t)
+			t.Cleanup(s.Close)
+			stream := "data: " + tt.firstEvent + "\n\ndata: " + tt.lastEvent + "\n\n"
+			var forwarded bytes.Buffer
+			err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg())
+			if tt.wantFinding {
+				if !errors.Is(err, ErrA2AStreamFinding) {
+					t.Fatalf("cross-event card was not denied: %v", err)
+				}
+			} else if err != nil || forwarded.String() != stream {
+				t.Fatalf("numeric events changed: error=%v forwarded=%q", err, forwarded.String())
+			}
+		})
 	}
 }

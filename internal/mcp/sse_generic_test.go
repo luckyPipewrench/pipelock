@@ -136,6 +136,34 @@ func TestGenericSSEPlainTextCard(t *testing.T) {
 	}
 }
 
+func TestGenericSSECardAcrossEvents(t *testing.T) {
+	first := "4111" + "1111"
+	last := "1111" + "1111"
+	for _, tt := range []struct {
+		name, firstEvent, lastEvent string
+		wantFinding                 bool
+	}{
+		{"bare digits", first, last, true},
+		{"text then bare digits", "card " + first, last, true},
+		{"integer arrays", `[` + first + `]`, `[` + last + `]`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			s := testA2AScanner(t)
+			t.Cleanup(s.Close)
+			stream := "data: " + tt.firstEvent + "\n\ndata: " + tt.lastEvent + "\n\n"
+			var forwarded bytes.Buffer
+			err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledSSECfg())
+			if tt.wantFinding {
+				if !errors.Is(err, ErrSSEStreamFinding) {
+					t.Fatalf("cross-event card was not denied: %v", err)
+				}
+			} else if err != nil || forwarded.String() != stream {
+				t.Fatalf("numeric events changed: error=%v forwarded=%q", err, forwarded.String())
+			}
+		})
+	}
+}
+
 func TestScanGenericSSEStream_OpenAI_HappyPath(t *testing.T) {
 	// Realistic openai chat.completions stream: a few delta tokens then [DONE].
 	body := strings.Join([]string{

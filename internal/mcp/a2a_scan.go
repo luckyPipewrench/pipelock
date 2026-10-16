@@ -1206,6 +1206,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 	var injectionTail string
 	var dlpTail string
 	var cardTail string
+	var previousLastNumber bool
 
 	for {
 		select {
@@ -1261,10 +1262,10 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 		}
 
-		// Rolling tails: injection keeps word boundaries; DLP does not insert a
-		// separator so a credential split exactly at an event boundary is visible
-		// to the same detectors that caught per-event data.
-		currentText, currentCardText, currentTruncated := extractTextViewsFromEvent(event)
+		// Rolling tails: injection keeps word boundaries; DLP text joins without
+		// a separator so credentials split across events remain visible. The card
+		// view separates a seam only when it touches a JSON number.
+		currentText, currentCardText, currentFirstNumber, currentLastNumber, currentTruncated := extractTextViewsFromEvent(event)
 		if currentTruncated {
 			return fmt.Errorf("%w: input exceeds maximum inspectable nesting depth", ErrSSEStreamScanError)
 		}
@@ -1280,7 +1281,11 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 		}
 		if dlpTail != "" && currentText != "" {
 			combined := dlpTail + currentText
-			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+","+currentCardText)
+			cardBoundary := ""
+			if previousLastNumber || currentFirstNumber {
+				cardBoundary = ","
+			}
+			dlpResult := sc.ScanTextForDLPWithCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
 			if !dlpResult.Clean {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
@@ -1293,6 +1298,7 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 			injectionTail = advanceSSERollingTail(injectionTail, current, false, " ")
 			dlpTail = advanceSSERollingTail(dlpTail, current, false, "")
 			cardTail = advanceSSERollingTail(cardTail, []byte(currentCardText), false, "")
+			previousLastNumber = currentLastNumber
 		}
 
 		// Forward clean event. Preserve id, event, and retry fields from the
@@ -1310,20 +1316,21 @@ func ScanA2AStream(ctx context.Context, body io.Reader, w io.Writer, flusher htt
 // extractTextFromEvent extracts scannable text from an SSE event payload.
 // The payload is JSON - extract all string values for the rolling tail.
 func extractTextFromEvent(event []byte) (string, bool) {
-	text, _, truncated := extractTextViewsFromEvent(event)
+	text, _, _, _, truncated := extractTextViewsFromEvent(event)
 	return text, truncated
 }
 
-func extractTextViewsFromEvent(event []byte) (string, string, bool) {
+func extractTextViewsFromEvent(event []byte) (string, string, bool, bool, bool) {
 	if len(event) == 0 {
-		return "", "", false
+		return "", "", false, false, false
 	}
 	extracted := extract.AllStringsFromJSONResult(json.RawMessage(event))
 	texts := extracted.Strings
 	if len(texts) == 0 {
-		return "", "", extracted.Truncated
+		return "", "", false, false, extracted.Truncated
 	}
-	return strings.Join(texts, " "), extract.JoinCardAtoms(extracted.Atoms, " "), extracted.Truncated
+	atoms := extracted.Atoms
+	return strings.Join(texts, " "), extract.JoinCardAtoms(atoms, " "), atoms[0].Number, atoms[len(atoms)-1].Number, extracted.Truncated
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the

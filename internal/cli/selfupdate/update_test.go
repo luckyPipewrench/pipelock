@@ -52,7 +52,14 @@ func makeTarGz(t *testing.T, entries map[string][]byte) []byte {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	for name, data := range entries {
+	// Sorted for a deterministic archive layout, same as makeZip.
+	names := make([]string, 0, len(entries))
+	for name := range entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data := entries[name]
 		hdr := &tar.Header{Name: name, Mode: 0o755, Size: int64(len(data)), Typeflag: tar.TypeReg}
 		if err := tw.WriteHeader(hdr); err != nil {
 			t.Fatalf("tar header: %v", err)

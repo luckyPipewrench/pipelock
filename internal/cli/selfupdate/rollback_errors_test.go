@@ -84,7 +84,15 @@ func TestRollbackFailsClosedWithBackupIntact(t *testing.T) {
 				t.Fatal(err)
 			}
 			return target
-		}, want: "restoring backup", is: func(err error) bool { var le *os.LinkError; return errors.As(err, &le) }},
+		}, want: "restoring backup", is: func(err error) bool {
+			// Windows refuses removal before Rename; Unix fails replacement.
+			if runtime.GOOS == "windows" {
+				var pe *os.PathError
+				return errors.As(err, &pe)
+			}
+			var le *os.LinkError
+			return errors.As(err, &le)
+		}},
 		{name: "target directory not writable", setup: func(t *testing.T) string {
 			if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 				t.Skip("directory write permission is not enforced here")

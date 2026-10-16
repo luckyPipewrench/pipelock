@@ -78,7 +78,19 @@ func ackListenerSHA(s string) string {
 // configuration file end to end: its constructor supplies the server name and
 // binding, and a reload that removes the entry refuses the next tools/list.
 func TestServerRunListenerAppliesAcknowledgmentAndRevocation(t *testing.T) {
+	t.Run("available_ports", func(t *testing.T) {
+		runListenerAcknowledgmentAndRevocation(t, false)
+	})
+	t.Run("initial_bind_collision", func(t *testing.T) {
+		runListenerAcknowledgmentAndRevocation(t, true)
+	})
+}
+
+func runListenerAcknowledgmentAndRevocation(t *testing.T, forceBindCollision bool) {
+	t.Helper()
+	attempts := 0
 	testport.WithRetry(t, 2, func(addrs []string) error {
+		attempts++
 		fetchAddr, mcpAddr := addrs[0], addrs[1]
 		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			var request struct {
@@ -92,6 +104,11 @@ func TestServerRunListenerAppliesAcknowledgmentAndRevocation(t *testing.T) {
 			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"tools":[%s]}}`, request.ID, ackListenerTool)
 		}))
 		defer upstream.Close()
+		if forceBindCollision && attempts == 1 {
+			// Keep this listener open so the first startup must report a
+			// bind collision through the real server and port-retry paths.
+			fetchAddr = upstream.Listener.Addr().String()
+		}
 		// User info makes the binding cover a credential; startup output
 		// must carry neither the password nor the digest derived from it.
 		password := "listener-" + "pass-7Qx"
@@ -145,7 +162,11 @@ logging:
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(ctx) }()
+		go func() {
+			// Startup may consume the result before cleanup observes completion.
+			defer close(errCh)
+			errCh <- s.Start(ctx)
+		}()
 		defer func() {
 			cancel()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
@@ -182,6 +203,9 @@ logging:
 		}
 		return nil
 	})
+	if forceBindCollision && attempts < 2 {
+		t.Fatal("forced bind collision did not exercise startup retry")
+	}
 }
 
 // A definition a stale acknowledgment refuses under warn must not become the
@@ -256,7 +280,10 @@ logging:
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(ctx) }()
+		go func() {
+			defer close(errCh)
+			errCh <- s.Start(ctx)
+		}()
 		defer func() {
 			cancel()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
@@ -374,7 +401,10 @@ logging:
 		})
 		ctx, cancel := context.WithCancel(context.Background())
 		errCh := make(chan error, 1)
-		go func() { errCh <- s.Start(ctx) }()
+		go func() {
+			defer close(errCh)
+			errCh <- s.Start(ctx)
+		}()
 		defer func() {
 			cancel()
 			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))
@@ -569,7 +599,10 @@ logging:
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
-	go func() { errCh <- s.Start(ctx) }()
+	go func() {
+		defer close(errCh)
+		errCh <- s.Start(ctx)
+	}()
 	defer func() {
 		cancel()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))

@@ -86,7 +86,10 @@ logging:
 				})
 				ctx, cancel := context.WithCancel(context.Background())
 				errCh := make(chan error, 1)
-				go func() { errCh <- s.Start(ctx) }()
+				go func() {
+					defer close(errCh)
+					errCh <- s.Start(ctx)
+				}()
 				defer func() {
 					cancel()
 					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), testwait.Deadline(5*time.Second))

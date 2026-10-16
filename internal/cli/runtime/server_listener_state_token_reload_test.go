@@ -70,6 +70,7 @@ logging:
 		defer cancel()
 		errCh := make(chan error, 1)
 		go func() {
+			defer close(errCh)
 			errCh <- s.Start(ctx)
 		}()
 		defer func() {

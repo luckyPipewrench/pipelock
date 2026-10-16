@@ -94,35 +94,44 @@ func (c *sseCancelOnErrContext) Err() error {
 func TestGenericSSEJSONCardNumberContext(t *testing.T) {
 	card := "41111111" + "11111111"
 	groups := "4111,1111" + ",1111,1111"
+	// Number-only runs forward under the default block action, but only with
+	// an operator record; every other card shape keeps blocking the stream.
 	for _, tt := range []struct {
 		name, event string
-		clean       bool
+		clean, warn bool
 	}{
-		{"ids", `{"ids":[` + groups + `]}`, false},
-		{"bbox", `{"bbox":[` + groups + `]}`, false},
-		{"root groups", `[` + groups + `]`, false},
-		{"empty key", `{"": [` + groups + `]}`, false},
-		{"dash key", `{"-": [` + groups + `]}`, false},
-		{"prefix key", `{"x-": [` + groups + `]}`, false},
-		{"fraction", `{"n":0.` + card + `}`, true},
-		{"structured fraction with whitespace", "  {\"n\":0." + card + `}`, true},
-		{"scalar decimal", "0." + card, false},
-		{"scalar decimal with whitespace", " 0." + card, false},
-		{"card string", `{"n":"` + card + `"}`, false},
-		{"card integer", `{"n":` + card + `}`, false},
-		{"integer component", `{"n":` + card + `.1}`, false},
+		{"ids", `{"ids":[` + groups + `]}`, true, true},
+		{"bbox", `{"bbox":[` + groups + `]}`, true, true},
+		{"root groups", `[` + groups + `]`, true, true},
+		{"empty key", `{"": [` + groups + `]}`, true, true},
+		{"dash key", `{"-": [` + groups + `]}`, true, true},
+		{"prefix key", `{"x-": [` + groups + `]}`, true, true},
+		{"fraction", `{"n":0.` + card + `}`, true, false},
+		{"structured fraction with whitespace", "  {\"n\":0." + card + `}`, true, false},
+		{"scalar decimal", "0." + card, false, false},
+		{"scalar decimal with whitespace", " 0." + card, false, false},
+		{"card string", `{"n":"` + card + `"}`, false, false},
+		{"card integer", `{"n":` + card + `}`, false, false},
+		{"integer component", `{"n":` + card + `.1}`, false, false},
+		{"number run beside card string", `{"ids":[` + groups + `],"n":"` + card + `"}`, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testA2AScanner(t)
 			t.Cleanup(s.Close)
 			stream := "data: " + tt.event + "\n\ndata: " + tt.event + "\n\n"
 			var out bytes.Buffer
-			err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg())
+			var records []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg(), GenericSSEScanOptions{
+				OnFinding: func(err error) { records = append(records, err) },
+			})
 			if (err == nil) != tt.clean {
 				t.Fatalf("case=%s error=%v want clean=%v", tt.name, err, tt.clean)
 			}
 			if tt.clean && out.String() != stream {
 				t.Fatalf("clean event changed: %q", out.String())
+			}
+			if tt.warn != (len(records) > 0) {
+				t.Fatalf("case=%s records=%v want warn=%v", tt.name, records, tt.warn)
 			}
 		})
 	}
@@ -148,20 +157,25 @@ func TestGenericSSECardAcrossEvents(t *testing.T) {
 	}{
 		{"bare digits", first, last, true},
 		{"text then bare digits", "card " + first, last, true},
-		{"integer arrays", `[` + first + `]`, `[` + last + `]`, true},
+		// Separate JSON numbers joined across the seam are number-only:
+		// forwarded with an operator record rather than denied.
+		{"integer arrays", `[` + first + `]`, `[` + last + `]`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s := testA2AScanner(t)
 			t.Cleanup(s.Close)
 			stream := "data: " + tt.firstEvent + "\n\ndata: " + tt.lastEvent + "\n\n"
 			var forwarded bytes.Buffer
-			err := ScanGenericSSEStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledSSECfg())
+			var records []error
+			err := ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledSSECfg(), GenericSSEScanOptions{
+				OnFinding: func(err error) { records = append(records, err) },
+			})
 			if tt.wantFinding {
 				if !errors.Is(err, ErrSSEStreamFinding) {
 					t.Fatalf("cross-event card was not denied: %v", err)
 				}
-			} else if err != nil || forwarded.String() != stream {
-				t.Fatalf("numeric events changed: error=%v forwarded=%q", err, forwarded.String())
+			} else if err != nil || forwarded.String() != stream || len(records) == 0 {
+				t.Fatalf("number-only seam lost its record or changed: error=%v records=%v forwarded=%q", err, records, forwarded.String())
 			}
 		})
 	}

@@ -10,12 +10,13 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 )
 
-// DLPAtom keeps the card spelling and JSON number type alongside extracted text.
+// DLPAtom keeps card spelling, number type and key provenance alongside text.
 // Integers retain their original spelling but still have Number set.
 type DLPAtom struct {
 	Text   string
 	Card   string
 	Number bool
+	Key    bool // object member name: scanned ordinarily, omitted from card joins
 }
 
 // JSONNumberStreamViews returns the number-only views of one complete JSON
@@ -40,15 +41,21 @@ func JSONNumberStreamViews(raw []byte) (string, string) {
 	return strings.Join(texts, ""), JoinCardAtoms(numbers, "")
 }
 
-// JoinCardAtoms preserves every scalar boundary in the card-only view.
+// JoinCardAtoms preserves every value boundary in the card-only view.
+// Object keys are omitted, without interrupting adjacent values.
 // Other detectors keep the caller's original text join; card candidates retain
 // both the piece boundaries and number types through subsequent scan passes.
 func JoinCardAtoms(atoms []DLPAtom, _ string) string {
 	var b strings.Builder
-	for i, atom := range atoms {
-		if i > 0 {
-			b.WriteString(jsonnumber.CardBoundary(atoms[i-1].Number, atom.Number))
+	var previousNumber, haveValue bool
+	for _, atom := range atoms {
+		if atom.Key {
+			continue
 		}
+		if haveValue {
+			b.WriteString(jsonnumber.CardBoundary(previousNumber, atom.Number))
+		}
+		previousNumber, haveValue = atom.Number, true
 		if atom.Number {
 			b.WriteString(atom.Card)
 		} else {

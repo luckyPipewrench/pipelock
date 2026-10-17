@@ -28,12 +28,12 @@ func JSONCases() []JSONCase {
 		{Name: "ordinary numeric array", Body: `[1200.21,3400.22,5600.23,7800.24]`, Clean: true},
 		{Name: "array number run", Body: `[` + groups + `]`, Warn: true},
 		{Name: "two number pieces", Body: `[` + card[:8] + `,` + card[8:] + `]`, Warn: true},
-		{Name: "sibling number run", Body: `{"a":4111,"b":1111,"c":1111,"d":1111}`, Clean: true},
-		{Name: "nested number run", Body: `{"a":[4111,{"b":1111}],"c":[1111,1111]}`, Clean: true},
+		{Name: "sibling number run", Body: `{"a":4111,"b":1111,"c":1111,"d":1111}`, Warn: true},
+		{Name: "nested number run", Body: `{"a":[4111,{"b":1111}],"c":[1111,1111]}`, Warn: true},
 		{Name: "integral decimal groups", Body: `[4111.0,1111.0,1111.0,1111.0]`, Warn: true},
 		{Name: "fractional groups", Body: `[4111.21,1111.22,1111.23,1111.24]`, Warn: true},
 		{Name: "digit string run", Body: `["4111","1111","1111","1111"]`},
-		{Name: "mixed scalar run", Body: `{"a":"4111","b":1111,"c":1111,"d":1111}`, Clean: true},
+		{Name: "mixed scalar run", Body: `{"a":"4111","b":1111,"c":1111,"d":1111}`},
 		{Name: "trailing string run", Body: `[4111,1111,1111,"1111"]`},
 		{Name: "negative integer card", Body: `{"n":-` + card + `.1}`},
 		{Name: "integer card", Body: `{"n":` + card + `}`},
@@ -93,7 +93,7 @@ func StringifiedJSONCases() []JSONCase {
 // UnionCases exercises both enforcing readings and literal scalar barriers.
 func UnionCases() []JSONCase {
 	// UNION keeps complete-piece candidates as well as greedy shipped-rule
-	// windows over literal scalar context. Keys occupy the same stream as values.
+	// windows over literal value context. Keys are omitted from both readings.
 	card := Number()
 	groups := card[:4] + "," + card[4:8] + "," + card[8:12] + "," + card[12:]
 	high := "4111" + strings.Repeat("9", 12)
@@ -117,13 +117,27 @@ func UnionCases() []JSONCase {
 		{Name: "mixed first string", Body: `[` + q(a) + `,` + b + `,` + c + `,` + d + `]`},
 		{Name: "mixed middle string", Body: `[` + a + `,` + q(b) + `,` + c + `,` + d + `]`},
 		{Name: "context string outside numeric hit", Body: `["context",` + groups + `]`, Warn: true},
-		{Name: "non digit key interruption", Body: `[` + q(card[:8]) + `,{"break":` + q(card[8:]) + `}]`, Clean: true},
-		{Name: "JSON looking text preserves key barriers", Body: `{"a":` + q("["+q("card "+a)+",") + `,"b":` + q(q(b+" "+c+" "+d)+"]") + `}`, Clean: true},
-		{Name: "non digit key between numbers", Body: `[` + card[:8] + `,{"break":` + card[8:] + `}]`, Clean: true},
+		{Name: "non digit key omitted between strings", Body: `[` + q(card[:8]) + `,{"break":` + q(card[8:]) + `}]`},
+		{Name: "JSON looking string values preserve punctuation", Body: `{"a":` + q("["+q("card "+a)+",") + `,"b":` + q(q(b+" "+c+" "+d)+"]") + `}`, Clean: true},
+		{Name: "non digit key omitted between numbers", Body: `[` + card[:8] + `,{"break":` + card[8:] + `}]`, Warn: true},
 		{Name: "nested array remains adjacent", Body: `[[` + q(a) + `],[` + q(b) + `,[` + q(c) + `]],` + q(d) + `]`},
-		{Name: "digit key joins values in source order", Body: `{"` + a + `":` + q(b) + `,"` + c + `":` + q(d) + `}`},
+		{Name: "digit keys omitted from string runs", Body: `{"` + a + `":` + q(b) + `,"` + c + `":` + q(d) + `}`, Clean: true},
 		{Name: "reversed object keys retain source order", Body: `{"` + b + `":` + q(c) + `,"` + a + `":` + q(d) + `,"end":false}`, Clean: true},
 		{Name: "sorting cannot create card", Body: `[` + q(high[4:8]) + `,` + q(high[:4]) + `,` + q(high[8:12]) + `,` + q(high[12:]) + `,false]`, Clean: true},
+		{Name: "labeled four string groups", Body: `{"a":` + q(a) + `,"b":` + q(b) + `,"c":` + q(c) + `,"d":` + q(d) + `}`},
+		{Name: "labeled eight digit halves", Body: `{"p1":` + q(card[:8]) + `,"p2":` + q(card[8:]) + `}`},
+		{Name: "labeled grouped halves", Body: `{"p1":` + q(a+" "+b) + `,"p2":` + q(c+" "+d) + `}`},
+		{Name: "labeled twelve plus four", Body: `{"p1":` + q(card[:12]) + `,"p2":` + q(d) + `}`},
+		{Name: "nested labeled halves", Body: `{"card":{"first":` + q(card[:8]) + `,"rest":` + q(card[8:]) + `}}`},
+		{Name: "labeled halves with expiry", Body: `{"number_part1":` + q(card[:8]) + `,"number_part2":` + q(card[8:]) + `,"expiry":"12/29"}`},
+		{Name: "labeled context prefix", Body: `{"p1":` + q("card "+a) + `,"p2":` + q(b+" "+c+" "+d) + `}`},
+		{Name: "labeled halves in reverse key order", Body: `{"z":` + q(card[:8]) + `,"a":` + q(card[8:]) + `}`},
+		{Name: "numeric keys preserve number only evidence", Body: `{"4012":` + a + `,"4013":` + b + `,"4014":` + c + `,"4015":` + d + `}`, Warn: true},
+		{Name: "digit keys alone cannot assemble a card", Body: `{"4000":true,"5000":true,"6000":true,"7003":true}`, Clean: true},
+		{Name: "numeric keys cannot promote short numeric values", Body: `{"` + a + `":` + b + `,"` + c + `":` + d + `}`, Clean: true},
+		// Known false positive: unrelated labeled digit strings can satisfy UNION.
+		{Name: "labeled digit string record matching shipped rule", Body: `{"id":"4000","quantity":"5000","year":"6000","code":"7003"}`},
+		{Name: "labeled digit string record invalid checksum", Body: `{"id":"4000","quantity":"5000","year":"6000","code":"7002"}`, Clean: true},
 		{Name: "sorting card positive control", Body: `[` + q(high[:4]) + `,` + q(high[4:8]) + `,` + q(high[8:12]) + `,` + q(high[12:]) + `]`},
 	}
 }

@@ -170,7 +170,10 @@ type ExtractKeysResult struct {
 // TextResult is the bounded text extraction result.
 type TextResult struct {
 	// CardText preserves string types while classifying complete text documents.
-	CardText  string
+	// It excludes object keys, which CardKeys retains for individual scans.
+	CardText string
+	// CardKeys retain ordinary whole-key scans without joining keys into cards.
+	CardKeys  []string
 	Text      string
 	Truncated bool
 	// IncompleteReason is non-empty when media inspection ran out of budget.
@@ -293,15 +296,15 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 		if keys.Truncated {
 			return TextResult{Truncated: true}
 		}
+		cards := slices.Clone(texts)
 		texts = append(texts, keys.Keys...)
 		// Always return after a successful ToolResult parse, even when
 		// texts is empty. Falling through to ExtractStringsFromJSON would
 		// feed base64 media in data/blob/raw fields into prompt scanning.
-		cards := slices.Clone(texts)
 		for i, view := range documents {
 			cards[i] = view
 		}
-		return TextResult{Text: strings.Join(texts, " "), CardText: strings.Join(cards, " "), Numeric: numeric}
+		return TextResult{Text: strings.Join(texts, " "), CardText: strings.Join(cards, " "), CardKeys: keys.Keys, Numeric: numeric}
 	}
 
 	// Fallback: recursively extract all string values from arbitrary JSON.

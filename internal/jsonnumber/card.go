@@ -315,8 +315,8 @@ func BoundaryCardRuns(view string) []CardRun {
 
 // CardRuns returns adjacent scalar candidates and single numeric cards.
 // NumberOnly is true only for at least two numeric pieces. Object keys are
-// string pieces; arrays and nesting do not break a run. A non-digit key or
-// value interrupts complete-piece candidates and remains literal WINDOW context.
+// skipped; arrays and nesting do not break a run. A non-digit scalar value
+// interrupts complete-piece candidates and remains literal WINDOW context.
 // Each number contributes
 // only its written integer component, preserving the single-number fraction
 // policy while still examining separate numbers together. Callers apply their
@@ -345,7 +345,11 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 	}
 	dec := json.NewDecoder(strings.NewReader(text))
 	dec.UseNumber()
-	depth := 0
+	type frame struct {
+		object    bool
+		expectKey bool
+	}
+	var stack []frame
 	var runs []CardRun
 	var pieces []cardPiece
 	var windows []cardPiece
@@ -366,14 +370,18 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 		case json.Delim:
 			switch v {
 			case '{', '[':
-				depth++
-				if depth > maxDepth {
+				stack = append(stack, frame{object: v == '{', expectKey: v == '{'})
+				if len(stack) > maxDepth {
 					return nil, CardRunDepthLimit
 				}
 			case '}', ']':
-				depth--
+				stack = stack[:len(stack)-1]
 			}
 		case string:
+			if len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey {
+				stack[len(stack)-1].expectKey = false
+				continue
+			}
 			windows = append(windows, cardPiece{spelling: v})
 			if piece, ok := stringCardPiece(v); ok {
 				pieces = append(pieces, piece)
@@ -402,6 +410,9 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 			barrier, _ := json.Marshal(v)
 			windows = append(windows, cardPiece{spelling: string(barrier)})
 			flush()
+		}
+		if len(stack) > 0 && stack[len(stack)-1].object && !stack[len(stack)-1].expectKey {
+			stack[len(stack)-1].expectKey = true
 		}
 	}
 }

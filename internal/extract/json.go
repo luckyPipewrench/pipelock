@@ -816,7 +816,8 @@ type JSONStringsResult struct {
 	// CardStrings parallels Strings only for type-aware extraction; literal strings are unchanged.
 	CardStrings []string
 	// Atoms preserves source order and JSON number provenance for card joins,
-	// including keys and null barriers. Strings and CardStrings use sorted keys.
+	// including key provenance and null barriers. Card joins omit keys;
+	// Strings and CardStrings use sorted keys.
 	Atoms     []DLPAtom
 	Strings   []string
 	Truncated bool
@@ -905,9 +906,13 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 
 	var result []string
 	var atoms []DLPAtom
-	appendAtom := func(text, card string, number bool) {
-		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number})
+	appendAtom := func(text, card string, number, key bool) {
+		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number, Key: key})
 	}
+	type frame struct {
+		object, expectKey bool
+	}
+	var stack []frame
 	depth := 0
 	truncated := false
 	for {
@@ -923,33 +928,43 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 			switch v {
 			case '{', '[':
 				depth++
+				stack = append(stack, frame{object: v == '{', expectKey: v == '{'})
 				if depth > maxExtractDepth {
 					truncated = true
 				}
 			case '}', ']':
 				if depth > 0 {
 					depth--
+					stack = stack[:len(stack)-1]
 				}
 			}
 		case string:
+			key := len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey
 			if depth <= maxExtractDepth {
 				result = append(result, v)
-				appendAtom(v, v, false)
+				appendAtom(v, v, false, key)
+			}
+			if key {
+				stack[len(stack)-1].expectKey = false
+				continue
 			}
 		case json.Number:
 			if depth <= maxExtractDepth {
 				result = append(result, v.String())
-				appendAtom(v.String(), jsonnumber.IntegralView(v), true)
+				appendAtom(v.String(), jsonnumber.IntegralView(v), true, false)
 			}
 		case bool:
 			if depth <= maxExtractDepth {
 				result = append(result, strconv.FormatBool(v))
-				appendAtom(strconv.FormatBool(v), strconv.FormatBool(v), false)
+				appendAtom(strconv.FormatBool(v), strconv.FormatBool(v), false, false)
 			}
 		case nil:
 			if depth <= maxExtractDepth {
-				appendAtom("null", "null", false)
+				appendAtom("null", "null", false, false)
 			}
+		}
+		if len(stack) > 0 && stack[len(stack)-1].object && !stack[len(stack)-1].expectKey {
+			stack[len(stack)-1].expectKey = true
 		}
 	}
 	return JSONStringsResult{Strings: result, Atoms: atoms, Truncated: truncated}

@@ -1134,6 +1134,7 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			if len(stack) > 0 && stack[len(stack)-1].kind == '{' && stack[len(stack)-1].expectKey {
 				if depth <= extractJSONMaxDepth {
 					appendAtom(v, v, false)
+					atoms[len(atoms)-1].Key = true
 					generic = append(generic, v)
 				}
 				stack[len(stack)-1].currentKey = v
@@ -1467,7 +1468,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		}
 	}
 	// The sorted text join catches order-independent cross-field secrets.
-	// Cards retain the source scalar order, including keys and null barriers.
+	// Cards retain source value order, skipping keys and retaining null barriers.
 	if len(atoms) > 1 {
 		var hasNumber bool
 		for _, atom := range atoms {

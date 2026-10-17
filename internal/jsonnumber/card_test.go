@@ -18,9 +18,9 @@ func TestCardRuns(t *testing.T) {
 		want        bool
 	}{
 		{"array siblings", `[` + groups + `]`, true},
-		{"object siblings", `{"a":4111,"b":1111,"c":1111,"d":1111}`, false},
-		{"nested values", `{"a":[4111,{"b":1111}],"c":[1111,1111]}`, false},
-		{"mixed string and number", `{"a":"4111","b":1111,"c":1111,"d":1111}`, false},
+		{"object siblings", `{"a":4111,"b":1111,"c":1111,"d":1111}`, true},
+		{"nested values", `{"a":[4111,{"b":1111}],"c":[1111,1111]}`, true},
+		{"mixed string and number", `{"a":"4111","b":1111,"c":1111,"d":1111}`, true},
 		{"envelope prefix", `{"id":1,"params":{"ids":[` + groups + `]}}`, true},
 		{"separate decimals", `[4111.21,1111.22,1111.23,1111.24]`, true},
 		{"single decimal", `{"n":0.` + card + `}`, false},

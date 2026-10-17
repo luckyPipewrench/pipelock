@@ -1395,7 +1395,18 @@ func extractTextViewsFromEvent(event []byte) (string, string, bool, bool, bool) 
 		return "", "", false, false, extracted.Truncated
 	}
 	atoms := extracted.Atoms
-	return strings.Join(texts, " "), extract.JoinCardAtoms(atoms, " "), atoms[0].Number, atoms[len(atoms)-1].Number, extracted.Truncated
+	var firstNumber, lastNumber, haveValue bool
+	for _, atom := range atoms {
+		if atom.Key {
+			continue
+		}
+		if !haveValue {
+			firstNumber = atom.Number
+			haveValue = true
+		}
+		lastNumber = atom.Number
+	}
+	return strings.Join(texts, " "), extract.JoinCardAtoms(atoms, " "), firstNumber, lastNumber, extracted.Truncated
 }
 
 // writeSSEEvent writes a single SSE event to the writer, preserving the

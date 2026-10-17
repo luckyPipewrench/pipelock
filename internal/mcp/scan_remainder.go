@@ -12,6 +12,11 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 )
 
+type responseEnvelopeViews struct {
+	text, card, uris string
+	keys             []string
+}
+
 // responseEnvelopeRemainder partitions by field ownership, rather than string
 // equality across the message. Identical text in an extension still belongs to
 // the envelope. Resource URIs keep injection coverage on a separate channel;
@@ -21,15 +26,15 @@ import (
 // extractor, so a payload kept out of the typed fields cannot spend a second
 // allowance here. Callers must check budget.Reason() before using the text: an
 // exhausted budget leaves it partial.
-func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *jsonrpc.MediaTextBudget) (string, string, bool) {
+func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *jsonrpc.MediaTextBudget) (responseEnvelopeViews, bool) {
 	// Check the complete message before removing any consumed subtrees. In
 	// particular, pruning structuredContent must not relax the depth/key bound.
 	if jsonrpc.ExtractKeysFromJSONResult(raw).Truncated {
-		return "", "", false
+		return responseEnvelopeViews{}, false
 	}
 	var envelope map[string]any
 	if extract.DecodeJSON(raw, &envelope) != nil {
-		return "", "", false
+		return responseEnvelopeViews{}, false
 	}
 	var uris []string
 	for _, key := range jsonrpc.SortedKeys(envelope) {
@@ -73,14 +78,19 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *json
 	}
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
-		return "", "", false
+		return responseEnvelopeViews{}, false
 	}
 	values := jsonrpc.ExtractVisibleStringsFromJSONResultWithMediaBudget(encoded, budget)
 	keys := jsonrpc.ExtractKeysFromJSONResult(encoded)
 	if values.Truncated || keys.Truncated {
-		return "", "", false
+		return responseEnvelopeViews{}, false
 	}
-	return strings.Join(append(values.Strings, keys.Keys...), "\n"), strings.Join(uris, "\n"), true
+	return responseEnvelopeViews{
+		text: strings.Join(append(values.Strings, keys.Keys...), "\n"),
+		card: strings.Join(values.Strings, "\n"),
+		uris: strings.Join(uris, "\n"),
+		keys: keys.Keys,
+	}, true
 }
 
 // removeTypedResponseText mirrors ExtractTextResult's successful typed parse

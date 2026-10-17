@@ -513,7 +513,7 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, ato
 	var detections []sigV4Detection
 	for _, atom := range atoms {
 		card, _ := scrubEmbeddedSigV4Credentials(atom.Card)
-		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Card: card, Number: atom.Number})
+		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Card: card, Number: atom.Number, Key: atom.Key})
 		scrubbed, partDetections := scrubEmbeddedSigV4Credentials(atom.Text)
 		scrubbedParts = append(scrubbedParts, scrubbed)
 		detections = append(detections, partDetections...)

@@ -23,6 +23,12 @@ func TestCardUnionCorpus(t *testing.T) {
 			atoms := extract.AllStringsFromJSONResult(json.RawMessage(tt.Body)).Atoms
 			typed := jsonnumber.BoundaryCardRuns(extract.JoinCardAtoms(atoms, " "))
 			for _, runs := range [][]jsonnumber.CardRun{raw, typed} {
+				if tt.Warn && len(runs) == 0 {
+					t.Fatal("informational evidence missing")
+				}
+				if tt.Clean && len(runs) != 0 {
+					t.Fatal("clean case produced card evidence")
+				}
 				enforces := slices.ContainsFunc(runs, func(run jsonnumber.CardRun) bool { return run.EnforcesShippedRule() })
 				if enforces != (!tt.Clean && !tt.Warn) {
 					t.Fatalf("enforces=%v want clean=%v warn=%v", enforces, tt.Clean, tt.Warn)

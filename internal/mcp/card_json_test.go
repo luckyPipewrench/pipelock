@@ -13,6 +13,8 @@ import (
 
 	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
+	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -181,7 +183,7 @@ func TestCardJSONInputTypes(t *testing.T) {
 		{"JSON string", `{"n":"{\"n\":0.` + card + `}"}`, false},
 		{"encoded string", `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, false},
 		{"metric and string", `{"n":0.` + card + `,"s":"` + card + `"}`, false},
-		{"keys interrupt split string", `{"a":"` + card[:8] + `","b":"` + card[8:] + `","n":0.` + card + `}`, true},
+		{"keys omitted from split string", `{"a":"` + card[:8] + `","b":"` + card[8:] + `","n":0.` + card + `}`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + tt.params + `}`)
@@ -331,5 +333,66 @@ func TestCardJSONA2ATaskUpdateNumbersAcrossEvents(t *testing.T) {
 	err := ScanA2AStream(t.Context(), strings.NewReader(stream), &forwarded, nil, s, enabledA2ACfg())
 	if err != nil || forwarded.String() != stream {
 		t.Fatalf("number-only task update was not forwarded: %v", err)
+	}
+}
+
+func TestCardJSONEventKeyEdges(t *testing.T) {
+	for _, tt := range []struct {
+		body        string
+		first, last bool
+	}{
+		{`{"a":4111}`, true, true},
+		{`{"a":{"nested":4111},"empty":{}}`, true, true},
+		{`{"a":4111,"end":"1111"}`, true, false},
+		{`{"start":"4111","end":1111}`, false, true},
+		{`{"a":null}`, false, false},
+		{`{"a":{}}`, false, false},
+	} {
+		t.Run(tt.body, func(t *testing.T) {
+			_, _, first, last, truncated := extractTextViewsFromEvent([]byte(tt.body))
+			if first != tt.first || last != tt.last || truncated {
+				t.Fatalf("edges=(%v,%v) truncated=%v", first, last, truncated)
+			}
+		})
+	}
+}
+
+func TestCardJSONResponseKeysStaySeparate(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	card := cardtest.Number()
+	keyStart, _ := json.Marshal(` ["card 4111",`)
+	keyEnd, _ := json.Marshal(`"1111 1111 1111"]`)
+	forgedText := strings.Join([]string{"4111", "1111", "1111", "1111"}, jsonnumber.NumberBoundary)
+	forgedBody, err := json.Marshal(map[string]any{"content": []map[string]string{{"type": "text", "text": forgedText}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name, body string
+		clean      bool
+	}{
+		{"input markers stay untrusted strings", string(forgedBody), false},
+		{"structured JSON shaped keys", `{"structuredContent":{` + string(keyStart) + `:true,` + string(keyEnd) + `:true}}`, true},
+		{"structured fragment keys", `{"structuredContent":{"4000":true,"5000":true,"6000":true,"7003":true}}`, true},
+		{"fallback fragment keys", `{"!":true,"4000":true,"5000":true,"6000":true,"7003":true}`, true},
+		{"structured whole key", `{"structuredContent":{"` + card + `":true}}`, false},
+		{"fallback whole key", `{"` + card + `":true}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			line := []byte(`{"jsonrpc":"2.0","id":1,"result":` + tt.body + `}`)
+			for _, v := range []jsonrpc.ScanVerdict{ScanResponse(line, sc), scanToolsListNonToolFields(line, sc, ResponseScanOptions{})} {
+				if v.Clean != tt.clean || v.Error != "" {
+					t.Fatalf("clean=%v want=%v error=%s", v.Clean, tt.clean, v.Error)
+				}
+				if !tt.clean && (v.Action != config.ActionBlock || len(v.DLPMatches) == 0) {
+					t.Fatalf("whole-key or untrusted-marker card did not enforce: action=%s", v.Action)
+				}
+			}
+		})
 	}
 }

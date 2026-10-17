@@ -28,6 +28,7 @@ BUILD_GATE_RESULTS = (
     "CROSS_TARGET_RESULT",
     "HELM_RESULT",
     "BUILD_BINARIES_RESULT",
+    "AGENT_REVIEW_CONTRACT_RESULT",
 )
 # The subset a documentation-only pull request skips on purpose.
 DOCS_SKIPPABLE_RESULTS = (
@@ -184,6 +185,7 @@ exit "$DEFAULT_STATUS"
                 "test-cross-target",
                 "helm",
                 "build-binaries",
+                "agent-review-contract",
             },
             {dependency.strip() for dependency in gate_needs.group(1).split(",")},
         )

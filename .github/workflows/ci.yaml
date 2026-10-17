@@ -1618,13 +1618,92 @@ jobs:
           GOOS=windows GOARCH=amd64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-amd64.exe ./cmd/pipelock
           GOOS=windows GOARCH=arm64 go build -tags enterprise -trimpath -o /tmp/pipelock-windows-arm64.exe ./cmd/pipelock
 
+  # The /agent-review caller calls a reusable workflow in pipelab-org/agent-review,
+  # so without this job nothing here notices the caller drifting: inherited or
+  # extra secrets, a branch instead of a commit, another repository, or wider
+  # permissions. It runs the pinned engine revision's own caller contract against
+  # the caller and profile, read as data. The accepted caller text lives only in
+  # that contract and the pin lives only in the caller, so neither is copied here.
+  # It holds no secrets and only a read token, and it never skips.
+  agent-review-contract:
+    needs: [security-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          path: caller
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/agent-review.yaml
+            .github/agent-review.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Read the pinned engine revision
+        id: pin
+        run: |
+          set -euo pipefail
+          caller=caller/.github/workflows/agent-review.yaml
+          # grep exits 1 for no match; anything else means the caller is unreadable.
+          status=0
+          uses="$(grep -E '^[[:space:]-]*uses:' "$caller")" || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "agent review caller could not be read" >&2
+            exit 1
+          fi
+          # Exactly one call, to the engine repository, at a full commit SHA.
+          pattern='^    uses: pipelab-org/agent-review/\.github/workflows/agent-review-reusable\.yaml@[0-9a-f]{40} # main$'
+          if [ "$status" -ne 0 ] || [ "$(wc -l <<<"$uses")" -ne 1 ] || ! grep -Eq "$pattern" <<<"$uses"; then
+            echo "agent review caller must call pipelab-org/agent-review at a full commit SHA" >&2
+            exit 1
+          fi
+          pin="${uses##*@}"
+          pin="${pin%% *}"
+          echo "sha=$pin" >> "$GITHUB_OUTPUT"
+
+      # GitHub also resolves a SHA that exists only in a fork of the engine, so
+      # the pin must be on the engine's main branch before its validator runs.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: pipelab-org/agent-review
+          ref: main
+          fetch-depth: 0
+          path: engine
+          persist-credentials: false
+
+      - name: Require the pin on the engine main branch
+        env:
+          PIN: ${{ steps.pin.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if ! git -C engine merge-base --is-ancestor "$PIN" HEAD; then
+            echo "agent review pin is not a commit on pipelab-org/agent-review main" >&2
+            exit 1
+          fi
+          git -C engine checkout --quiet --detach "$PIN"
+          if [ "$(git -C engine rev-parse HEAD)" != "$PIN" ]; then
+            echo "engine checkout does not match the agent review pin" >&2
+            exit 1
+          fi
+
+      - name: Validate the caller with the pinned engine contract
+        env:
+          PIN: ${{ steps.pin.outputs.sha }}
+          CALLER_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/agent-review.yaml@refs/heads/${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          python3 -I engine/scripts/agent_review_contract.py --root caller --source-sha "$PIN"
+
   # Helm remains a separate diagnostic job, but the required `build` context
   # intentionally carries its result through `needs`. Keep that dependency
   # until a separately approved ruleset change makes `helm` required itself.
   # The parallel binary and cross-target producers also flow through this gate,
   # so a compilation failure cannot present as a successful required build check.
+  # The agent review caller contract flows through it too and never skips.
   build:
-    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-enterprise, lint-policy, config-examples, test-cross-target, helm, build-binaries]
+    needs: [security-scan, changed-files, test-go126, test-go127, lint, lint-enterprise, lint-policy, config-examples, test-cross-target, helm, build-binaries, agent-review-contract]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1641,6 +1720,7 @@ jobs:
           CROSS_TARGET_RESULT: ${{ needs.test-cross-target.result }}
           HELM_RESULT: ${{ needs.helm.result }}
           BUILD_BINARIES_RESULT: ${{ needs.build-binaries.result }}
+          AGENT_REVIEW_CONTRACT_RESULT: ${{ needs.agent-review-contract.result }}
           CHANGED_FILES_RESULT: ${{ needs.changed-files.result }}
           DOCS_ONLY: ${{ needs.changed-files.outputs.docs_only }}
           EVENT_NAME: ${{ github.event_name }}
@@ -1665,7 +1745,8 @@ jobs:
             "$TEST_GO126_RESULT" \
             "$TEST_GO127_RESULT" \
             "$LINT_POLICY_RESULT" \
-            "$CONFIG_EXAMPLES_RESULT"; do
+            "$CONFIG_EXAMPLES_RESULT" \
+            "$AGENT_REVIEW_CONTRACT_RESULT"; do
             if [ "$result" != success ]; then
               echo "required build evidence is incomplete or failed" >&2
               exit 1

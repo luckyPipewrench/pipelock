@@ -8,7 +8,7 @@ import sys
 try:
     import yaml
 except ImportError:
-    sys.exit("PyYAML is required; install .github/requirements-pr-review-test.txt with pip --require-hashes")
+    sys.exit("PyYAML is required; install .github/requirements-scripts-test.txt with pip --require-hashes")
 
 
 class UniqueKeyLoader(yaml.SafeLoader):

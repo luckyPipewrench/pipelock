@@ -124,8 +124,7 @@ See [docs/benchmarks.md](docs/benchmarks.md) for methodology and results.
 
 A small amount of Python lives in the repo: the cross-implementation
 verifier fixture at `testdata/python_verifier_fixture/` and the
-PR review action's runtime deps at
-`.github/actions/pr-review/requirements.txt`.
+script-test dependency at `.github/requirements-scripts-test.txt`.
 
 **Rule: Generated Python lockfiles (`requirements*.txt`) in this repo
 MUST be `==`-pinned with `--hash` lines.** `requirements*.in` is the
@@ -142,7 +141,7 @@ generated from it must be strict. Loose `>=`, `<=`, `~=`, `>`, `<`, and
    inputs at install time, so a tampered wheel can not silently
    substitute.
 
-The lockfile pattern, modeled on `.github/actions/pr-review/requirements.txt`:
+The lockfile pattern, modeled on `.github/requirements-scripts-test.txt`:
 
 ```text
 package==X.Y.Z \

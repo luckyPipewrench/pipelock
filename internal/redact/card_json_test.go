@@ -76,7 +76,7 @@ func TestRewriteJSONNumberBudgetFailsClosed(t *testing.T) {
 }
 
 func TestRewriteJSONSharedCardCorpus(t *testing.T) {
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			_, report, err := RewriteJSON([]byte(tt.Body), NewDefaultMatcher(), NewRedactor(), Limits{})
 			if (tt.Clean || tt.Warn) && err != nil {

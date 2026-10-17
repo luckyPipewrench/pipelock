@@ -76,7 +76,7 @@ func TestCardJSONSharedTransportCorpus(t *testing.T) {
 	cfg.ResponseScanning.Action = config.ActionBlock
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			request := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + tt.Body + `}`)
 			if v := ScanRequest(t.Context(), request, s, config.ActionBlock, config.ActionBlock); v.Clean != tt.Clean || v.Error != "" {

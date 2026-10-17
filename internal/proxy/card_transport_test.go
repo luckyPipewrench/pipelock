@@ -25,7 +25,7 @@ import (
 
 func cardTransportCases() []cardtest.JSONCase {
 	card := "41111111" + "11111111"
-	return append(cardtest.JSONCases(), []cardtest.JSONCase{
+	return append(cardtest.TransportCases(), []cardtest.JSONCase{
 		{Name: "integer part", Body: `{"n":-` + card + `.1}`, Clean: false},
 		{Name: "dotted string", Body: `{"n":"0.` + card + `"}`, Clean: false},
 		{Name: "encoded", Body: `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, Clean: false},

@@ -54,7 +54,7 @@ func TestCardJSONToolCallTypes(t *testing.T) {
 }
 
 func TestCardJSONSharedToolCallCorpus(t *testing.T) {
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			h := newTestHandler(t)
 			t.Cleanup(h.scanner.Close)
@@ -102,7 +102,7 @@ func TestCardJSONToolCallInspectionLimits(t *testing.T) {
 }
 
 func TestCardJSONDLPDecision(t *testing.T) {
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		// The dlp kind scans literal text; only typed tool_call arguments
 		// receive single-decimal relief. Exercise the joined-card classes here.
 		if tt.Clean {

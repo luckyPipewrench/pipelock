@@ -141,3 +141,23 @@ func UnionCases() []JSONCase {
 		{Name: "sorting card positive control", Body: `[` + q(high[:4]) + `,` + q(high[4:8]) + `,` + q(high[8:12]) + `,` + q(high[12:]) + `]`},
 	}
 }
+
+// WholeKeyCases hold complete cards in object keys. Card joins omit keys, so
+// only transports that also scan each key can enforce these; the scanner's
+// typed join helpers alone report them clean by design.
+func WholeKeyCases() []JSONCase {
+	card := Number()
+	grouped := card[:4] + " " + card[4:8] + " " + card[8:12] + " " + card[12:]
+	return []JSONCase{
+		{Name: "whole key card", Body: `{"` + card + `":"x"}`},
+		{Name: "grouped whole key card", Body: `{"` + grouped + `":true}`},
+		{Name: "context whole key card", Body: `{"card ` + card + `":1}`},
+		{Name: "nested whole key card", Body: `{"outer":{"` + card + `":null}}`},
+		{Name: "array object whole key card", Body: `[{"` + card + `":0}]`},
+	}
+}
+
+// TransportCases is the end-to-end corpus: JSONCases plus WholeKeyCases.
+func TransportCases() []JSONCase {
+	return append(JSONCases(), WholeKeyCases()...)
+}

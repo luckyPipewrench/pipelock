@@ -12,7 +12,7 @@ import (
 func TestCardJSONDecisionCorpus(t *testing.T) {
 	cfg, sc, pc := testSetup(t)
 	t.Cleanup(sc.Close)
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			for _, action := range []Action{
 				{Kind: EventMCPExecution, MCP: &MCPPayload{Server: "vendor", ToolName: "report", ToolInput: tt.Body}},

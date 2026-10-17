@@ -11,7 +11,7 @@ import (
 
 func TestCardJSONStructuredReceiptCorpus(t *testing.T) {
 	det := testDetector(t)
-	for _, tt := range cardtest.JSONCases() {
+	for _, tt := range cardtest.TransportCases() {
 		t.Run(tt.Name, func(t *testing.T) {
 			// Isolate the structured projection. Receipt reconstruction remains an
 			// independent artifact policy and can reject fragments that traffic warns on.

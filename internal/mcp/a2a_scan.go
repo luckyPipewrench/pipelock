@@ -298,6 +298,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
+			dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
 			if len(dlpResult.Matches) > 0 {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
@@ -403,6 +404,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		forceBlock = true
 	}
 	dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
+	dlpResult.Matches = append(dlpResult.Matches, a2aKeyCardMatches(ctx, sc, extracted.Atoms)...)
 	if len(dlpResult.Matches) > 0 {
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 		if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -410,6 +412,18 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		}
 	}
 	return forceBlock
+}
+
+// a2aKeyCardMatches scans each object key on its own. Card joins omit keys,
+// and the per-leaf walk uses no card view, so a whole-key card needs this pass.
+func a2aKeyCardMatches(ctx context.Context, sc *scanner.Scanner, atoms []extract.DLPAtom) []scanner.TextDLPMatch {
+	var matches []scanner.TextDLPMatch
+	for _, atom := range atoms {
+		if atom.Key {
+			matches = append(matches, sc.ScanTextForDLPWithCardView(ctx, atom.Text, atom.Card).Matches...)
+		}
+	}
+	return matches
 }
 
 func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentEntropyOptions {

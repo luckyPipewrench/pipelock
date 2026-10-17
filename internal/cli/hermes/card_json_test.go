@@ -58,7 +58,7 @@ func TestCardJSONSharedHookCorpus(t *testing.T) {
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, hook := range []string{HookPreToolCall, HookTransformToolResult, HookPreGatewayDispatch} {
-		for _, tt := range cardtest.JSONCases() {
+		for _, tt := range cardtest.TransportCases() {
 			t.Run(hook+"/"+tt.Name, func(t *testing.T) {
 				result := evaluate(t.Context(), s, &HookEvent{HookEventName: hook, ToolName: "report", ToolInput: json.RawMessage(tt.Body)})
 				if (result.Decision != DecisionBlock) != (tt.Clean || tt.Warn) {

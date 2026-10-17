@@ -32,6 +32,23 @@ func TestBodySigV4SortedTextNullBarrier(t *testing.T) {
 	}
 }
 
+// A number in the body selects the source-order view; the sorted view cannot
+// rebuild this joined value, so only the source-order SigV4 path can find it.
+func TestBodySigV4SourceOrderNullBarrier(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Source order credential", Regex: `zeta\.alpha`, Severity: config.SeverityHigh})
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	views := extractBodyTextForDLP([]byte(`["zeta",null,"alpha",5]`), BodyScanRequest{ContentType: contentTypeJSON})
+	for _, sigv4 := range []bool{false, true} {
+		matches := scanBodyTextViewsForDLPWithAudience(t.Context(), sc, bodyDLPViews{texts: views.Texts, cards: views.CardTexts, atoms: views.Atoms}, "", nil, nil, sigv4, nil, "", nil)
+		if !hasDLPMatchName(matches, "Source order credential") {
+			t.Errorf("SigV4=%v lost the source-order cross-field credential", sigv4)
+		}
+	}
+}
+
 func TestCardJSONNumberStreamKeepsKnownValueEnforcement(t *testing.T) {
 	card := cardtest.Number()
 	for _, known := range []bool{false, true} {

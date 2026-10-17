@@ -11,6 +11,7 @@
 #   RECEIPT_LOAD_RULES   "empty" (default) or a directory of rule bundles
 #   RECEIPT_LOAD_SEED    workload seed (default 1)
 #   RECEIPT_LOAD_WINDOW  per-window rate width (default 5s)
+#   RECEIPT_LOAD_RESTART_AFTER  restart once after N measured requests (default disabled)
 #   RECEIPT_LOAD_LOCK    advisory lock file that serializes cells on one machine
 set -euo pipefail
 
@@ -58,13 +59,17 @@ run_cell() {
   if [[ -n $lock ]]; then
     lock_args=(--lock-file "$lock")
   fi
+  local restart_args=()
+  if [[ -n ${RECEIPT_LOAD_RESTART_AFTER:-} ]]; then
+    restart_args=(--restart-after "$RECEIPT_LOAD_RESTART_AFTER")
+  fi
   local scope_status=0
   if /usr/bin/env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus" \
     systemd-run --user --scope -p "CPUQuota=$((cores*100))%" \
     /usr/bin/env GOMAXPROCS="$cores" "$load" \
     --binary "$pipelock" --out "$cell" --requests "$requests" --warmup "$warmup_requests" \
     --concurrency 128 --modes "$modes" --chains "$chains" \
-    --rules "$rules" --seed "$seed" --window "$window" ${lock_args[@]+"${lock_args[@]}"} \
+    --rules "$rules" --seed "$seed" --window "$window" ${lock_args[@]+"${lock_args[@]}"} ${restart_args[@]+"${restart_args[@]}"} \
     >"$cell/scope.log" 2>&1; then
     scope_status=0
   else

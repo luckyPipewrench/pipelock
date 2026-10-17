@@ -89,6 +89,14 @@ linters:
         linters: [gosec]
         text: "G702"
         source: 'exec\.CommandContext\(ctx, (command\[0\], command\[1:\]|descriptorHelperPath, helperArgs)\.\.\.\)'
+      # The receipt-load harness launches the operator-named local binary it
+      # validated, with arguments it builds itself. No receipt, response or
+      # file content selects the command. Pin this to the constructor line
+      # so other command launches remain checked.
+      - path: ^scripts/receipt-load/proc\.go$
+        linters: [gosec]
+        text: "G702"
+        source: '^\s*cmd := exec\.CommandContext\(ctx, "pipelock"\)\s*$'
       # An executable test fixture has to be executable, so 0600 is not an
       # option for it.
       # pipelock exec launches the command the operator names (G204, G702), and on

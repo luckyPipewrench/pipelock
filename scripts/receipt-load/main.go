@@ -91,6 +91,7 @@ func parseFlags(args []string) (options, []string, string, error) {
 	binary := fs.String("binary", "./pipelock", "pipelock binary")
 	out := fs.String("out", "", "unique output directory")
 	n := fs.Int("requests", 1000000, "measured requests per mode")
+	restartAfter := fs.Int("restart-after", 0, "restart once after N measured requests (0 disables; N must be less than --requests)")
 	warmup := fs.Int("warmup", 1000, "warmup requests per mode, sent through the same proxy process and excluded from performance")
 	concurrency := fs.Int("concurrency", 128, "concurrent clients")
 	modes := fs.String("modes", "off,best,required", "comma-separated modes")
@@ -105,6 +106,9 @@ func parseFlags(args []string) (options, []string, string, error) {
 		return options{}, nil, "", err
 	}
 	maxInt := int(^uint(0) >> 1)
+	if *restartAfter != 0 && (*restartAfter < 0 || *restartAfter >= *n) {
+		return options{}, nil, "", fmt.Errorf("--restart-after must be zero or positive and less than --requests")
+	}
 	if *out == "" || *n < 1 || *warmup < 0 || *n > maxInt-*warmup || *concurrency < 1 || *chains < 1 || *chains > 32 || *window <= 0 || *shutdown <= 0 || *verifyTimeout <= 0 {
 		return options{}, nil, "", fmt.Errorf("--out, positive --requests, non-negative --warmup with a non-overflowing total, positive --concurrency, --chains from 1 to 32, and positive --window, --shutdown-timeout, and --verify-timeout are required")
 	}
@@ -131,6 +135,6 @@ func parseFlags(args []string) (options, []string, string, error) {
 	}
 	return options{
 		binary: absBinary, out: absOut, rules: *rules, requests: *n, warmup: *warmup, concurrency: *concurrency,
-		chains: *chains, seed: *seed, window: *window, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout,
+		chains: *chains, seed: *seed, window: *window, shutdownTimeout: *shutdown, verifyTimeout: *verifyTimeout, restartAfter: *restartAfter,
 	}, list, *lock, nil
 }

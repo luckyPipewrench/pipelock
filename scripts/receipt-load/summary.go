@@ -261,10 +261,15 @@ func sampleIdentity(r result) [32]byte {
 	if quota, _, ok := strings.Cut(inputs.Host.CgroupCPUQuota, " us ("); ok {
 		inputs.Host.CgroupCPUQuota = quota
 	}
+	restartAfter := 0
+	if r.Restart != nil {
+		restartAfter = r.Restart.AfterRequests
+	}
 	data, _ := json.Marshal(struct {
+		RestartAfter                  int `json:",omitempty"`
 		Inputs                        inputsReport
 		Requests, Warmup, Concurrency int
-	}{inputs, r.Requests, r.WarmupRequests, r.Concurrency})
+	}{restartAfter, inputs, r.Requests, r.WarmupRequests, r.Concurrency})
 	return sha256.Sum256(data)
 }
 

@@ -43,6 +43,8 @@ type options struct {
 	window          time.Duration
 	shutdownTimeout time.Duration
 	verifyTimeout   time.Duration
+	restartAfter    int
+	restartBefore   *recorderObservation
 }
 
 // runMode runs one recorder mode end to end and always writes result.json once
@@ -135,7 +137,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	if err != nil {
 		return err
 	}
-	defer proxy.cleanup()
+	defer func() { proxy.cleanup() }()
 	if err := awaitProxy(ctx, proxyAddr, proxy); err != nil {
 		return err
 	}
@@ -145,7 +147,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	if err != nil {
 		return err
 	}
-	defer samples.close()
+	defer func() { samples.close() }()
 
 	proxyURL, err := url.Parse("http://" + proxyAddr)
 	if err != nil {
@@ -164,7 +166,77 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 	startSample, startErr := readProc(proxy.cmd.Process.Pid)
 
 	evidenceAtStart := evidenceBytes(dirs.recorder)
-	measured := runPhase(ctx, params, phaseMeasure, opt.requests)
+	var cpuBeforeRestart uint64
+	var restartPeak int64
+	measured, err := measuredPhases(opt, func(offset, count int) phaseResult {
+		return runPhaseRange(ctx, params, phaseMeasure, offset, count)
+	}, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rep := &restartReport{AfterRequests: opt.restartAfter, ShutdownBudgetSeconds: opt.shutdownTimeout.Seconds()}
+		res.Restart = rep
+		pre, preErr := readProc(proxy.cmd.Process.Pid)
+		_, restartPeak = samples.finish()
+		restartPeak = max(restartPeak, pre.rss)
+		if preErr != nil || pre.ticks < startSample.ticks {
+			startErr = errors.New("pre-restart process measurement unavailable or invalid")
+		} else {
+			cpuBeforeRestart = pre.ticks - startSample.ticks
+		}
+		started := time.Now()
+		rep.Shutdown = proxy.stop(opt.shutdownTimeout)
+		rep.StopSeconds = time.Since(started).Seconds()
+		if !rep.Shutdown.Clean || rep.StopSeconds > rep.ShutdownBudgetSeconds {
+			return fmt.Errorf("restart stop failed within %s budget: %s (elapsed %.6fs)", opt.shutdownTimeout, rep.Shutdown.Error, rep.StopSeconds)
+		}
+		if mode != modeOff {
+			opt.restartBefore, err = scanRecorder(dirs.recorder, plan, sink.addr())
+			if err != nil {
+				return fmt.Errorf("scan before restart: %w", err)
+			}
+			verifyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), verificationTimeout(opt))
+			rep.Verify = verifyRecorder(verifyCtx, opt.binary, dirs, childEnv, opt.restartBefore)
+			cancel()
+			if err := os.Rename(filepath.Join(dirs.root, "verify.txt"), filepath.Join(dirs.root, "verify-before-restart.txt")); err != nil {
+				return fmt.Errorf("preserve pre-restart verification: %w", err)
+			}
+			if rep.Verify.Exit != 0 {
+				return fmt.Errorf("verification before restart exited %d", rep.Verify.Exit)
+			}
+			opt.restartBefore = &recorderObservation{opens: opt.restartBefore.opens, closes: opt.restartBefore.closes}
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		transport.CloseIdleConnections()
+		proxy.cleanup()
+		// Both generations append to the same log and use the same pinned inputs.
+		next, err := launchProxy(ctx, proxyLaunch{binary: opt.binary, dirs: dirs, env: childEnv, configPath: configPath, addr: proxyAddr, appendLog: true})
+		if err != nil {
+			return fmt.Errorf("restart proxy: %w", err)
+		}
+		proxy = next
+		if err := awaitProxy(ctx, proxyAddr, proxy); err != nil {
+			return fmt.Errorf("restart readiness: %w", err)
+		}
+		samples.close()
+		nextSamples, err := sampleProxy(proxy.cmd.Process.Pid, dirs, true)
+		if err != nil {
+			return fmt.Errorf("restart sampler: %w", err)
+		}
+		samples = nextSamples
+		post, postErr := readProc(proxy.cmd.Process.Pid)
+		if postErr != nil {
+			startErr = postErr
+		}
+		startSample.ticks = post.ticks
+		rep.Ready = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
 	end := time.Now()
 	endSample, endErr := readProc(proxy.cmd.Process.Pid)
 	lastSample, peakRSS := samples.finish()
@@ -172,6 +244,7 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		endSample = lastSample
 	}
 	peakRSS = max(peakRSS, startSample.rss)
+	peakRSS = max(peakRSS, restartPeak)
 	if endSample.rss > peakRSS {
 		peakRSS = endSample.rss
 	}
@@ -194,13 +267,14 @@ func execute(ctx context.Context, opt options, mode string, dirs runDirs, plan w
 		perf.invalidate("process measurement unavailable or invalid")
 	}
 	if ticks, tickErr := clockTicks(context.WithoutCancel(ctx)); tickErr == nil && ticks > 0 && !math.IsNaN(ticks) && !math.IsInf(ticks, 0) && startErr == nil && endErr == nil && endSample.ticks >= startSample.ticks && perf.Seconds > 0 {
-		perf.CPUSeconds = float64(endSample.ticks-startSample.ticks) / ticks
+		perf.CPUSeconds = float64(cpuBeforeRestart+endSample.ticks-startSample.ticks) / ticks
 		perf.CPUCores = perf.CPUSeconds / perf.Seconds
 	} else {
 		perf.invalidate("CPU measurement unavailable or invalid")
 	}
 
 	integrity := finishIntegrity(context.WithoutCancel(ctx), opt, mode, dirs, childEnv, plan, sink, warm, measured, end, shutdown, &perf)
+
 	if lines, logErr := bundleLogLines(filepath.Join(dirs.root, "proxy.log")); logErr != nil {
 		integrity.fail("reading proxy.log failed: " + logErr.Error())
 	} else {
@@ -279,11 +353,26 @@ type proxyProc struct {
 }
 
 func startProxy(ctx context.Context, binary string, dirs runDirs, env []string, configPath, addr string) (*proxyProc, error) {
-	logFile, err := os.OpenFile(filepath.Clean(filepath.Join(dirs.root, "proxy.log")), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	return launchProxy(ctx, proxyLaunch{binary: binary, dirs: dirs, env: env, configPath: configPath, addr: addr})
+}
+
+type proxyLaunch struct {
+	binary, configPath, addr string
+	dirs                     runDirs
+	env                      []string
+	appendLog                bool
+}
+
+func launchProxy(ctx context.Context, opt proxyLaunch) (*proxyProc, error) {
+	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
+	if opt.appendLog {
+		flags = os.O_WRONLY | os.O_APPEND
+	}
+	logFile, err := os.OpenFile(filepath.Clean(filepath.Join(opt.dirs.root, "proxy.log")), flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	cmd := localCommand(context.WithoutCancel(ctx), binary, dirs.cwd, env, "run", "--config", configPath, "--home", dirs.home, "--listen", addr)
+	cmd := localCommand(context.WithoutCancel(ctx), opt.binary, opt.dirs.cwd, opt.env, "run", "--config", opt.configPath, "--home", opt.dirs.home, "--listen", opt.addr)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -351,11 +440,21 @@ type sampler struct {
 }
 
 func startSampler(pid int, dirs runDirs) (*sampler, error) {
-	file, err := os.OpenFile(filepath.Clean(filepath.Join(dirs.root, "samples.csv")), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	return sampleProxy(pid, dirs, false)
+}
+
+func sampleProxy(pid int, dirs runDirs, appendLog bool) (*sampler, error) {
+	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
+	if appendLog {
+		flags = os.O_WRONLY | os.O_APPEND
+	}
+	file, err := os.OpenFile(filepath.Clean(filepath.Join(dirs.root, "samples.csv")), flags, 0o600)
 	if err != nil {
 		return nil, err
 	}
-	_, _ = io.WriteString(file, "unix_ns,cpu_ticks,rss_bytes,evidence_bytes\n")
+	if !appendLog {
+		_, _ = io.WriteString(file, "unix_ns,cpu_ticks,rss_bytes,evidence_bytes\n")
+	}
 	s := &sampler{stop: make(chan struct{}), done: make(chan struct{}), file: file}
 	go func() {
 		defer close(s.done)
@@ -435,17 +534,19 @@ func finishIntegrity(ctx context.Context, opt options, mode string, dirs runDirs
 		rep.fail("shutdown: " + shutdown.Error)
 	}
 	if mode != modeOff {
-		timeout := opt.verifyTimeout
-		if timeout <= 0 {
-			timeout = time.Minute
-		}
-		verifyCtx, cancel := context.WithTimeout(ctx, timeout)
+		verifyCtx, cancel := context.WithTimeout(ctx, verificationTimeout(opt))
 		rep.Verify = verifyRecorder(verifyCtx, opt.binary, dirs, env, obs)
 		cancel()
 		if rep.Verify.Exit != 0 {
 			rep.fail(fmt.Sprintf("verify-receipt exited %d", rep.Verify.Exit))
 		}
 	}
+	if opt.restartAfter > 0 && mode != modeOff {
+		if err := checkRestartContinuity(dirs, opt.restartBefore, obs, opt.chains); err != nil {
+			rep.fail("restart continuity: " + err.Error())
+		}
+	}
+
 	return rep
 }
 

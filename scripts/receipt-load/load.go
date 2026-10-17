@@ -61,6 +61,11 @@ type loadParams struct {
 // Timestamps use time.Since on a time.Now() base, which reads the monotonic
 // clock, so window boundaries cannot move with wall-clock adjustments.
 func runPhase(ctx context.Context, p loadParams, phase byte, count int) phaseResult {
+	return runPhaseRange(ctx, p, phase, 0, count)
+}
+
+// runPhaseRange preserves workload identities when a phase resumes after a restart.
+func runPhaseRange(ctx context.Context, p loadParams, phase byte, offset, count int) phaseResult {
 	res := phaseResult{outcomes: make([]requestOutcome, count), samples: make(map[int]string)}
 	if count == 0 {
 		return res
@@ -74,7 +79,7 @@ func runPhase(ctx context.Context, p loadParams, phase byte, count int) phaseRes
 		go func() {
 			defer wg.Done()
 			for index := range jobs {
-				slot := p.plan.slot(phase, index)
+				slot := p.plan.slot(phase, offset+index)
 				out, body := p.issue(ctx, slot, start)
 				res.outcomes[index] = out
 				// Keep the first few bodies plus the first blocked one, so the

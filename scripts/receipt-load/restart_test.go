@@ -155,8 +155,9 @@ func TestRealRestartContinuity(t *testing.T) {
 	for _, chains := range []int{1, 2} {
 		t.Run(strconv.Itoa(chains), func(t *testing.T) {
 			opt := smallOptions(t, bin)
-			// Continuity does not depend on volume; the nightly matrix supplies load.
-			// This stays near the other real-proxy runs so CI's per-test ceiling holds.
+			// Small enough to stay near the other real-proxy runs under CI's per-test
+			// ceiling. It covers the two-generation topology but never reaches a
+			// periodic checkpoint; full-size restart runs cover that path.
 			opt.requests = 200
 			opt.warmup = 20
 			opt.concurrency = 8

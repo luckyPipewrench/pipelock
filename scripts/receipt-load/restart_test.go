@@ -155,10 +155,12 @@ func TestRealRestartContinuity(t *testing.T) {
 	for _, chains := range []int{1, 2} {
 		t.Run(strconv.Itoa(chains), func(t *testing.T) {
 			opt := smallOptions(t, bin)
-			opt.requests = 2000
+			// Continuity does not depend on volume; the nightly matrix supplies load.
+			// This stays near the other real-proxy runs so CI's per-test ceiling holds.
+			opt.requests = 200
 			opt.warmup = 20
 			opt.concurrency = 8
-			opt.restartAfter = 1000
+			opt.restartAfter = 100
 			opt.chains = chains
 			if code := runModes(context.Background(), opt, []string{modeRequired}); code != exitOK {
 				t.Fatalf("run exit=%d", code)
@@ -177,7 +179,7 @@ func TestRealRestartContinuity(t *testing.T) {
 					t.Fatalf("%s: %+v", kind, k)
 				}
 			}
-			t.Logf("%d chains: 2000 measured + 20 warmup, stop %.6fs / %.0fs, both verifications passed", chains, got.Restart.StopSeconds, got.Restart.ShutdownBudgetSeconds)
+			t.Logf("%d chains: %d measured + %d warmup, restart after %d, stop %.6fs / %.0fs, both verifications passed", chains, opt.requests, opt.warmup, opt.restartAfter, got.Restart.StopSeconds, got.Restart.ShutdownBudgetSeconds)
 			if chains != 1 {
 				return
 			}

@@ -683,13 +683,17 @@ class TestTestNameSplit(unittest.TestCase):
                         self.assertEqual(selected, {name for name in names if selector_selects(legacy, name)})
                         self.assertTrue(selected)
                         selections.append(selected)
-                        # Leave at least a third of the existing cap for tree growth.
-                        self.assertLess(len(selector.encode("utf-8")), ci_test_packages.MAX_SELECTOR_BYTES * 2 // 3)
                         unseen = "TestNotInTheInventoryForSelectorEquivalence"
                         for name in (unseen, names[0] + "Extra", "X" + names[-1]):
                             self.assertEqual(selector_selects(selector, name), selector_selects(legacy, name))
                 self.assertEqual(set().union(*selections), set(names), (lane, tree))
                 self.assertEqual(sum(map(len, selections)), len(names), (lane, tree))
+                # The final sub-shard skips every earlier bucket, so a durations
+                # refresh can grow it toward skipping the whole tree. Bound that
+                # worst case by the real limit rather than today's weights.
+                worst = len(("-skip=" + exact_names_regex(names)).encode("utf-8"))
+                self.assertLess(worst, ci_test_packages.MAX_SELECTOR_BYTES,
+                                f"{tree}: skipping every test needs {worst} bytes; split the tree's packages")
             for shard in set(shard_names) - heavy_shards:
                 self.assertEqual(selector_for(shard), "")
 

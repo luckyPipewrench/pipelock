@@ -288,7 +288,6 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(dropped)
 			dlpResult.Matches = appendUniqueA2ADLPFindings(dlpResult.Matches, result.Matches)
-			dlpResult.Clean = !scanner.HasEnforcingMatch(dlpResult.Matches)
 		}
 		if len(dlpResult.Matches) > 0 {
 			findingErr := fmt.Errorf("%w: dlp: %s",

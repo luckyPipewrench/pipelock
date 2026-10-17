@@ -138,6 +138,11 @@ func ValidCardNumber(s string) bool {
 
 // ValidCardIssuer checks the established card network prefixes and lengths.
 func ValidCardIssuer(digits []byte, n int) bool {
+	// Every issuer length below is at least cardRunMinDigits, so shorter
+	// input is never a card; the guard also keeps the prefix reads in bounds.
+	if n < cardRunMinDigits || len(digits) < cardRunMinDigits {
+		return false
+	}
 	prefix4 := int(digits[0])*1000 + int(digits[1])*100 + int(digits[2])*10 + int(digits[3])
 	prefix6 := prefix4*100 + int(digits[4])*10 + int(digits[5])
 	switch digits[0] {

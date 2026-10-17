@@ -56,6 +56,23 @@ func TestCardRunsOverLimit(t *testing.T) {
 	}
 }
 
+func TestValidCardIssuerShortInput(t *testing.T) {
+	// The exported helper must reject short input instead of reading the
+	// issuer prefix out of bounds; a 4 or 5 prefix is otherwise accepted.
+	for n := 0; n < cardRunMinDigits; n++ {
+		digits := make([]byte, n)
+		for i := range digits {
+			digits[i] = 4
+		}
+		if ValidCardIssuer(digits, n) {
+			t.Fatalf("issuer accepted %d digits", n)
+		}
+		if ValidCardIssuer(digits, cardRunMinDigits+1) {
+			t.Fatalf("issuer accepted %d digits claimed as %d", n, cardRunMinDigits+1)
+		}
+	}
+}
+
 func TestBoundaryCardRuns(t *testing.T) {
 	card := "4111" + "1111" + "1111" + "1111"
 	view := "4111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,," + NumberBoundary + "1111,,"

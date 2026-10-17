@@ -954,7 +954,7 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 			var rawTargets []TextDLPMatch
 			invalidTargetFound := false
 			for _, match := range maskedResult.Matches {
-				if match.PatternName != patternName {
+				if match.PatternName != patternName || match.IsInformational() {
 					continue
 				}
 				span := match.Span()
@@ -1084,8 +1084,14 @@ func imageSplicedFragmentMatches(ctx context.Context, sc *Scanner, excised, deco
 			}
 			budget--
 			var target *TextDLPMatch
-			for _, m := range sc.ScanTextForDLPQuiet(ctx, string(masked)).Matches {
-				if m.PatternName == name {
+			rescanned := sc.ScanTextForDLPQuiet(ctx, string(masked)).Matches
+			if len(decoded) > 0 {
+				// Decoded image bytes make the combined window cease to be JSON.
+				// Keep the surrounding document's typed runs in the rescan too.
+				rescanned = append(rescanned, sc.ScanJSONCardRuns(ctx, string(masked[:len(excised)]))...)
+			}
+			for _, m := range rescanned {
+				if m.PatternName == name && !m.IsInformational() {
 					target = &m
 					break
 				}

@@ -273,3 +273,49 @@ func TestCardRunFragmentMemoKeepsWarnings(t *testing.T) {
 		t.Fatal("warning-free positive control did not use memo")
 	}
 }
+
+func TestCardRunFragmentMaskedWarningsRemainInformational(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	for _, tt := range []struct {
+		name, tail string
+		enforce    bool
+	}{
+		{name: "glue-only strings", tail: `["` + card[:2] + `","` + card[2:9] + `","` + card[9:] + `"]`},
+		{name: "number-only", tail: `[` + card[:4] + `,` + card[4:8] + `,` + card[8:12] + `,` + card[12:] + `]`},
+		{name: "grouped strings", tail: `["` + card[:4] + `","` + card[4:8] + `","` + card[8:12] + `","` + card[12:] + `"]`, enforce: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// A complete occurrence belongs to one request. The remaining occurrence
+			// spans requests and must keep its own evidence class after masking.
+			prefix := `["` + card + `",`
+			tail := tt.tail[1:]
+			text := prefix + tail
+			before := s.ScanTextForDLP(t.Context(), text)
+			if before.Clean {
+				t.Fatal("complete occurrence did not enforce")
+			}
+			masked := s.ScanTextForDLP(t.Context(), `["",`+tail)
+			if len(masked.Matches) == 0 || OnlyInformational(masked.Matches) == tt.enforce {
+				t.Fatal("tail lost its expected evidence class")
+			}
+			for _, image := range []string{"", dataURLForPNGBytes(t, randomPNG(t, 21))} {
+				first := prefix + tail[:3]
+				if image != "" {
+					first = `["` + image + `",` + first[1:]
+				}
+				fragments := []fragment{{data: []byte(first)}, {data: []byte(tail[3:])}}
+				for range 2 {
+					matches := scanFragmentsForSecrets(t.Context(), s, fragments)
+					if (len(matches) > 0) != tt.enforce {
+						t.Fatalf("image=%v cross-request enforcement=%v; want %v", image != "", len(matches) > 0, tt.enforce)
+					}
+				}
+			}
+		})
+	}
+}

@@ -55,9 +55,26 @@ func (run CardRun) EnforcesShippedRule() bool { return run.Enforces(shippedCardR
 
 type cardPiece struct {
 	digits    string
+	spelling  string // string piece as written when it contains rule separators
 	number    bool
 	untrusted bool
 }
+
+// stringCardPiece accepts a whole string value made of digit groups joined by
+// single separators from the shipped rule's [- ] class. Any other character
+// leaves the value outside every typed run, as before.
+func stringCardPiece(value string) (cardPiece, bool) {
+	if !groupedDigits.MatchString(value) {
+		return cardPiece{}, false
+	}
+	digits := strings.NewReplacer(" ", "", "-", "").Replace(value)
+	if digits == value {
+		return cardPiece{digits: digits}, true
+	}
+	return cardPiece{digits: digits, spelling: value}, true
+}
+
+var groupedDigits = regexp.MustCompile(`^[0-9]+(?:[- ][0-9]+)*$`)
 
 // EscapeCardBoundaries retains scans of input markers without granting type
 // provenance. The u marker retains untrusted spelling without granting
@@ -155,7 +172,11 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 			if end > start {
 				spaced.WriteByte(' ')
 			}
-			spaced.WriteString(pieces[end].digits)
+			if pieces[end].spelling != "" {
+				spaced.WriteString(pieces[end].spelling)
+			} else {
+				spaced.WriteString(pieces[end].digits)
+			}
 			numberOnly = numberOnly && pieces[end].number
 			untrusted = untrusted || pieces[end].untrusted
 			size := candidate.Len()
@@ -206,11 +227,21 @@ func BoundaryCardRuns(view string) []CardRun {
 		if number || untrusted {
 			part = strings.TrimRight(part, ",")
 		}
-		if !allDigits(part) {
+		piece := cardPiece{digits: part}
+		if number && !untrusted {
+			if !allDigits(part) {
+				flush()
+				continue
+			}
+		} else if grouped, ok := stringCardPiece(part); ok {
+			piece = grouped
+		} else {
 			flush()
 			continue
 		}
-		pieces = append(pieces, cardPiece{digits: part, number: number && !untrusted, untrusted: untrusted})
+		piece.number = number && !untrusted
+		piece.untrusted = untrusted
+		pieces = append(pieces, piece)
 	}
 	flush()
 	return runs
@@ -283,10 +314,10 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 				stack[len(stack)-1].expectKey = false
 				continue
 			}
-			if !allDigits(v) {
-				flush()
+			if piece, ok := stringCardPiece(v); ok {
+				pieces = append(pieces, piece)
 			} else {
-				pieces = append(pieces, cardPiece{digits: v})
+				flush()
 			}
 		case json.Number:
 			if _, ok := boundedComponents(v.String()); !ok {

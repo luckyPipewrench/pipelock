@@ -62,6 +62,10 @@ func JSONCases() []JSONCase {
 		JSONCase{Name: "phone component glue-only batch", Body: `["1","837","441","7365","1","862","723","2830","1","245","841","9159"]`, Warn: true},
 		JSONCase{Name: "date component batch", Body: `["2024","02","16","2029","08","27","2026","01","16","2022","06","18"]`, Warn: true},
 		JSONCase{Name: "phone batch matching shipped rule", Body: `["1","637","636","5534","1","675","924","0178","1","441","851","1665"]`},
+		JSONCase{Name: "space grouped string halves", Body: `["` + card[:4] + ` ` + card[4:8] + `","` + card[8:12] + ` ` + card[12:] + `"]`},
+		JSONCase{Name: "dash grouped string halves", Body: `["` + card[:4] + `-` + card[4:8] + `","` + card[8:12] + `-` + card[12:] + `"]`},
+		JSONCase{Name: "grouped string then group", Body: `["` + card[:4] + ` ` + card[4:8] + ` ` + card[8:12] + `","` + card[12:] + `"]`},
+		JSONCase{Name: "grouped uneven string pieces", Body: `["` + card[:2] + ` ` + card[2:9] + `","` + card[9:] + `"]`, Warn: true},
 	)
 	var counters []string
 	for i := 0; i <= 20; i++ {

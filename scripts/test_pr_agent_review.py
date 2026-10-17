@@ -25,7 +25,7 @@ import yaml
 from scripts import pr_agent_review as review
 
 ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = yaml.load((ROOT / ".github/workflows/agent-review.yaml").read_text(), Loader=yaml.BaseLoader)
+WORKFLOW = yaml.load((ROOT / ".github/workflows/agent-review-reusable.yaml").read_text(), Loader=yaml.BaseLoader)
 HAIKU = "anthropic/claude-haiku-5-5"
 OPENAI = "gpt-6-luna"
 
@@ -59,6 +59,7 @@ class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.gate = WORKFLOW["jobs"]["admit"]["if"]
         self.event = {
+            "github.event_name": "issue_comment", "github.event.action": "created",
             "github.actor": "luckyPipewrench", "github.actor_id": "142104046",
             "github.run_attempt": "1", "github.triggering_actor": "luckyPipewrench",
             "github.event.comment.user.login": "luckyPipewrench",
@@ -72,6 +73,7 @@ class WorkflowTests(unittest.TestCase):
     def test_gate_accepts_only_exact_identity_and_command(self):
         self.assertTrue(admitted(self.gate, self.event))
         attacks = {
+            "github.event_name": "workflow_dispatch", "github.event.action": "edited",
             "github.actor": "contributor", "github.actor_id": "123",
             "github.run_attempt": "2", "github.triggering_actor": "contributor",
             "github.event.comment.user.login": "contributor",
@@ -95,21 +97,33 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(admitted(broken, event))
 
     def test_created_comments_only_and_secret_isolation(self):
-        self.assertEqual({"issue_comment": {"types": ["created"]}}, WORKFLOW["on"])
+        caller = yaml.load((ROOT / ".github/workflows/agent-review.yaml").read_text(), Loader=yaml.BaseLoader)
+        self.assertEqual({"issue_comment": {"types": ["created"]}}, caller["on"])
+        self.assertEqual(self.gate, caller["jobs"]["review"]["if"])
+        self.assertEqual({"workflow_call"}, set(WORKFLOW["on"]))
+        self.assertEqual({"ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_2", "OPENAI_API_KEY"},
+                         set(WORKFLOW["on"]["workflow_call"]["secrets"]))
         self.assertEqual({}, WORKFLOW["permissions"])
         admit = WORKFLOW["jobs"]["admit"]
         self.assertEqual({"pull-requests": "read"}, admit["permissions"])
         self.assertNotIn("secrets.", json.dumps(admit))
         job = WORKFLOW["jobs"]["review"]
-        self.assertEqual("admit", job["needs"])
+        self.assertEqual(["source", "admit"], job["needs"])
         self.assertEqual("needs.admit.outputs.admitted == 'true'", job["if"])
         self.assertRegex(job["container"]["image"], r"^pragent/pr-agent:0\.47\.0@sha256:[0-9a-f]{64}$")
         self.assertNotIn("env", job)
-        checkout, run = job["steps"]
-        self.assertEqual("${{ github.workflow_sha }}", checkout["with"]["ref"])
+        checkout, profile, validate, run = job["steps"]
+        self.assertEqual("${{ needs.source.outputs.reviewer_sha }}", checkout["with"]["ref"])
+        self.assertEqual("pipelab-org/pipelock", checkout["with"]["repository"])
+        self.assertEqual("trusted-agent-review", checkout["with"]["path"])
+        self.assertEqual("${{ github.workflow_sha }}", profile["with"]["ref"])
+        self.assertEqual("false", profile["with"]["persist-credentials"])
+        self.assertEqual("trusted-agent-profile", profile["with"]["path"])
+        self.assertNotIn("secrets.", json.dumps(validate))
+        self.assertIn("trusted-agent-review/scripts/agent_review_contract.py", validate["run"])
         self.assertEqual("false", checkout["with"]["persist-credentials"])
         self.assertNotIn("secrets.", json.dumps(checkout))
-        self.assertEqual("python scripts/pr_agent_review.py", run["run"])
+        self.assertEqual("python trusted-agent-review/scripts/pr_agent_review.py", run["run"])
         self.assertNotIn("comment.body", json.dumps(run))
 
     def test_container_keeps_hardening_and_uses_hosted_runner_uid(self):

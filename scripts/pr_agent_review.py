@@ -7,14 +7,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
 import sys
+import time
 import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
+if __package__:
+    from .agent_review_contract import load_profile
+else:
+    from agent_review_contract import load_profile
+
+PROFILE = Path(__file__).resolve().parents[1] / ".github" / "agent-review.toml"
 CONFIG = Path(__file__).resolve().parents[1] / ".github" / "pr-agent.toml"
 
 
@@ -105,8 +113,22 @@ class CompletionChain:
         self.max_calls = max_calls
         self.calls = 0
         self.index = 0
+        self.models_used = []
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        self.rejections = 0
+        self.usage_observed = False
         self.aborted = False
         self.lock = asyncio.Lock()
+
+    def record_usage(self, response):
+        # The pinned handler discards response metadata at its public boundary.
+        # Observe only integer usage fields before that boundary, never messages.
+        usage = getattr(response, "usage", None)
+        for field in self.usage:
+            value = getattr(usage, field, None)
+            if type(value) is int and value >= 0:
+                self.usage_observed = True
+                self.usage[field] += value
 
     async def run(self, *args):
         # Upstream chunks run concurrently. Serialize so rejected slots stay retired
@@ -130,18 +152,22 @@ class CompletionChain:
                 result = await self.complete(model, slot, *args)
             except Exception as error:
                 if billing_rejection(error):
+                    self.rejections += 1
                     self.index += 1
                     continue
                 raise ReviewAbort("Provider failed; ambiguous requests are never retried") from None
             if result[1] not in ("stop", "end_turn"):
                 raise ReviewAbort("Provider returned an incomplete completion")
             self.calls += 1
+            if model not in self.models_used:
+                self.models_used.append(model)
             print(f"Completed review call {self.calls} with {model}")
             return result
         raise ReviewAbort("Configured provider credits exhausted")
 
 
 def configure():
+    profile, _ = load_profile(Path(os.environ.get("REVIEW_PROFILE_PATH", PROFILE)))
     # Set before importing LiteLLM: its default import can fetch mutable metadata.
     os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     os.environ["OTEL_SDK_DISABLED"] = "true"
@@ -157,6 +183,9 @@ def configure():
     for section, entries in data.items():
         for key, value in entries.items():
             settings.set(f"{section}.{key}", value)
+    settings.set("pr_reviewer.extra_instructions",
+                 data["pr_reviewer"]["extra_instructions"].rstrip() + "\n\n" + profile["review"]["instructions"])
+    settings.set("ignore.glob", profile["ignore"]["glob"])
     # Provider registration supplies routing metadata only. The operator's token
     # ceiling above controls budgeting; it is not the model's advertised context.
     litellm.register_model({"gpt-6-luna": {
@@ -187,7 +216,52 @@ def print_settings(settings, litellm):
     }, sort_keys=True))
 
 
+STATUS_MARKER = "agent-review-status:v1"
+
+
+def bot_owned(comment):
+    user = getattr(comment, "user", None)
+    return (getattr(user, "login", None) == "github-actions[bot]"
+            and getattr(user, "type", None) == "Bot")
+
+
+def completed_review(comments, key):
+    """Reuse only a bot's terminal record whose published summary is still intact."""
+    comments = list(comments)
+    summaries = {c.id: c for c in comments if bot_owned(c) and isinstance(c.body, str)}
+    pattern = rf"<!-- {STATUS_MARKER} state=success key={key} summary=([1-9][0-9]*) digest=([0-9a-f]{{64}}) -->"
+    for comment in summaries.values():
+        match = re.fullmatch(pattern, comment.body.split("\n", 1)[0])
+        if match:
+            summary = summaries.get(int(match[1]))
+            if summary is not None and hashlib.sha256(summary.body.encode()).hexdigest() == match[2]:
+                return comment
+    return None
+
+
+def review_binding(settings, repo, number, head, base):
+    source, profile_sha = os.environ["REVIEW_SOURCE_SHA"], os.environ["REVIEW_PROFILE_SHA"]
+    if not all(re.fullmatch(r"[0-9a-f]{40}", sha) for sha in (source, profile_sha)):
+        raise ReviewAbort("Invalid reviewer or profile source identity")
+    profile, profile_hash = load_profile(Path(os.environ.get("REVIEW_PROFILE_PATH", PROFILE)))
+    models = [settings.config.model, *settings.config.fallback_models]
+    binding = {"repository": repo, "number": number, "head": head, "base": base,
+               "reviewer": source, "profile_hash": profile_hash, "models": models,
+               "common_config": hashlib.sha256(CONFIG.read_bytes()).hexdigest()}
+    key = hashlib.sha256(json.dumps(binding, sort_keys=True).encode()).hexdigest()
+    return key, source, profile_sha, profile_hash, profile["ignore"]["glob"]
+
+
+def provenance(source, profile_sha, profile_hash, exclusions):
+    # Escape code-span delimiters as JSON Unicode escapes, preserving each glob.
+    shown_exclusions = json.dumps(exclusions, ensure_ascii=True).replace("`", "\\u0060")
+    return (f"Reviewer source `{source}`; caller profile `{profile_sha}` "
+            f"(SHA-256 `{profile_hash}`).\n\n"
+            f"Declared exclusions: `{shown_exclusions}`.")
+
+
 async def review(settings):
+    started = time.monotonic()
     from pr_agent.algo.ai_handlers.litellm_ai_handler import LiteLLMAIHandler
     from pr_agent.algo.run_details import command_failed
     from pr_agent.tools.pr_reviewer import PRReviewer
@@ -199,12 +273,6 @@ async def review(settings):
     )}
     models = [settings.config.model, *settings.config.fallback_models]
     chain = credential_chain(models, credentials)
-    if not chain:
-        raise ReviewAbort("No configured provider credential is available")
-    settings.set("config.model", chain[0][0])
-    # Preserve the configured order in our per-completion chain. Upstream's
-    # fallback would also retry timeouts and may repeat already successful chunks.
-    settings.set("config.fallback_models", [])
     settings.set("github.user_token", os.environ.pop("GITHUB_TOKEN"))
     settings.set("github.deployment_type", "user")
     repo = os.environ["GITHUB_REPOSITORY"]
@@ -224,9 +292,28 @@ async def review(settings):
         # Tenacity's supported retry_with API disables the upstream handler's
         # same-model retries; config.num_retries disables completion-client retries.
         once = handler._chat_completion_with_retry.retry_with(stop=stop_after_attempt(1))
-        with patch.object(AsyncHTTPHandler, "single_connection_post_request", deny_transport_retry):
+        get_completion = handler._get_completion
+
+        async def measured_completion(**kwargs):
+            result = await get_completion(**kwargs)
+            router.record_usage(result[2])
+            return result
+
+        with (patch.object(AsyncHTTPHandler, "single_connection_post_request", deny_transport_retry),
+              patch.object(handler, "_get_completion", measured_completion)):
             return await once(handler, model, system, user, temperature, image,
                               configured_deployment_id=handler.deployment_id)
+
+    # Fingerprint the configured chain, not the credential-dependent first route.
+    key, source, profile_sha, profile_hash, exclusions = review_binding(settings, repo, number, head, base)
+    settings.set("config.model", chain[0][0] if chain else models[0])
+    settings.set("config.fallback_models", [])
+    record = provenance(source, profile_sha, profile_hash, exclusions)
+    run_id = os.environ["GITHUB_RUN_ID"]
+    if not re.fullmatch(r"[1-9][0-9]*", run_id):
+        raise ReviewAbort("Invalid review run identity")
+    run_url = f"https://github.com/{repo}/actions/runs/{run_id}"
+    notice = f"<!-- agent-review-notice:v1 run={run_id} -->"
 
     router = CompletionChain(chain, complete, settings.pr_reviewer.max_number_of_calls)
 
@@ -250,17 +337,72 @@ async def review(settings):
             result = super()._prepare_pr_review()
             if not result:
                 raise ReviewAbort("Provider returned an invalid review")
-            return result + f"\n\nReviewed base `{base}` and head `{head}`."
+            return result + f"\n\nReviewed base `{base}` and head `{head}`.\n\n{record}"
 
     reviewer = Reviewer(f"https://github.com/{repo}/pull/{number}", ai_handler=Handler)
     reviewer.check_binding()
+    previous = completed_review(reviewer.git_provider.get_issue_comments(), key)
+    if previous is not None:
+        reviewer.check_binding(fresh=True)
+        reviewer.git_provider.pr.create_issue_comment(
+            f"{notice}\nThis snapshot already has a completed diff review. "
+            f"[Completed review]({previous.html_url}); no new inference was requested.\n\n"
+            f"[Actions run]({run_url}).")
+        print(f"Reused completed review: {previous.html_url}")
+        return
+    if not chain:
+        raise ReviewAbort("No configured provider credential is available")
+    pr = reviewer.git_provider.pr
+    # The review job's repository/PR concurrency serializes this status pattern.
+    # A running or failed record is never evidence of successful completion.
+    status = pr.create_issue_comment(
+        f"{notice}\n<!-- {STATUS_MARKER} state=running key={key} -->\n"
+        f"Diff review started for base `{base}` and head `{head}`.\n\n{record}\n\n"
+        f"[Actions run]({run_url}).")
+    published = []
+    provider = reviewer.git_provider
+
+    def require_publication(original):
+        def publish(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if result is None or result is False:
+                raise ReviewAbort("Review summary publication failed")
+            published.append(result)
+            return result
+        return publish
+
     try:
-        await reviewer.run()
+        with (patch.object(provider, "publish_persistent_comment",
+                           require_publication(provider.publish_persistent_comment)),
+              patch.object(provider, "publish_persistent_comment_full",
+                           require_publication(provider.publish_persistent_comment_full))):
+            await reviewer.run()
     except Exception as error:
         # Upstream raises generic exceptions, for example after an unparseable
         # prediction. Report only the class; the message can carry model output.
         raise ReviewAbort(f"PR-Agent review failed ({type(error).__name__})") from None
     check_complete(reviewer, router.calls, command_failed())
+    if not published:
+        raise ReviewAbort("Review summary was not published")
+    reviewer.check_binding(fresh=True)
+    summary = published[-1]
+    if (not bot_owned(summary) or type(summary.id) is not int or summary.id <= 0
+            or not isinstance(summary.body, str)):
+        raise ReviewAbort("Review summary identity could not be verified")
+    digest = hashlib.sha256(summary.body.encode()).hexdigest()
+    usage = router.usage if router.usage_observed else None
+    runtime_seconds = int(time.monotonic() - started)
+    # Only this post-publication transition permits identical-snapshot reuse.
+    status.edit(f"<!-- {STATUS_MARKER} state=success key={key} summary={summary.id} digest={digest} -->\n"
+                f"Completed diff review for base `{base}` and head `{head}`.\n\n{record}\n\n"
+                f"Models used: `{json.dumps(router.models_used)}`. "
+                f"Successful calls: {router.calls}; billing rejections: {router.rejections}; "
+                f"runtime: {runtime_seconds} seconds.\n\n"
+                f"Reported token usage: `{json.dumps(usage, sort_keys=True)}`.\n\n"
+                f"[Review summary]({summary.html_url}) · [Actions run]({run_url}).")
+    print(json.dumps({"models": router.models_used, "successful_calls": router.calls,
+                      "billing_rejections": router.rejections, "reported_tokens": usage,
+                      "runtime_seconds": runtime_seconds}, sort_keys=True))
 
 
 def main():

@@ -8,9 +8,10 @@ on:
 permissions: {}
 
 jobs:
-  admit:
-    name: Admit maintainer command
+  review:
     if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
       github.actor == 'luckyPipewrench' &&
       github.actor_id == '142104046' &&
       github.run_attempt == '1' &&
@@ -21,75 +22,12 @@ jobs:
       github.event.comment.author_association == 'MEMBER' &&
       github.event.issue.pull_request &&
       github.event.comment.body == '/agent-review'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
     permissions:
-      pull-requests: read # Read PR origin and immutable commits before admission.
-    outputs:
-      admitted: ${{ steps.pr.outputs.admitted }}
-      head: ${{ steps.pr.outputs.head }}
-      base: ${{ steps.pr.outputs.base }}
-    steps:
-      - name: Reject fork and closed pull requests before provider admission
-        id: pr
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-        run: |
-          set -euo pipefail
-          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
-          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
-            .state == "open" and .head.repo.fork == false and
-            .head.repo.full_name == $repo and .base.repo.full_name == $repo
-          ' <<< "$pr" >/dev/null; then
-            echo 'Pull request is ineligible; no provider work admitted.'
-            exit 0
-          fi
-          head="$(jq -er '.head.sha' <<< "$pr")"
-          base="$(jq -er '.base.sha' <<< "$pr")"
-          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]]
-          printf 'admitted=true\nhead=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
-
-  review:
-    name: Review admitted diff
-    needs: admit
-    if: needs.admit.outputs.admitted == 'true'
-    # Job-scoped so unrelated comments, which never pass admission, cannot
-    # replace a queued maintainer command in the group.
-    concurrency:
-      group: agent-review-${{ github.repository }}-${{ github.event.issue.number }}
-      cancel-in-progress: false
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    permissions:
-      contents: read # Check out the trusted workflow revision.
-      issues: write # Update the persistent summary on the pull request.
-      pull-requests: write # Publish inline review threads.
-    container:
-      image: pragent/pr-agent:0.47.0@sha256:7d98954c29289846a08faf00aaea0f1f1375b1676cd8a2ed303e0af07010af7a
-      # Match the hosted Ubuntu runner's UID so checkout can write file commands
-      # and the workspace without restoring DAC_OVERRIDE or other capabilities.
-      # https://github.com/actions/runner-images/issues/10936
-      # GID 1001 deliberately excludes the runner's docker group, so the mounted
-      # Docker socket stays unreachable. Don't add that group or return to root.
-      # If checkout fails with EACCES, check `id -u` on the hosted runner. If it
-      # changed, update the UID in --user and keep a group other than docker.
-      options: --user 1001:1001 --cap-drop=ALL --security-opt=no-new-privileges
-    steps:
-      - name: Check out the loaded default-branch workflow revision
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.workflow_sha }}
-          persist-credentials: false
-      - name: Review the admitted diff
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          PR_NUMBER: ${{ github.event.issue.number }}
-          REVIEW_HEAD: ${{ needs.admit.outputs.head }}
-          REVIEW_BASE: ${{ needs.admit.outputs.base }}
-          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
-          OTEL_SDK_DISABLED: 'true'
-        run: python scripts/pr_agent_review.py
+      contents: read
+      issues: write
+      pull-requests: write
+    uses: ./.github/workflows/agent-review-reusable.yaml
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

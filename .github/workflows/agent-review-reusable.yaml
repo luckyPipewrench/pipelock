@@ -1,0 +1,263 @@
+name: Reusable PR-Agent review
+
+on:
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+      ANTHROPIC_API_KEY_2:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+permissions: {}
+
+jobs:
+  source:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      github.actor == 'luckyPipewrench' &&
+      github.actor_id == '142104046' &&
+      github.run_attempt == '1' &&
+      github.triggering_actor == 'luckyPipewrench' &&
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.user.id == 142104046 &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.author_association == 'MEMBER' &&
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/agent-review'
+    # Local nested calls load from this workflow's own immutable revision.
+    # https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_iduses
+    permissions: {}
+    uses: ./.github/workflows/pr-review-source.yaml
+
+  admit:
+    needs: source
+    name: Admit maintainer command
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      github.actor == 'luckyPipewrench' &&
+      github.actor_id == '142104046' &&
+      github.run_attempt == '1' &&
+      github.triggering_actor == 'luckyPipewrench' &&
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.user.id == 142104046 &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.author_association == 'MEMBER' &&
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/agent-review'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read # Read PR origin and immutable commits before admission.
+    outputs:
+      admitted: ${{ steps.pr.outputs.admitted }}
+      head: ${{ steps.pr.outputs.head }}
+      base: ${{ steps.pr.outputs.base }}
+    steps:
+      - name: Reject fork and closed pull requests before provider admission
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}")"
+          if ! jq -e --arg repo "$GITHUB_REPOSITORY" '
+            .state == "open" and .head.repo.fork == false and
+            .head.repo.full_name == $repo and .base.repo.full_name == $repo
+          ' <<< "$pr" >/dev/null; then
+            echo 'Pull request is ineligible; no provider work admitted.'
+            exit 0
+          fi
+          head="$(jq -er '.head.sha' <<< "$pr")"
+          base="$(jq -er '.base.sha' <<< "$pr")"
+          [[ "$head" =~ ^[0-9a-f]{40}$ && "$base" =~ ^[0-9a-f]{40}$ ]]
+          printf 'admitted=true\nhead=%s\nbase=%s\n' "$head" "$base" >> "$GITHUB_OUTPUT"
+
+  review:
+    name: Review admitted diff
+    needs: [source, admit]
+    if: needs.admit.outputs.admitted == 'true'
+    # Job-scoped so unrelated comments, which never pass admission, cannot
+    # replace a queued maintainer command in the group.
+    concurrency:
+      group: agent-review-${{ github.repository }}-${{ github.event.issue.number }}
+      cancel-in-progress: false
+      # Keep later authorized commands pending rather than replacing one.
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency
+      queue: max
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read # Check out the trusted workflow revision.
+      issues: write # Update the persistent summary on the pull request.
+      pull-requests: write # Publish inline review threads.
+    container:
+      image: pragent/pr-agent:0.47.0@sha256:7d98954c29289846a08faf00aaea0f1f1375b1676cd8a2ed303e0af07010af7a
+      # Match the hosted Ubuntu runner's UID so checkout can write file commands
+      # and the workspace without restoring DAC_OVERRIDE or other capabilities.
+      # https://github.com/actions/runner-images/issues/10936
+      # GID 1001 deliberately excludes the runner's docker group, so the mounted
+      # Docker socket stays unreachable. Don't add that group or return to root.
+      # If checkout fails with EACCES, check `id -u` on the hosted runner. If it
+      # changed, update the UID in --user and keep a group other than docker.
+      options: --user 1001:1001 --cap-drop=ALL --security-opt=no-new-privileges
+    steps:
+      - name: Check out immutable Pipelock review source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: pipelab-org/pipelock
+          ref: ${{ needs.source.outputs.reviewer_sha }}
+          path: trusted-agent-review
+          persist-credentials: false
+      - name: Check out caller policy as data from its loaded default-branch revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.workflow_sha }}
+          path: trusted-agent-profile
+          persist-credentials: false
+          sparse-checkout: |
+            .github/agent-review.toml
+            .github/workflows/agent-review.yaml
+          sparse-checkout-cone-mode: false
+      - name: Validate the trusted caller and restricted profile before inference
+        env:
+          REVIEW_SOURCE_SHA: ${{ needs.source.outputs.reviewer_sha }}
+        run: python trusted-agent-review/scripts/agent_review_contract.py --root trusted-agent-profile --source-sha "$REVIEW_SOURCE_SHA"
+      - name: Review the admitted diff
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_API_KEY_2: ${{ secrets.ANTHROPIC_API_KEY_2 }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REVIEW_SOURCE_SHA: ${{ needs.source.outputs.reviewer_sha }}
+          REVIEW_PROFILE_SHA: ${{ github.workflow_sha }}
+          REVIEW_PROFILE_PATH: trusted-agent-profile/.github/agent-review.toml
+          REVIEW_HEAD: ${{ needs.admit.outputs.head }}
+          REVIEW_BASE: ${{ needs.admit.outputs.base }}
+          LITELLM_LOCAL_MODEL_COST_MAP: 'True'
+          OTEL_SDK_DISABLED: 'true'
+        run: python trusted-agent-review/scripts/pr_agent_review.py
+
+  notify-failure:
+    name: Report incomplete review
+    needs: [source, admit, review]
+    if: >-
+      always() &&
+      github.event_name == 'issue_comment' &&
+      github.event.action == 'created' &&
+      github.actor == 'luckyPipewrench' &&
+      github.actor_id == '142104046' &&
+      github.run_attempt == '1' &&
+      github.triggering_actor == 'luckyPipewrench' &&
+      github.event.comment.user.login == 'luckyPipewrench' &&
+      github.event.comment.user.id == 142104046 &&
+      github.event.comment.user.type == 'User' &&
+      github.event.comment.author_association == 'MEMBER' &&
+      github.event.issue.pull_request &&
+      github.event.comment.body == '/agent-review'
+      && (needs.source.result == 'failure' || needs.source.result == 'cancelled' ||
+          needs.admit.result == 'failure' || needs.admit.result == 'cancelled' ||
+          needs.review.result == 'failure' || needs.review.result == 'cancelled')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Issue-comment endpoints accept pull-requests:write for PR comments.
+    # https://docs.github.com/en/rest/issues/comments#create-an-issue-comment
+    permissions:
+      pull-requests: write
+    steps:
+      # Host-only, no checkout, artifacts, provider secrets, or container.
+      - name: Publish fixed incomplete status for the original eligible request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_HEAD: ${{ needs.admit.outputs.head }}
+          REVIEW_BASE: ${{ needs.admit.outputs.base }}
+          ADMISSION_RESULT: ${{ needs.admit.result }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import urllib.request
+
+
+          def main():
+              with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as stream:
+                  event = json.load(stream)
+              comment = event.get("comment", {})
+              user = comment.get("user", {})
+              issue = event.get("issue", {})
+              if not (os.environ["GITHUB_EVENT_NAME"] == "issue_comment" and event.get("action") == "created"
+                      and os.environ["GITHUB_ACTOR"] == "luckyPipewrench"
+                      and os.environ["GITHUB_ACTOR_ID"] == "142104046"
+                      and os.environ["GITHUB_TRIGGERING_ACTOR"] == "luckyPipewrench"
+                      and os.environ["GITHUB_RUN_ATTEMPT"] == "1"
+                      and user.get("login") == "luckyPipewrench" and user.get("id") == 142104046
+                      and user.get("type") == "User" and comment.get("author_association") == "MEMBER"
+                      and comment.get("body") == "/agent-review" and issue.get("pull_request")):
+                  return
+              repo, number, run_id = os.environ["GITHUB_REPOSITORY"], issue.get("number"), os.environ["GITHUB_RUN_ID"]
+              if (not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)
+                      or repo != event.get("repository", {}).get("full_name")
+                      or type(number) is not int or number <= 0
+                      or not re.fullmatch(r"[1-9][0-9]*", run_id)):
+                  raise ValueError("Invalid notification identity")
+
+              def api(method, path, data=None):
+                  request = urllib.request.Request(
+                      "https://api.github.com/" + path, method=method,
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json", "Content-Type": "application/json"},
+                      data=json.dumps(data).encode() if data is not None else None)
+                  with urllib.request.urlopen(request) as response:
+                      return json.load(response)
+
+              prefix = f"repos/{repo}"
+              # Re-read eligibility even if admission failed before returning its outputs.
+              pr = api("GET", f"{prefix}/pulls/{number}")
+              if not (pr["state"] == "open" and pr["head"]["repo"] is not None
+                      and pr["head"]["repo"]["fork"] is False
+                      and pr["head"]["repo"]["full_name"] == repo and pr["base"]["repo"]["full_name"] == repo):
+                  return
+              head, base = os.environ.get("REVIEW_HEAD", ""), os.environ.get("REVIEW_BASE", "")
+              captured = bool(re.fullmatch(r"[0-9a-f]{40}", head) and re.fullmatch(r"[0-9a-f]{40}", base))
+              marker = f"<!-- agent-review-notice:v1 run={run_id} -->"
+              if captured and (head != pr["head"]["sha"] or base != pr["base"]["sha"]):
+                  message = "The requested diff review didn't complete because the commits changed. Post a new command on the current snapshot."
+              elif os.environ["ADMISSION_RESULT"] != "success" or not captured:
+                  message = "The requested diff review never started. Treat this run as incomplete."
+              else:
+                  message = "The requested diff review didn't complete. Treat this run as incomplete."
+              body = marker + "\n" + message
+              if captured:
+                  body += f"\n\nCaptured base `{base}` and head `{head}`."
+              body += f"\n\n[Actions run](https://github.com/{repo}/actions/runs/{run_id})."
+              page = 1
+              while True:
+                  comments = api("GET", f"{prefix}/issues/{number}/comments?per_page=100&page={page}")
+                  for item in comments:
+                      author = item.get("user", {})
+                      if (author.get("login") == "github-actions[bot]" and author.get("type") == "Bot"
+                              and item.get("body", "").split("\n", 1)[0] == marker):
+                          if type(item.get("id")) is not int or item["id"] <= 0:
+                              raise ValueError("Invalid notification comment")
+                          api("PATCH", f"{prefix}/issues/comments/{item['id']}", {"body": body})
+                          return
+                  if len(comments) < 100:
+                      break
+                  page += 1
+              api("POST", f"{prefix}/issues/{number}/comments", {"body": body})
+
+
+          try:
+              main()
+          except Exception:
+              # Never echo API errors, model output, credentials, or repository text.
+              raise SystemExit("Review failure notification failed; inspect Actions status") from None
+          PY

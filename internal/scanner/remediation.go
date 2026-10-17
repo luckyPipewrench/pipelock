@@ -418,12 +418,17 @@ func isQueryEntropyReason(reason string) bool {
 // GuidanceForResultWithPatterns uses exact structured finding names when the
 // caller has them, without interpreting display text as a pattern identifier.
 func GuidanceForResultWithPatterns(label, reason string, patterns []string) (RemediationGuidance, bool) {
+	structured := false
 	for _, pattern := range patterns {
+		if strings.TrimSpace(pattern) == "" {
+			continue
+		}
+		structured = true
 		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
 			return jsonInspectionLimitGuidance(), true
 		}
 	}
-	if len(patterns) > 0 {
+	if structured {
 		return guidanceForResult(label, reason)
 	}
 	return GuidanceForResult(label, reason)

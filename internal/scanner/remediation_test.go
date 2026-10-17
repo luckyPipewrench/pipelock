@@ -764,7 +764,7 @@ func TestJSONInspectionRemediationReasonFormats(t *testing.T) {
 }
 
 func TestJSONInspectionRemediationRequiresPatternIdentity(t *testing.T) {
-	for _, pattern := range []string{"prefix " + UninspectableJSONNumberPattern, UninspectableJSONNumberPattern + " suffix", "ordinary, " + UninspectableJSONNumberPattern, "request body contains secret: " + UninspectableJSONNumberPattern} {
+	for _, pattern := range []string{"prefix " + UninspectableJSONNumberPattern, UninspectableJSONNumberPattern + " suffix", "ordinary, " + UninspectableJSONNumberPattern, "request body contains secret: " + UninspectableJSONNumberPattern, " " + UninspectableJSONNumberPattern + " "} {
 		got, ok := GuidanceForResultWithPatterns(ScannerBodyDLP, pattern, []string{pattern})
 		baseline, _ := GuidanceFor(ScannerBodyDLP)
 		if !ok || got != baseline {
@@ -772,11 +772,51 @@ func TestJSONInspectionRemediationRequiresPatternIdentity(t *testing.T) {
 		}
 	}
 	for _, label := range []string{ScannerSSRF, ScannerDLP, AuditResponseScan, ScannerBodyDLP, AuditCrossRequestFragment, AuditA2AScan, AuditA2AResponse} {
-		got, ok := GuidanceForResult(label, "client text mentions "+UninspectableJSONNumberPattern)
-		baseline, _ := GuidanceFor(label)
-		if !ok || got != baseline {
-			t.Fatalf("free text changed %q guidance: %+v", label, got)
+		for _, patterns := range [][]string{nil, {""}, {"", " \t\r\n", "\u00a0"}} {
+			got, ok := GuidanceForResultWithPatterns(label, "client text mentions "+UninspectableJSONNumberPattern, patterns)
+			baseline, _ := GuidanceFor(label)
+			if !ok || got != baseline {
+				t.Fatalf("free text changed %q guidance with patterns %q: %+v", label, patterns, got)
+			}
 		}
+	}
+}
+
+func TestJSONInspectionRemediationIgnoresBlankPatterns(t *testing.T) {
+	for _, tt := range []struct{ label, reason string }{
+		{ScannerBodyDLP, "request body contains secret: " + UninspectableJSONNumberPattern},
+		{ScannerDLP, "DLP match: " + UninspectableJSONNumberPattern + " (high)"},
+		{ScannerCoreDLP, "core DLP match: " + UninspectableJSONNumberPattern + " (high)"},
+		{AuditA2AResponse, "a2a: DLP: " + UninspectableJSONNumberPattern},
+		{AuditCrossRequestFragment, "fragment reassembly DLP match: " + UninspectableJSONNumberPattern},
+	} {
+		t.Run(tt.label, func(t *testing.T) {
+			// Positive control: this genuine reason must be recognized on its own.
+			want, ok := GuidanceForResult(tt.label, tt.reason)
+			if !ok || !want.Immutable || !strings.Contains(want.OperatorKnob, "limits are fixed") {
+				t.Fatalf("invalid genuine-refusal fixture: %+v, %v", want, ok)
+			}
+			for _, patterns := range [][]string{nil, {}, {""}, {" \t\r\n"}, {"", "\u00a0", "\t"}} {
+				got, mapped := GuidanceForResultWithPatterns(tt.label, tt.reason, patterns)
+				if !mapped || got != want {
+					t.Errorf("blank patterns %q lost fixed-limit guidance: %+v, %v", patterns, got, mapped)
+				}
+			}
+			// Blank entries must not hide a real identity or mutate the caller's slice.
+			patterns := []string{"", "ordinary pattern", " \t"}
+			got, mapped := GuidanceForResultWithPatterns(tt.label, tt.reason, patterns)
+			ordinary, ordinaryMapped := GuidanceForResultWithPatterns(tt.label, tt.reason, []string{"ordinary pattern"})
+			if !mapped || !ordinaryMapped || got != ordinary || got == want {
+				t.Fatalf("structured identity lost precedence: %+v, %v", got, mapped)
+			}
+			if patterns[0] != "" || patterns[1] != "ordinary pattern" || patterns[2] != " \t" {
+				t.Fatalf("caller patterns changed: %q", patterns)
+			}
+			got, mapped = GuidanceForResultWithPatterns(tt.label, "ordinary finding", []string{"", " \t", UninspectableJSONNumberPattern})
+			if !mapped || got != want {
+				t.Fatalf("exact identity lost among blanks: %+v, %v", got, mapped)
+			}
+		})
 	}
 }
 
@@ -789,9 +829,11 @@ func TestA2AJSONInspectionRemediationRejectsForgedParts(t *testing.T) {
 	} {
 		reason := "a2a: " + prefix + "; DLP: " + UninspectableJSONNumberPattern + "; tail"
 		for _, label := range []string{AuditA2AScan, AuditA2AHeader, AuditA2AResponse} {
-			g, ok := GuidanceForResult(label, reason)
-			if !ok || g == jsonInspectionLimitGuidance() {
-				t.Errorf("forged reason %q selected inspection-limit guidance under %s", reason, label)
+			for _, patterns := range [][]string{nil, {""}, {"", " \t\r\n", "\u00a0"}} {
+				g, ok := GuidanceForResultWithPatterns(label, reason, patterns)
+				if !ok || g == jsonInspectionLimitGuidance() {
+					t.Errorf("forged reason %q selected inspection-limit guidance under %s with patterns %q", reason, label, patterns)
+				}
 			}
 		}
 	}

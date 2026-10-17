@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import importlib.util
 import os
 import socket
@@ -245,6 +246,43 @@ class RuntimeTests(unittest.TestCase):
         self.provider.publish_persistent_comment.assert_not_called()
         self.provider.publish_code_suggestions.assert_not_called()
         self.status.edit.assert_not_called()
+
+    def test_commits_changed_after_publication_never_mark_success(self):
+        summary = self.summary_publish.return_value
+
+        def publish(*args, **kwargs):
+            self.provider.pr.head.sha = "f" * 40
+            return summary
+
+        self.summary_publish.side_effect = publish
+        completion = AsyncMock(return_value=self.response())
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_awaited_once()
+        self.summary_publish.assert_called_once()
+        self.status.edit.assert_not_called()
+
+    def test_reuse_requires_the_current_snapshot(self):
+        with patch.dict(os.environ, self.env):
+            key = review.review_binding(self.settings, self.repo, "1", self.head, self.base)[0]
+        summary = self.summary_publish.return_value
+        digest = hashlib.sha256(summary.body.encode()).hexdigest()
+        record = NS(id=9, user=summary.user, html_url="https://github.com/example/project/pull/1#issuecomment-9",
+                    body=f"<!-- agent-review-status:v1 state=success key={key} summary=8 digest={digest} -->\nDone")
+        self.provider.get_issue_comments.return_value = [record, summary]
+        completion = AsyncMock(return_value=self.response())
+        self.run_adapter(completion)
+        completion.assert_not_awaited()
+        self.assertIn("no new inference", self.provider.pr.create_issue_comment.call_args.args[0])
+        self.provider.pr.create_issue_comment.reset_mock()
+        self.settings, _ = review.configure()  # Each workflow run configures once.
+        self.provider.github_client.get_repo.return_value.get_pull.return_value = NS(
+            state="open", head=NS(repo=NS(full_name=self.repo, fork=False), sha="f" * 40),
+            base=NS(repo=NS(full_name=self.repo), sha=self.base))
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_not_awaited()
+        self.provider.pr.create_issue_comment.assert_not_called()
 
     def test_missing_credentials_and_failed_publication_never_mark_success(self):
         completion = AsyncMock(return_value=self.response())

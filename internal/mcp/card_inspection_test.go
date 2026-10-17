@@ -193,7 +193,7 @@ func TestJSONInspectionRuntimeWarn(t *testing.T) {
 func TestJSONInspectionRawHelperMetadata(t *testing.T) {
 	sc := testScannerWithAction(t, config.ActionWarn)
 	for _, line := range []string{`{`, `{"jsonrpc":"2.0","id":1,"method":"report"}`} {
-		if matches := responseJSONCardMatches(sc, []byte(line)); len(matches) != 0 {
+		if matches := responseJSONCardMatches(sc, []byte(line), false); len(matches) != 0 {
 			t.Fatal("routing metadata became payload evidence")
 		}
 	}

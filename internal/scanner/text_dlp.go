@@ -663,11 +663,18 @@ func (s *Scanner) JSONInspectionLimitExceeded(text string) bool {
 // ScanJSONCardRuns checks adjacent scalar pieces in a typed JSON document
 // without admitting its numeric leaves to prompt or non-card pattern scans.
 func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMatch {
+	return s.ScanJSONCardRunsWithDepth(ctx, text, extract.MaxExtractDepth)
+}
+
+// ScanJSONCardRunsWithDepth uses an extractor-aligned container bound. A caller
+// scanning a surrounding protocol wrapper must account only for that framing;
+// payload extraction still enforces its own unchanged depth bound first.
+func (s *Scanner) ScanJSONCardRunsWithDepth(ctx context.Context, text string, maxDepth int) []TextDLPMatch {
 	if !s.hasGenericCardPatterns() {
 		return nil
 	}
 	var matches []TextDLPMatch
-	runs, limit := jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+	runs, limit := jsonnumber.CardRunsWithLimit(text, maxDepth)
 	if limit != jsonnumber.CardRunWithinBudget {
 		trimmed := strings.TrimSpace(text)
 		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {

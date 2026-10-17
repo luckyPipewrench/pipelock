@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/jsonrpc"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/provenance"
@@ -308,7 +309,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	}
 	if includeDLP {
 		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
-		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed))
+		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed, false))
 	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
@@ -327,7 +328,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 // response payload field, including extensions and tools/list siblings. Routing
 // metadata is not payload. Complete JSON documents in string leaves receive
 // their own pass before extracted text joins can erase their shape.
-func responseJSONCardMatches(sc *scanner.Scanner, line []byte) []scanner.TextDLPMatch {
+func responseJSONCardMatches(sc *scanner.Scanner, line []byte, toolsList bool) []scanner.TextDLPMatch {
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(line, &fields) != nil {
 		return nil
@@ -342,7 +343,14 @@ func responseJSONCardMatches(sc *scanner.Scanner, line []byte) []scanner.TextDLP
 	var matches []scanner.TextDLPMatch
 	for _, key := range keys {
 		raw := fields[key]
-		matches = appendUniqueA2ADLPFindings(matches, sc.ScanJSONCardRuns(context.Background(), string(raw)))
+		maxDepth := extract.MaxExtractDepth
+		if toolsList && key == "result" {
+			// tools/list extraction and its tool gate count from result.tools.
+			// This raw result view adds exactly one surrounding object; see
+			// TestForwardScanned_SchemaDepthGateMatchesEnvelopeExtraction.
+			maxDepth++
+		}
+		matches = appendUniqueA2ADLPFindings(matches, sc.ScanJSONCardRunsWithDepth(context.Background(), string(raw), maxDepth))
 		for _, leaf := range jsonrpc.ExtractStringsFromJSONResult(raw).Strings {
 			trimmed := strings.TrimSpace(leaf)
 			if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
@@ -868,7 +876,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		}
 	}
 	dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
-	dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed))
+	dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed, true))
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

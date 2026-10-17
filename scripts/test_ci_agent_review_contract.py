@@ -166,6 +166,51 @@ class AgentReviewContractJobTest(unittest.TestCase):
             self.assertNotEqual(0, result.returncode)
             self.assertEqual("", output)
 
+    def test_base_pin_read_distinguishes_absence_from_errors(self) -> None:
+        step = self.step("Read the base branch engine revision")
+        self.assertEqual("base_pin", step["id"])
+        self.assertEqual("github.event_name == 'pull_request'", step["if"])
+        self.assertEqual(
+            "${{ steps.base_pin.outputs.sha }}",
+            self.step("Require the pin on the engine main branch")["env"]["BASE_PIN"],
+        )
+        script = step["run"]
+        caller = CALLER.read_text(encoding="utf-8")
+        uses = next(line for line in caller.splitlines() if line.strip().startswith("uses:"))
+        sha = uses.split("@")[1].split()[0]
+        legacy = caller.replace(uses, "    uses: ./.github/workflows/agent-review-reusable.yaml")
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp = Path(temp_dir)
+            path = temp / "base" / ".github" / "workflows" / "agent-review.yaml"
+            path.parent.mkdir(parents=True)
+            output = temp / "output"
+            for name, content, prefix, expected_code, expected_output in (
+                ("pinned", caller, "", 0, f"sha={sha}\n"),
+                ("legacy local caller", legacy, "", 0, ""),
+                ("missing caller", None, "", 0, ""),
+                ("read error", caller, "grep() { return 2; };\n", 1, ""),
+                ("command error", caller, "grep() { return 127; };\n", 1, ""),
+            ):
+                with self.subTest(state=name):
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        path.write_text(content, encoding="utf-8")
+                    output.write_text("", encoding="utf-8")
+                    result = subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c", prefix + script],
+                        check=False,
+                        cwd=temp,
+                        env=os.environ | {"GITHUB_OUTPUT": str(output)},
+                        text=True,
+                        capture_output=True,
+                        timeout=10,
+                    )
+                    self.assertEqual(expected_code, result.returncode, result.stderr)
+                    self.assertEqual(expected_output, output.read_text(encoding="utf-8"))
+                    if expected_code:
+                        self.assertIn("base agent review caller could not be read", result.stderr)
+
     def test_pin_must_be_a_commit_on_engine_main(self) -> None:
         script = step_script(self.block, "Require the pin on the engine main branch")
         with tempfile.TemporaryDirectory() as temp_dir:

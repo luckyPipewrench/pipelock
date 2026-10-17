@@ -1694,7 +1694,16 @@ jobs:
           set -euo pipefail
           caller=base/.github/workflows/agent-review.yaml
           pattern='^    uses: pipelab-org/agent-review/\.github/workflows/agent-review-reusable\.yaml@[0-9a-f]{40} # main$'
-          if [ -f "$caller" ] && line="$(grep -E "$pattern" "$caller")"; then
+          if [ -f "$caller" ]; then
+            status=0
+            line="$(grep -E "$pattern" "$caller")" || status=$?
+            if [ "$status" -gt 1 ]; then
+              echo "base agent review caller could not be read" >&2
+              exit 1
+            fi
+            if [ "$status" -eq 1 ]; then
+              exit 0
+            fi
             pin="${line##*@}"
             pin="${pin%% *}"
             echo "sha=$pin" >> "$GITHUB_OUTPUT"

@@ -913,6 +913,10 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 	}
 
 	result.Matches = slices.DeleteFunc(result.Matches, func(m TextDLPMatch) bool { return m.IsInformational() })
+	if len(result.Matches) == 0 {
+		// Warnings were emitted by the joined scan. Do not memoize them.
+		return nil
+	}
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).

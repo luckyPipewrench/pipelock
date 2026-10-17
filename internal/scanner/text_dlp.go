@@ -501,20 +501,23 @@ func (s *Scanner) ScanRequestBodyTextPartsWithCardViews(ctx context.Context, par
 	for i := range parts {
 		atoms[i] = extract.DLPAtom{Text: parts[i], Card: cards[i]}
 	}
-	return s.ScanRequestBodyTextPartsWithCardAtoms(ctx, atoms, separator)
+	return s.ScanRequestBodyTextPartsWithCardAtoms(ctx, parts, atoms, separator)
 }
 
 // ScanRequestBodyTextPartsWithCardAtoms retains JSON number boundaries while
-// preserving the per-part SigV4 exception and its expiry warning.
-func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, atoms []extract.DLPAtom, separator string) TextDLPResult {
+// preserving the per-part SigV4 exception and its expiry warning. Text parts
+// may be sorted independently of atoms and omit empty JSON null barriers.
+func (s *Scanner) ScanRequestBodyTextPartsWithCardAtoms(ctx context.Context, parts []string, atoms []extract.DLPAtom, separator string) TextDLPResult {
 	scrubbedCards := make([]extract.DLPAtom, 0, len(atoms))
 
-	scrubbedParts := make([]string, 0, len(atoms))
-	var detections []sigV4Detection
+	scrubbedParts := make([]string, 0, len(parts))
 	for _, atom := range atoms {
 		card, _ := scrubEmbeddedSigV4Credentials(atom.Card)
 		scrubbedCards = append(scrubbedCards, extract.DLPAtom{Card: card, Number: atom.Number, Key: atom.Key})
-		scrubbed, partDetections := scrubEmbeddedSigV4Credentials(atom.Text)
+	}
+	var detections []sigV4Detection
+	for _, part := range parts {
+		scrubbed, partDetections := scrubEmbeddedSigV4Credentials(part)
 		scrubbedParts = append(scrubbedParts, scrubbed)
 		detections = append(detections, partDetections...)
 	}

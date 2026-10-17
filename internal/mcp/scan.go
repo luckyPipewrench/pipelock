@@ -198,12 +198,8 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
 		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
-			if text != "" {
-				text += "\n"
-				cardText += "\n"
-			}
-			text += rpcErr.Message
-			cardText += rpcErr.Message
+			text = joinResponseText(text, rpcErr.Message)
+			cardText = joinResponseText(cardText, rpcErr.Message)
 			// Also scan error.data if present.
 			errData := extract(rpcErr.Data)
 			if errData.Truncated {
@@ -214,8 +210,8 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			}
 			cardKeys = append(cardKeys, errData.CardKeys...)
 			if errData.Text != "" {
-				text += "\n" + errData.Text
-				cardText += "\n" + errData.CardText
+				text = joinResponseText(text, errData.Text)
+				cardText = joinResponseText(cardText, errData.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
 		} else {
@@ -229,12 +225,8 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 			}
 			cardKeys = append(cardKeys, errText.CardKeys...)
 			if errText.Text != "" {
-				if text != "" {
-					text += "\n"
-					cardText += "\n"
-				}
-				text += errText.Text
-				cardText += errText.CardText
+				text = joinResponseText(text, errText.Text)
+				cardText = joinResponseText(cardText, errText.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errText.Numeric)
 		}
@@ -252,12 +244,8 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		}
 		cardKeys = append(cardKeys, paramsText.CardKeys...)
 		if paramsText.Text != "" {
-			if text != "" {
-				text += "\n"
-				cardText += "\n"
-			}
-			text += paramsText.Text
-			cardText += paramsText.CardText
+			text = joinResponseText(text, paramsText.Text)
+			cardText = joinResponseText(cardText, paramsText.CardText)
 		}
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)
 	}
@@ -463,8 +451,8 @@ func toolsListEnvelopeViews(trimmed []byte, budget *jsonrpc.MediaTextBudget) (re
 		return responseEnvelopeViews{}, false
 	}
 	return responseEnvelopeViews{
-		text: strings.Join(append(values.Strings, keys.Keys...), "\n"),
-		card: strings.Join(values.Strings, "\n"),
+		text: joinResponseText(append(values.Strings, keys.Keys...)...),
+		card: joinResponseText(values.Strings...),
 		keys: keys.Keys,
 	}, true
 }
@@ -731,10 +719,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 				}
 				cardKeys = append(cardKeys, siblingText.CardKeys...)
 				if siblingText.Text != "" {
-					if text != "" {
-						text += "\n"
-					}
-					text += siblingText.Text
+					text = joinResponseText(text, siblingText.Text)
 					cardText = joinResponseText(cardText, siblingText.CardText)
 				}
 				numeric = joinNumericChannel(numeric, siblingText.Numeric)
@@ -746,10 +731,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 	if len(rpc.Error) > 0 && string(rpc.Error) != jsonrpc.Null {
 		var rpcErr jsonrpc.RPCError
 		if err := json.Unmarshal(rpc.Error, &rpcErr); err == nil && rpcErr.Message != "" {
-			if text != "" {
-				text += "\n"
-			}
-			text += rpcErr.Message
+			text = joinResponseText(text, rpcErr.Message)
 			cardText = joinResponseText(cardText, rpcErr.Message)
 			errData := extract(rpcErr.Data)
 			if errData.Truncated {
@@ -760,7 +742,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			}
 			cardKeys = append(cardKeys, errData.CardKeys...)
 			if errData.Text != "" {
-				text += "\n" + errData.Text
+				text = joinResponseText(text, errData.Text)
 				cardText = joinResponseText(cardText, errData.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errData.Numeric)
@@ -774,10 +756,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 			}
 			cardKeys = append(cardKeys, errText.CardKeys...)
 			if errText.Text != "" {
-				if text != "" {
-					text += "\n"
-				}
-				text += errText.Text
+				text = joinResponseText(text, errText.Text)
 				cardText = joinResponseText(cardText, errText.CardText)
 			}
 			numeric = joinNumericChannel(numeric, errText.Numeric)
@@ -795,10 +774,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		}
 		cardKeys = append(cardKeys, paramsText.CardKeys...)
 		if paramsText.Text != "" {
-			if text != "" {
-				text += "\n"
-			}
-			text += paramsText.Text
+			text = joinResponseText(text, paramsText.Text)
 			cardText = joinResponseText(cardText, paramsText.CardText)
 		}
 		numeric = joinNumericChannel(numeric, paramsText.Numeric)

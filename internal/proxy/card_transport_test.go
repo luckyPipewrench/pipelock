@@ -125,7 +125,7 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 			defer cancel()
 			_, _, _, blocked := r.clientToUpstream(ctx, cancel, time.Minute)
 			if blocked == (tt.Clean || tt.Warn) {
-				t.Fatalf("blocked=%v want=%v", blocked, !tt.Clean)
+				t.Fatalf("blocked=%v want=%v", blocked, !tt.Clean && !tt.Warn)
 			}
 			frames := bytes.NewReader(sink.output.Bytes())
 			delivered := false
@@ -143,7 +143,7 @@ func TestCardJSONWebSocketRequests(t *testing.T) {
 				}
 			}
 			if delivered != (tt.Clean || tt.Warn) {
-				t.Fatalf("delivered=%v want=%v", delivered, tt.Clean)
+				t.Fatalf("delivered=%v want=%v", delivered, tt.Clean || tt.Warn)
 			}
 		})
 	}

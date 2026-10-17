@@ -35,7 +35,7 @@ func TestCardRunClassification(t *testing.T) {
 				s.ScanTextForDLPWithTypedCardView(t.Context(), text, view),
 				s.ScanTextForDLPInboundWithTypedCardView(t.Context(), text, view),
 				s.ScanTextForDLPQuietWithTypedCardView(t.Context(), text, view),
-				s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Atoms, "\n"))
+				s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Strings, extracted.Atoms, "\n"))
 			for _, result := range results {
 				if result.Clean != (tt.Clean || tt.Warn) || OnlyInformational(result.Matches) != tt.Warn {
 					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyInformational(result.Matches), tt.Clean, tt.Warn)
@@ -261,6 +261,9 @@ func TestCardRunFragmentMemoKeepsWarnings(t *testing.T) {
 		}
 		if warnings == 0 {
 			t.Fatal("clean memo suppressed informational warning")
+		}
+		if memo.hits != 0 || memo.bytes != 0 {
+			t.Fatal("informational warning was stored in the clean memo")
 		}
 	}
 	clean := []fragment{{data: []byte("ordinary ")}, {data: []byte("report")}}

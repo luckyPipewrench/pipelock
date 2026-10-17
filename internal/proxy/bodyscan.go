@@ -1477,7 +1477,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		if hasNumber {
 			var ordered scanner.TextDLPResult
 			if allowEmbeddedSigV4 {
-				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, atoms, bodyDLPJoinSeparator)
+				ordered = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, texts, atoms, bodyDLPJoinSeparator)
 			} else {
 				ordered = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(texts, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
 			}
@@ -1499,14 +1499,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	if allowEmbeddedSigV4 {
 		// The scanner scrubs Text and Card independently, so keep the sorted
 		// non-card text alongside the original card sequence and provenance.
-		sortedAtoms := slices.Clone(atoms)
-		for i := range sortedAtoms {
-			sortedAtoms[i].Text = ""
-			if i < len(sorted) {
-				sortedAtoms[i].Text = sorted[i]
-			}
-		}
-		result = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, sortedAtoms, bodyDLPJoinSeparator)
+		result = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, sorted, atoms, bodyDLPJoinSeparator)
 	} else {
 		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
 	}

@@ -388,6 +388,8 @@ func (h *Handler) scanToolCall(
 	// the API silently declined to scan what it was asked to. The sibling
 	// kinds (url / dlp / prompt_injection) all scan unconditionally; tool_call
 	// now matches that contract.
+	var dlpMatches []scanner.TextDLPMatch
+	var injResult scanner.ResponseScanResult
 	if scanText != "" {
 		dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, scanText, extract.JoinCardAtoms(cardAtoms, " "))
 		// A joined view cannot retain each leaf's scalar or encoded spelling.
@@ -413,24 +415,28 @@ func (h *Handler) scanToolCall(
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
 		if len(dlpResult.Matches) > 0 {
-			resp.Decision = cardDLPDecision(dlpResult.Matches)
-			resp.Findings = append(resp.Findings, dlpFindings(dlpResult, req.Options)...)
+			dlpMatches = dlpResult.Matches
 		}
 
-		injResult := sc.ScanResponse(ctx, scanText)
+		injResult = sc.ScanResponse(ctx, scanText)
 		if err := ctx.Err(); err != nil {
 			return h.contextErrorResponse(req.Kind, err), h.contextErrorStatus(err)
 		}
 		if !injResult.Clean {
 			resp.Decision = DecisionDeny
-			resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
 		}
 	}
-	if resp.Decision != DecisionDeny {
-		if matches := sc.ScanJSONCardRuns(ctx, string(req.Input.Arguments)); len(matches) > 0 {
-			resp.Decision = cardDLPDecision(matches)
-			resp.Findings = append(resp.Findings, dlpFindings(scanner.TextDLPResult{Matches: matches}, req.Options)...)
+	if resp.Decision != DecisionDeny && !scanner.HasEnforcingMatch(dlpMatches) {
+		dlpMatches = appendNewDLPMatches(dlpMatches, sc.ScanJSONCardRuns(ctx, string(req.Input.Arguments)))
+	}
+	if len(dlpMatches) > 0 {
+		if resp.Decision != DecisionDeny {
+			resp.Decision = cardDLPDecision(dlpMatches)
 		}
+		resp.Findings = append(resp.Findings, dlpFindings(scanner.TextDLPResult{Matches: dlpMatches}, req.Options)...)
+	}
+	if len(injResult.Matches) > 0 {
+		resp.Findings = append(resp.Findings, injectionFindings(injResult, req.Options)...)
 	}
 
 	// Stage 3: Policy check.

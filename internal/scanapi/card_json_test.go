@@ -137,3 +137,17 @@ func TestCardJSONDLPDecision(t *testing.T) {
 		})
 	}
 }
+
+func TestCardJSONToolCallNumberRunFindingCount(t *testing.T) {
+	h := newTestHandler(t)
+	t.Cleanup(h.scanner.Close)
+	card := cardtest.Number()
+	parts := []string{card[:4], card[4:8], card[8:12], card[12:]}
+	for _, args := range []string{`{"ids":[` + strings.Join(parts, ",") + `]}`, `[` + strings.Join(parts, ".0,") + `.0]`} {
+		req := Request{Kind: KindToolCall, Input: Input{ToolName: "report", Arguments: RawJSON(args)}}
+		result, status := h.scanToolCall(t.Context(), h.cfg, h.scanner, nil, &req)
+		if status != http.StatusOK || result.Decision != DecisionWarn || len(result.Findings) != 1 {
+			t.Errorf("status=%d decision=%s findings=%d, want one warning", status, result.Decision, len(result.Findings))
+		}
+	}
+}

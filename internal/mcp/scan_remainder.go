@@ -86,8 +86,8 @@ func responseEnvelopeRemainder(raw []byte, rpc jsonrpc.RPCResponse, budget *json
 		return responseEnvelopeViews{}, false
 	}
 	return responseEnvelopeViews{
-		text: strings.Join(append(values.Strings, keys.Keys...), "\n"),
-		card: strings.Join(values.Strings, "\n"),
+		text: joinResponseText(append(values.Strings, keys.Keys...)...),
+		card: joinResponseText(values.Strings...),
 		uris: strings.Join(uris, "\n"),
 		keys: keys.Keys,
 	}, true

@@ -20,6 +20,7 @@ import (
 func TestCardJSONNumberOnlyAuditAndBodyAction(t *testing.T) {
 	cfg := testScannerConfig()
 	cfg.DLP.ScanEnv = false
+	cfg.AdaptiveEnforcement.Enabled = true
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, body := range []string{`[4111,1111,1111,1111]`, `[4111.0,1111.0,1111.0,1111.0]`} {
@@ -46,7 +47,6 @@ func TestCardJSONNumberOnlyAuditAndBodyAction(t *testing.T) {
 				t.Fatal(err)
 			}
 			r, _ := newWebSocketFrameSuppressionRelay(t, cfg, "wss://api.vendor.example/socket")
-			cfg.AdaptiveEnforcement.Enabled = true
 			sm := NewSessionManager(testSessionConfig(), nil, nil)
 			t.Cleanup(sm.Close)
 			sess := sm.GetOrCreate(testClientIP)

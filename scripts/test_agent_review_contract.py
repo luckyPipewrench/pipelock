@@ -125,6 +125,11 @@ class CallerTests(unittest.TestCase):
         for ref in (None, '', f'{repo}/.github/workflows/agent-review.yaml@',
                     f'{repo}/.github/workflows/other.yaml@refs/heads/main',
                     f'{repo}/.github/workflows/agent-review.yaml.bak@refs/heads/main',
+                    f'{repo}/.github/workflows/agent-review.yaml@decoy.yaml@refs/heads/main',
+                    f'{repo}/.github/workflows/agent-review.yaml@refs/heads/x.yaml@refs/heads/main',
+                    f'{repo}/.github/workflows/agent-review.yaml@refs/tags/v1',
+                    f'{repo}/.github/workflows/agent-review.yaml@refs/heads/',
+                    f'{repo}/.github/workflows/agent-review.yaml@refs/heads/main x',
                     f'example/other/.github/workflows/agent-review.yaml@refs/heads/main',
                     f'x{repo}/.github/workflows/agent-review.yaml@refs/heads/main'):
             with self.subTest(ref=ref), self.assertRaises(ValueError):

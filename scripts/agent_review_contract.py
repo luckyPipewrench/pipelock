@@ -104,8 +104,10 @@ def validate_caller_ref(workflow_ref, repository):
     """
     if not (isinstance(repository, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)):
         raise ValueError("caller repository identity is invalid")
-    prefix = f"{repository}/.github/workflows/agent-review.yaml@"
-    if not (isinstance(workflow_ref, str) and re.fullmatch(re.escape(prefix) + r"\S+", workflow_ref)):
+    # issue_comment loads the caller from a branch. Git permits "@" in file
+    # names, so a ref containing "@" could hide a path like agent-review.yaml@x.
+    prefix = f"{repository}/.github/workflows/agent-review.yaml@refs/heads/"
+    if not (isinstance(workflow_ref, str) and re.fullmatch(re.escape(prefix) + r"[^@\s]+", workflow_ref)):
         raise ValueError("running caller is not the validated caller file")
 
 

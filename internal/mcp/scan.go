@@ -392,19 +392,11 @@ func uniqueResponseMatches(matches []scanner.ResponseMatch) []scanner.ResponseMa
 	return unique
 }
 
-// scanResponseViews scans each non-empty view on its own and merges the
-// findings, so a string seen by two views is reported once. A failed
-// injection scan returns the failed result; the caller must fail closed.
-func scanResponseViews(ctx context.Context, sc *scanner.Scanner, opts ResponseScanOptions, injectionViews, dlpViews []string) (scanner.ResponseScanResult, []scanner.TextDLPMatch, []scanner.TextDLPMatch) {
-	views := make([]responseDLPView, len(dlpViews))
-	for i, text := range dlpViews {
-		views[i] = responseDLPView{text, text}
-	}
-	return scanResponseViewsWithCards(ctx, sc, opts, injectionViews, views)
-}
-
 type responseDLPView struct{ text, card string }
 
+// scanResponseViewsWithCards scans each non-empty view on its own and merges
+// the findings, so a string seen by two views is reported once. A failed
+// injection scan returns the failed result; the caller must fail closed.
 func scanResponseViewsWithCards(ctx context.Context, sc *scanner.Scanner, opts ResponseScanOptions, injectionViews []string, dlpViews []responseDLPView) (scanner.ResponseScanResult, []scanner.TextDLPMatch, []scanner.TextDLPMatch) {
 	result := scanner.ResponseScanResult{Clean: true}
 	for _, view := range injectionViews {

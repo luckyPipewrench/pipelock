@@ -272,6 +272,9 @@ func checkCrossRequestFragment(
 			BlockReason: "cross-request fragment capacity exhausted: the number of callers with live fragment state reached cross_request_detection.fragment_reassembly.max_sessions; request cannot be safely inspected; capacity recovers when a caller's fragments expire (fragment_reassembly.window_minutes), when the config is reloaded with a larger max_sessions, or on restart",
 		}
 	}
+	if scanner.HasFragmentInspectionLimit(matches) {
+		return crossRequestOutcome{Blocked: true, BlockRuleID: "CEE-" + scanner.UninspectableJSONNumberPattern, BlockReason: "Cross-request JSON inspection incomplete"}
+	}
 	if len(matches) == 0 {
 		return crossRequestOutcome{}
 	}

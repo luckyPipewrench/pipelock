@@ -311,6 +311,11 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		}
 	}
 
+	if scanner.HasInspectionLimit(result.DLPFindings) {
+		result.Clean = false
+		result.InspectionIncomplete = true
+		action = config.ActionBlock
+	}
 	if err := ctx.Err(); err != nil {
 		result.Clean = false
 		result.ScanError = err.Error()
@@ -441,13 +446,8 @@ func firstA2AContentEntropyOptions(opts []A2AContentEntropyOptions) *A2AContentE
 // the core predicate cannot classify falls through to the configured action;
 // a positive core match only ever raises the action to block.
 func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
-	if scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches) {
+	if scanner.HasInspectionLimit(matches) || scanner.ContainsHostnameExfilMatch(matches) || scanner.ContainsCoreCriticalMatch(matches) {
 		return true
-	}
-	for _, match := range matches {
-		if match.PatternName == scanner.UninspectableJSONNumberPattern {
-			return true
-		}
 	}
 	return false
 }

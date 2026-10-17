@@ -436,8 +436,11 @@ func shouldHardBlockBodyPromptInjection(result BodyScanResult, hostname string, 
 // detections while the proxy is in enforcement mode. These are high-confidence
 // core exfiltration findings and must fail closed even when request-body
 // scanning is otherwise in warn mode. Audit mode observes every other finding
-// but still blocks the core credential floor.
+// but still refuses incomplete inspection and blocks the core credential floor.
 func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled bool) bool {
+	if scanner.HasInspectionLimit(matches) {
+		return true
+	}
 	if !enforceEnabled {
 		return containsCoreFloorMatch(matches)
 	}
@@ -453,6 +456,9 @@ func shouldHardBlockCriticalDLP(matches []scanner.TextDLPMatch, enforceEnabled b
 }
 
 func shouldHardBlockRequestDLP(matches []scanner.TextDLPMatch, cfg *config.Config) bool {
+	if scanner.HasInspectionLimit(matches) {
+		return true
+	}
 	if cfg == nil {
 		return false
 	}
@@ -1634,6 +1640,10 @@ func filterBodyDLPMatches(matches []scanner.TextDLPMatch, target string, suppres
 	}
 	filtered := matches[:0]
 	for _, match := range matches {
+		if match.IsInspectionLimit() {
+			filtered = append(filtered, match)
+			continue
+		}
 		if _, skip := disabled[match.PatternName]; skip &&
 			!config.IsCoreDLPPatternName(match.PatternName) {
 			if onDropped != nil {
@@ -1732,6 +1742,9 @@ func bodyDLPMatchKey(match scanner.TextDLPMatch) string {
 }
 
 func requestBodyDLPAction(matches []scanner.TextDLPMatch, defaultAction string, patternActions map[string]string) string {
+	if scanner.HasInspectionLimit(matches) {
+		return config.ActionBlock
+	}
 	action := ""
 	for _, match := range matches {
 		if match.IsInformational() {
@@ -1892,7 +1905,7 @@ func unparseableRouteMatches(req BodyScanRequest, route redact.UnparseableRouteS
 // request would violate the scanner's safety invariant, such as a consumed body
 // that cannot be replayed or a redaction gate that explicitly failed closed.
 func isFailClosedBodyResult(result BodyScanResult, bodyBytes []byte) bool {
-	return bodyBytes == nil || result.RedactionBlockReason != ""
+	return bodyBytes == nil || result.RedactionBlockReason != "" || scanner.HasInspectionLimit(result.DLPMatches)
 }
 
 // isJSONContentType reports whether ct is a recognised JSON media type,

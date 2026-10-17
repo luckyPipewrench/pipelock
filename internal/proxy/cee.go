@@ -946,7 +946,7 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 	m.RecordCrossRequestDLPMatch()
 	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
 	actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-	if ceeCfg.Action == config.ActionBlock {
+	if ceeCfg.Action == config.ActionBlock || scanner.HasFragmentInspectionLimit(matches) {
 		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{
 			Blocked:     true,

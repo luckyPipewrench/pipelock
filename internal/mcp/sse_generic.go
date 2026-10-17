@@ -290,8 +290,7 @@ func ScanGenericSSEStreamWithOptions(
 			dlpResult.Matches = appendUniqueA2ADLPFindings(dlpResult.Matches, result.Matches)
 		}
 		if len(dlpResult.Matches) > 0 {
-			findingErr := fmt.Errorf("%w: dlp: %s",
-				ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
+			findingErr := sseDLPFindingError(dlpResult.Matches, "dlp")
 			if scanner.CardRunAction(dlpResult.Matches, cfg.Action) == config.ActionWarn {
 				onFinding(findingErr)
 				clearDLPTailAfterCurrent = !scanner.OnlyInformational(dlpResult.Matches)
@@ -372,8 +371,7 @@ func ScanGenericSSEStreamWithOptions(
 				droppedDLP.record(droppedMatches)
 			}
 			if len(tailDLPResult.Matches) > 0 {
-				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
-					ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
+				findingErr := sseDLPFindingError(tailDLPResult.Matches, "cross-event dlp")
 				if scanner.CardRunAction(tailDLPResult.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(tailDLPResult.Matches)
@@ -389,7 +387,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(droppedMatches)
 			if len(result.Matches) > 0 {
-				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
+				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
 				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(result.Matches)
@@ -405,7 +403,7 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(droppedMatches)
 			if len(result.Matches) > 0 {
-				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
+				findingErr := sseDLPFindingError(result.Matches, "cross-event dlp")
 				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
 					resetDLPTail = !scanner.OnlyInformational(result.Matches)
@@ -776,6 +774,15 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 	}
 }
 
+// sseDLPFindingError keeps an incomplete inspection on the scan-error path.
+// Transport wrappers must never record a withheld limit-bearing event as warn.
+func sseDLPFindingError(matches []scanner.TextDLPMatch, phase string) error {
+	if scanner.HasInspectionLimit(matches) {
+		return fmt.Errorf("%w: %s: %s", ErrSSEStreamScanError, phase, sseDLPMatchNames(matches))
+	}
+	return fmt.Errorf("%w: %s: %s", ErrSSEStreamFinding, phase, sseDLPMatchNames(matches))
+}
+
 // keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.
 func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) (scanner.TextDLPResult, []scanner.TextDLPMatch) {
 	if len(res.Matches) == 0 || len(suppress) == 0 {
@@ -784,7 +791,7 @@ func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []co
 	var kept []scanner.TextDLPMatch
 	var dropped []scanner.TextDLPMatch
 	for _, m := range res.Matches {
-		if config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
+		if m.IsInspectionLimit() || config.IsCoreDLPPatternName(m.PatternName) || !config.IsSuppressed(m.PatternName, target, suppress) {
 			kept = append(kept, m)
 		} else {
 			dropped = append(dropped, m)

@@ -402,8 +402,39 @@ func OnlyNumberOnlyCardRuns(matches []TextDLPMatch) bool {
 	return true
 }
 
-// CardRunAction keeps informational evidence out of transport action escalation.
+// IsInspectionLimit reports that a typed JSON document could not be fully
+// inspected. This is a refusal, not a configurable content-pattern finding.
+func (m TextDLPMatch) IsInspectionLimit() bool {
+	return m.PatternName == UninspectableJSONNumberPattern
+}
+
+// HasInspectionLimit reports incomplete typed JSON inspection in any scan view.
+func HasInspectionLimit(matches []TextDLPMatch) bool {
+	for _, match := range matches {
+		if match.IsInspectionLimit() {
+			return true
+		}
+	}
+	return false
+}
+
+// HasFragmentInspectionLimit preserves refusal semantics after fragment
+// reconstruction projects text findings to contributor-aware DLP matches.
+func HasFragmentInspectionLimit(matches []DLPMatch) bool {
+	for _, match := range matches {
+		if match.IsInspectionLimit() {
+			return true
+		}
+	}
+	return false
+}
+
+// CardRunAction refuses incomplete inspection before applying content policy.
+// Informational evidence alone never escalates a transport action.
 func CardRunAction(matches []TextDLPMatch, action string) string {
+	if HasInspectionLimit(matches) {
+		return config.ActionBlock
+	}
 	if OnlyInformational(matches) {
 		return config.ActionWarn
 	}
@@ -614,6 +645,21 @@ func (s *Scanner) ScanTextForDLPQuietWithTypedCardView(ctx context.Context, text
 	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{scanSecretLeak: true, typedCardView: true})
 }
 
+// JSONInspectionLimitExceeded checks the same typed budget used by card runs.
+// Only complete objects and arrays carry that contract; scalar text and invalid
+// JSON retain their ordinary scan or transport parsing behavior.
+func (s *Scanner) JSONInspectionLimitExceeded(text string) bool {
+	if !s.hasGenericCardPatterns() {
+		return false
+	}
+	trimmed := strings.TrimSpace(text)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+		return false
+	}
+	_, limit := jsonnumber.CardRunsWithLimit(trimmed, extract.MaxExtractDepth)
+	return limit != jsonnumber.CardRunWithinBudget
+}
+
 // ScanJSONCardRuns checks adjacent scalar pieces in a typed JSON document
 // without admitting its numeric leaves to prompt or non-card pattern scans.
 func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMatch {
@@ -623,7 +669,12 @@ func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMa
 	var matches []TextDLPMatch
 	runs, limit := jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
 	if limit != jsonnumber.CardRunWithinBudget {
-		return []TextDLPMatch{uninspectableJSONNumberMatch()}
+		trimmed := strings.TrimSpace(text)
+		if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			return []TextDLPMatch{uninspectableJSONNumberMatch()}
+		}
+		// Bare scalar numbers retain the same integer-only fallback as text DLP.
+		runs = jsonnumber.ScalarIntegerCardRuns(trimmed)
 	}
 	for _, run := range runs {
 		var memo decodingMemo
@@ -646,7 +697,7 @@ func (s *Scanner) classifyCardRun(match *TextDLPMatch, run jsonnumber.CardRun) {
 	match.Warn = match.Warn || informational
 }
 
-// UninspectableJSONNumberPattern identifies a valid JSON number that exceeds
+// UninspectableJSONNumberPattern identifies a valid JSON document that exceeds
 // the typed card inspection budget and must be refused by its transport.
 const UninspectableJSONNumberPattern = "Uninspectable JSON number"
 

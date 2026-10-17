@@ -254,7 +254,7 @@ func TestCardEnvelopeScalarBarriers(t *testing.T) {
 				body := []byte(`{"jsonrpc":"2.0","id":1,` + shape.prefix + `{"a":"order","b":` + value.raw + `,"c":"tail"}` + shape.suffix + `}`)
 				verdict := ScanResponseDispatch(body, sc, true, ResponseScanOptions{ActionOverride: config.ActionBlock})
 				if value.name == "numeric-pieces" {
-					if verdict.Error != "" || verdict.Action == config.ActionBlock || (len(verdict.DLPMatches) > 0 && !scanner.OnlyInformational(verdict.DLPMatches)) {
+					if verdict.Error != "" || verdict.Clean || verdict.Action != config.ActionWarn || !scanner.OnlyInformational(verdict.DLPMatches) {
 						t.Fatalf("numeric evidence enforced: clean=%v action=%s error=%s", verdict.Clean, verdict.Action, verdict.Error)
 					}
 					return

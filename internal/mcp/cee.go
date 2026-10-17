@@ -484,21 +484,31 @@ func ceeRecordMCP(opts ceeRecordMCPOptions) string {
 			}
 			matches := streamMatches[i]
 			if len(matches) > 0 {
-				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, matches[0].PatternName)
-				if mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
+				primary := matches[0]
+				inspectionLimit := scanner.HasFragmentInspectionLimit(matches)
+				if inspectionLimit {
+					for _, match := range matches {
+						if match.IsInspectionLimit() {
+							primary = match
+							break
+						}
+					}
+				}
+				findingKey, kind := mcpCEEFragmentFindingKey(path, payload, primary.PatternName)
+				if !inspectionLimit && mcpCEEFragmentFindingAlreadyRecorded(kind, findingKey, seenSingletonFindings, seenArgumentFindings) {
 					continue
 				}
 				if m != nil {
 					m.RecordCrossRequestDLPMatch()
 				}
-				operatorReason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", matches[0].PatternName)
+				operatorReason := fmt.Sprintf("cross-request fragment DLP match: %s; remove the secret from tool arguments, or lower cross_request_detection.fragment_reassembly.max_buffer_bytes for a narrower window (reduces protection against long chunk sequences)", primary.PatternName)
 				_, _ = fmt.Fprintf(opts.logW, "pipelock: CEE: %s (session=%s)\n", operatorReason, opts.sessionKey)
-				if ceeCfg.Action == config.ActionBlock {
+				if ceeCfg.Action == config.ActionBlock || inspectionLimit {
 					if opts.matchedPattern != nil {
-						*opts.matchedPattern = matches[0].PatternName
+						*opts.matchedPattern = primary.PatternName
 					}
 					if opts.contributors != nil {
-						*opts.contributors = captureCEEContributors(matches[0].Contributors)
+						*opts.contributors = captureCEEContributors(primary.Contributors)
 					}
 					if opts.logger != nil {
 						opts.logger.LogBlocked(mustMCPAuditContext(opts.logger, "CEE", "mcp-input"), "cross_request_fragment", operatorReason)

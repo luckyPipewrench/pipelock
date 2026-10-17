@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cardtest"
+	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/metrics"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -79,7 +81,16 @@ func TestCardJSONSharedToolCallCorpus(t *testing.T) {
 }
 
 func TestCardJSONToolCallInspectionLimits(t *testing.T) {
-	h := newTestHandler(t)
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionWarn
+	cfg.MCPInputScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Action = config.ActionWarn
+	cfg.ScanAPI.Auth.BearerTokens = []string{testToken}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	h := NewHandler(cfg, sc, nil, metrics.New(), "test-version")
 	for _, args := range []string{`[1e10001]`, `[` + strings.Repeat("9", 4097) + `]`, strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65)} {
 		body := `{"kind":"tool_call","input":{"tool_name":"report","arguments":` + args + `}}`
 		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))

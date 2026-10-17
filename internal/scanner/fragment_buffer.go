@@ -28,6 +28,11 @@ type DLPMatch struct {
 	Contributors [][]byte
 }
 
+// IsInspectionLimit preserves the refusal class on contributor-aware evidence.
+func (m DLPMatch) IsInspectionLimit() bool {
+	return (TextDLPMatch{PatternName: m.PatternName}).IsInspectionLimit()
+}
+
 // MaxFragmentSourceRequestIDBytes bounds provenance metadata independently of
 // caller behavior. It matches the MCP capture RPC-ID ceiling; keeping the
 // guard here prevents another FragmentAppend caller from turning a small

@@ -287,9 +287,6 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 		}
 	}()
 	text, cards := views.text, views.cards
-	if strings.TrimSpace(text) == "" {
-		return allowDecision()
-	}
 	// Inspect the original document and complete JSON documents stored in
 	// individual string leaves, before envelope text joins erase their shape.
 	documents := []string{string(views.raw)}
@@ -314,6 +311,9 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	}
 	if cardBlock != nil {
 		return blockDecision(dlpBlockReason(surface, *cardBlock))
+	}
+	if strings.TrimSpace(text) == "" {
+		return allowDecision()
 	}
 
 	// Outbound runs the full exfil-aware scan; inbound skips the agent's-own-

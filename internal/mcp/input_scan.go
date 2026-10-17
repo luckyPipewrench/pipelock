@@ -134,14 +134,14 @@ func mcpInputVerdictAction(action string, dlpMatches []scanner.TextDLPMatch, inj
 
 // mcpContentActionIgnoringCoreFloor resolves the MCP input content action for a
 // dirty verdict WITHOUT applying the immutable core credential floor. It still
-// force-blocks the two other non-suppressible content reasons -- a
-// hostname-exfil DLP match and an uninspectable split-secret verdict -- and
+// force-blocks other non-suppressible content reasons: hostname exfiltration,
+// incomplete typed JSON inspection, and uninspectable split-secret verdicts. It
 // otherwise follows the configured action for any DLP/injection finding. The
 // pre-redaction gate uses this to ask "would this verdict block for a reason
 // redaction cannot fix", treating a core credential as an ordinary finding that
 // redaction may scrub.
 func mcpContentActionIgnoringCoreFloor(action string, dlpMatches []scanner.TextDLPMatch, injMatches []scanner.ResponseMatch) string {
-	if scanner.ContainsHostnameExfilMatch(dlpMatches) {
+	if scanner.HasInspectionLimit(dlpMatches) || scanner.ContainsHostnameExfilMatch(dlpMatches) {
 		return config.ActionBlock
 	}
 	for _, match := range dlpMatches {

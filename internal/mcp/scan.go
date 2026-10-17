@@ -308,15 +308,7 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 	}
 	if includeDLP {
 		dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
-		for _, raw := range []json.RawMessage{rpc.Result, rpc.Error, rpc.Params} {
-			dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, sc.ScanJSONCardRuns(context.Background(), string(raw)))
-			for _, leaf := range jsonrpc.ExtractStringsFromJSONResult(raw).Strings {
-				trimmedLeaf := strings.TrimSpace(leaf)
-				if len(trimmedLeaf) > 0 && (trimmedLeaf[0] == '{' || trimmedLeaf[0] == '[') {
-					dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, sc.ScanJSONCardRuns(context.Background(), leaf))
-				}
-			}
-		}
+		dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed))
 	}
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
@@ -329,6 +321,36 @@ func scanResponseObject(trimmed []byte, sc *scanner.Scanner, opts ResponseScanOp
 		Matches:    result.Matches,
 		DLPMatches: dlpMatches,
 	}
+}
+
+// responseJSONCardMatches retains the original number spellings in every
+// response payload field, including extensions and tools/list siblings. Routing
+// metadata is not payload. Complete JSON documents in string leaves receive
+// their own pass before extracted text joins can erase their shape.
+func responseJSONCardMatches(sc *scanner.Scanner, line []byte) []scanner.TextDLPMatch {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(line, &fields) != nil {
+		return nil
+	}
+	keys := make([]string, 0, len(fields))
+	for key := range fields {
+		if key != "jsonrpc" && key != "id" && key != "method" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	var matches []scanner.TextDLPMatch
+	for _, key := range keys {
+		raw := fields[key]
+		matches = appendUniqueA2ADLPFindings(matches, sc.ScanJSONCardRuns(context.Background(), string(raw)))
+		for _, leaf := range jsonrpc.ExtractStringsFromJSONResult(raw).Strings {
+			trimmed := strings.TrimSpace(leaf)
+			if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+				matches = appendUniqueA2ADLPFindings(matches, sc.ScanJSONCardRuns(context.Background(), leaf))
+			}
+		}
+	}
+	return matches
 }
 
 // appendUniqueResponseViewMatches keeps the primary view's coordinates when
@@ -457,8 +479,12 @@ func toolsListEnvelopeViews(trimmed []byte, budget *jsonrpc.MediaTextBudget) (re
 	}, true
 }
 
-// responseFindingAction excludes number-only card evidence from escalation.
+// responseFindingAction refuses incomplete inspection and keeps informational
+// card evidence out of content-action escalation.
 func responseFindingAction(sc *scanner.Scanner, opts ResponseScanOptions, injection []scanner.ResponseMatch, dlp []scanner.TextDLPMatch) string {
+	if scanner.HasInspectionLimit(dlp) {
+		return config.ActionBlock
+	}
 	if len(injection) == 0 && scanner.OnlyInformational(dlp) {
 		return config.ActionWarn
 	}
@@ -842,6 +868,7 @@ func scanToolsListNonToolFieldsContext(ctx context.Context, line []byte, sc *sca
 		}
 	}
 	dlpMatches = append(dlpMatches, sc.ScanNumericChannelForKnownValues(numeric)...)
+	dlpMatches = appendUniqueA2ADLPFindings(dlpMatches, responseJSONCardMatches(sc, trimmed))
 	if result.Clean && len(dlpMatches) == 0 {
 		return jsonrpc.ScanVerdict{ID: rpc.ID, Clean: true}
 	}

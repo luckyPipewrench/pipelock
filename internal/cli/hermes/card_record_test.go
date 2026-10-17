@@ -66,13 +66,27 @@ func TestCardJSONHookInspectionLimits(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Internal = nil
 	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionWarn
+	cfg.MCPInputScanning.Action = config.ActionWarn
+	cfg.RequestBodyScanning.Action = config.ActionWarn
 	s := scanner.MustNew(cfg)
 	t.Cleanup(s.Close)
 	for _, hook := range []string{HookPreToolCall, HookTransformToolResult, HookPreGatewayDispatch} {
-		for _, body := range []string{`[1e10001]`, `[` + strings.Repeat("9", 4097) + `]`, strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65)} {
+		for _, body := range []string{`[1e10001]`, `[` + strings.Repeat("9", 4097) + `]`, strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65), strings.Repeat("[", 64) + "[]" + strings.Repeat("]", 64)} {
 			decision := evaluate(t.Context(), s, &HookEvent{HookEventName: hook, ToolInput: json.RawMessage(body)})
 			if decision.Decision != DecisionBlock {
 				t.Fatal("hook inspection limit did not refuse")
+			}
+		}
+	}
+	for _, hook := range []string{HookPreToolCall, HookTransformToolResult, HookPreGatewayDispatch} {
+		for _, body := range []string{`[1,2]`, `[` + cardtest.Number()[:8] + `,` + cardtest.Number()[8:] + `]`} {
+			d := evaluate(t.Context(), s, &HookEvent{HookEventName: hook, ToolInput: json.RawMessage(body)})
+			if d.Decision == DecisionBlock {
+				t.Fatal("warn-mode hook control refused")
+			}
+			if body != `[1,2]` && len(d.warnings) == 0 {
+				t.Fatal("warn-mode hook evidence missing")
 			}
 		}
 	}

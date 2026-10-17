@@ -2959,7 +2959,12 @@ func (r *wsRelay) enforceUpstreamTextPayload(ctx context.Context, log *audit.Log
 	// Exempt domains are still scanned for visibility but findings are pinned
 	// to warn with no adaptive scoring or action upgrade.
 	wsRespExempt := isResponseScanExempt(r.hostname, r.cfg.ResponseScanning.ExemptDomains)
-	scanResult := r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
+	var scanResult scanner.ResponseScanResult
+	if r.scanner.JSONInspectionLimitExceeded(string(msg)) {
+		scanResult.ScanError = scanner.UninspectableJSONNumberPattern
+	} else {
+		scanResult = r.scanner.ScanResponseWithSuppress(ctx, string(msg), r.targetURL, r.cfg.Suppress)
+	}
 	if ctx.Err() != nil {
 		return nil, false
 	}

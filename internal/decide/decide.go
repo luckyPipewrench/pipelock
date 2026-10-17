@@ -107,6 +107,8 @@ type Evidence struct {
 	// core marks a finding from the built-in core credential floor, which
 	// blocks even when enforce is off.
 	core bool
+	// inspectionIncomplete marks a scan refusal rather than a completed finding.
+	inspectionIncomplete bool
 }
 
 // Decision is the result of evaluating an Action.
@@ -392,10 +394,10 @@ func buildDecision(cfg *config.Config, evidence []Evidence) Decision {
 	summary := strings.Join(parts, ", ")
 
 	// Warn-only findings or enforce=false: allow with advisory message. Audit
-	// mode never releases the core credential floor, matching every proxy
-	// transport.
-	core := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core })
-	if !core && (strictest == config.ActionWarn || !cfg.EnforceEnabled()) {
+	// mode never releases incomplete typed inspection or the core credential
+	// floor, matching the proxy transports.
+	mustBlock := slices.ContainsFunc(evidence, func(e Evidence) bool { return e.core || e.inspectionIncomplete })
+	if !mustBlock && (strictest == config.ActionWarn || !cfg.EnforceEnabled()) {
 		verb := "warning"
 		if !cfg.EnforceEnabled() {
 			verb = "detected (enforce off)"
@@ -441,11 +443,12 @@ func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 			action = config.ActionWarn
 		}
 		ev = append(ev, Evidence{
-			Scanner:  scanner.ScannerDLP,
-			Pattern:  m.PatternName,
-			Severity: m.Severity,
-			Action:   action,
-			core:     scanner.IsCoreCriticalMatch(m),
+			Scanner:              scanner.ScannerDLP,
+			Pattern:              m.PatternName,
+			Severity:             m.Severity,
+			Action:               action,
+			core:                 scanner.IsCoreCriticalMatch(m),
+			inspectionIncomplete: m.IsInspectionLimit(),
 		})
 	}
 	return ev

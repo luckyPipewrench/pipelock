@@ -105,6 +105,9 @@ func (s *Scanner) ScanResponse(ctx context.Context, content string) ResponseScan
 // semantics. Declared Content-Type is not consulted, so mislabeled textual
 // content still takes the ordinary scan path.
 func (s *Scanner) ScanResponseBodyWithSuppress(ctx context.Context, body []byte, suppressTarget string, suppress []config.SuppressEntry) ResponseScanResult {
+	if s.JSONInspectionLimitExceeded(string(body)) {
+		return ResponseScanResult{ScanError: UninspectableJSONNumberPattern}
+	}
 	return s.scanResponseBodyWithSuppress(ctx, body, suppressTarget, suppress, s.scanResponseBodyUncached)
 }
 
@@ -189,6 +192,9 @@ func (s *Scanner) scanResponseBodyUncached(ctx context.Context, body []byte, sup
 				return ResponseScanResult{Clean: false, ScanError: decodeErr.Error()}
 			}
 			if decodedOK {
+				if s.JSONInspectionLimitExceeded(decoded) {
+					return ResponseScanResult{ScanError: UninspectableJSONNumberPattern}
+				}
 				decodedResult := s.ScanResponseWithSuppress(ctx, decoded, suppressTarget, suppress)
 				if !decodedResult.Clean {
 					// A decoded view cannot safely replace the encoded body.

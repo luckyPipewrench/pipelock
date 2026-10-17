@@ -295,12 +295,13 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 		if reason := budget.Reason(); reason != "" {
 			return TextResult{IncompleteReason: reason}
 		}
+		cards := slices.Clone(texts)
+		cards = append(cards, ResponseCardText(structured.CardAtoms))
 		texts = append(texts, structured.Strings...)
 		keys := ExtractKeysFromJSONResult(tr.StructuredContent)
 		if keys.Truncated {
 			return TextResult{Truncated: true}
 		}
-		cards := slices.Clone(texts)
 		texts = append(texts, keys.Keys...)
 		// Always return after a successful ToolResult parse, even when
 		// texts is empty. Falling through to ExtractStringsFromJSON would
@@ -318,24 +319,29 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 	extracted := ExtractStringsFromJSONResult(raw)
 	if len(extracted.Strings) > 0 {
 		joined := strings.Join(extracted.Strings, fallbackTextSeparator)
-		// Retain scalar barriers in the card view. String-only extraction drops
-		// nulls, booleans and numbers and can manufacture a card across them.
-		// Numbers stay on the separate numeric channel, with null as a barrier.
-		var cards []string
-		for _, atom := range extract.AllStringsFromJSONOrderedResult(raw).Atoms {
-			if atom.Key {
-				continue
-			}
-			if atom.Number {
-				cards = append(cards, Null)
-			} else {
-				cards = append(cards, atom.Card)
-			}
-		}
-		return TextResult{Text: joined, CardText: strings.Join(cards, fallbackTextSeparator), Truncated: extracted.Truncated, Numeric: numeric}
+		cards := ResponseCardText(extract.AllStringsFromJSONOrderedResult(raw).Atoms)
+		return TextResult{Text: joined, CardText: cards, Truncated: extracted.Truncated, Numeric: numeric}
 	}
 
 	return TextResult{Truncated: extracted.Truncated, Numeric: numeric}
+}
+
+// ResponseCardText joins response scalar values without discarding barriers.
+// Keys are scanned separately. Numbers stay on the numeric channel, with null
+// retaining their position here. Empty strings must retain their join position.
+func ResponseCardText(atoms []extract.DLPAtom) string {
+	var cards []string
+	for _, atom := range atoms {
+		if atom.Key {
+			continue
+		}
+		if atom.Number {
+			cards = append(cards, Null)
+		} else {
+			cards = append(cards, atom.Card)
+		}
+	}
+	return strings.Join(cards, fallbackTextSeparator)
 }
 
 // ExtractNumericLeaves returns every numeric leaf in raw, in the same
@@ -411,9 +417,11 @@ func extractVisibleStrings(raw json.RawMessage, budget *MediaTextBudget) Extract
 	}
 
 	var result []string
+	var atoms []extract.DLPAtom
+	var positions []int
 	truncated := false
-	var extract func(interface{}, int, bool)
-	extract = func(v interface{}, depth int, mediaCandidate bool) {
+	var visit func(interface{}, int, bool)
+	visit = func(v interface{}, depth int, mediaCandidate bool) {
 		if depth > maxExtractDepth {
 			truncated = true
 			return
@@ -423,30 +431,50 @@ func extractVisibleStrings(raw json.RawMessage, budget *MediaTextBudget) Extract
 		}
 		switch val := v.(type) {
 		case string:
+			before := len(result)
+			card := val
 			if mediaCandidate {
 				result = appendVisibleMediaField(result, val, budget)
+				card = Null
+				if len(result) > before {
+					card = result[before]
+				}
 			} else {
 				result = append(result, val)
 			}
+			if len(result) > before {
+				positions = append(positions, len(atoms))
+			}
+			atoms = append(atoms, extract.DLPAtom{Text: val, Card: card})
+		case json.Number:
+			atoms = append(atoms, extract.DLPAtom{Text: val.String(), Card: jsonnumber.IntegralView(val), Number: true})
+		case bool:
+			card := "false"
+			if val {
+				card = "true"
+			}
+			atoms = append(atoms, extract.DLPAtom{Text: card, Card: card})
+		case nil:
+			atoms = append(atoms, extract.DLPAtom{Text: Null, Card: Null})
 		case []interface{}:
 			// An array under a media key is a list of payloads; each element
 			// decides for itself by shape.
 			for _, item := range val {
-				extract(item, depth+1, mediaCandidate)
+				visit(item, depth+1, mediaCandidate)
 			}
 		case map[string]interface{}:
 			// Keys inside a nested object decide for themselves; a parent key
 			// never makes a whole object opaque.
 			for _, key := range SortedKeys(val) {
-				extract(val[key], depth+1, isOpaqueMCPMediaField(key))
+				visit(val[key], depth+1, isOpaqueMCPMediaField(key))
 			}
 		}
 	}
-	extract(parsed, 0, false)
+	visit(parsed, 0, false)
 	if reason := budget.Reason(); reason != "" {
 		return ExtractStringsResult{Truncated: truncated, IncompleteReason: reason}
 	}
-	return ExtractStringsResult{Strings: result, Truncated: truncated}
+	return ExtractStringsResult{Strings: result, CardAtoms: atoms, StringPositions: positions, Truncated: truncated}
 }
 
 // isOpaqueMCPMediaField reports whether a structuredContent key conventionally

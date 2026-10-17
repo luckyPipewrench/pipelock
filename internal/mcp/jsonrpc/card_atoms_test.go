@@ -21,3 +21,14 @@ func TestCardJSONExtractionRetainsDiscardedScalarPositions(t *testing.T) {
 		}
 	}
 }
+
+func TestCardVisibleExtractionRetainsScalarPositions(t *testing.T) {
+	raw := json.RawMessage(`["left",0,false,true,null,"","right"]`)
+	result := ExtractVisibleStringsFromJSONResult(raw)
+	if !slices.Equal(result.Strings, []string{"left", "", "right"}) || !slices.Equal(result.StringPositions, []int{0, 5, 6}) {
+		t.Fatal("visible extraction lost scalar positions")
+	}
+	if got, want := ResponseCardText(result.CardAtoms), "left \nnull \nfalse \ntrue \nnull \n \nright"; got != want {
+		t.Fatalf("card view = %q, want %q", got, want)
+	}
+}

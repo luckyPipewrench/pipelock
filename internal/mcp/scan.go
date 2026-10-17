@@ -452,7 +452,7 @@ func toolsListEnvelopeViews(trimmed []byte, budget *jsonrpc.MediaTextBudget) (re
 	}
 	return responseEnvelopeViews{
 		text: joinResponseText(append(values.Strings, keys.Keys...)...),
-		card: joinResponseText(values.Strings...),
+		card: jsonrpc.ResponseCardText(values.CardAtoms),
 		keys: keys.Keys,
 	}, true
 }

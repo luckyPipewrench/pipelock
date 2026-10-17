@@ -218,6 +218,93 @@ func TestCardFallbackScalarBarriers(t *testing.T) {
 	}
 }
 
+func TestCardEnvelopeScalarBarriers(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	card := cardtest.Number()
+	for _, value := range []struct {
+		name, raw string
+		clean     bool
+	}{
+		{"whole", `"` + card + `"`, false},
+		{"adjacent", `["` + card[:8] + `","` + card[8:] + `"]`, false},
+		{"null", `["` + card[:8] + `",null,"` + card[8:] + `"]`, true},
+		{"false", `["` + card[:8] + `",false,"` + card[8:] + `"]`, true},
+		{"true", `["` + card[:8] + `",true,"` + card[8:] + `"]`, true},
+		{"number", `["` + card[:8] + `",1,"` + card[8:] + `"]`, true},
+		{"empty", `["` + card[:8] + `","","` + card[8:] + `"]`, true},
+		{"word", `["` + card[:8] + `","ordinary","` + card[8:] + `"]`, true},
+		{"numeric-pieces", `[` + card[:8] + `,` + card[8:] + `]`, true},
+	} {
+		for _, shape := range []struct{ name, prefix, suffix string }{
+			{"tools-list-result", `"result":{"tools":[],"note":`, `}`},
+			{"tools-list-error-data", `"result":{"tools":[]},"error":{"code":-1,"message":"failed","data":`, `}`},
+			{"tools-list-error-fallback", `"result":{"tools":[]},"error":`, ``},
+			{"tools-list-params", `"result":{"tools":[]},"params":`, ``},
+			{"tools-list-extension", `"result":{"tools":[]},"extra":`, ``},
+			{"response-extension", `"result":{"content":[{"type":"text","text":"ordinary"}]},"extra":`, ``},
+			{"content-extension", `"result":{"content":[{"type":"text","text":"ordinary","extra":`, `}]}`},
+			{"structured-content", `"result":{"content":[{"type":"text","text":"ordinary"}],"structuredContent":`, `}`},
+		} {
+			t.Run(shape.name+"/"+value.name, func(t *testing.T) {
+				body := []byte(`{"jsonrpc":"2.0","id":1,` + shape.prefix + `{"a":"order","b":` + value.raw + `,"c":"tail"}` + shape.suffix + `}`)
+				verdict := ScanResponseDispatch(body, sc, true, ResponseScanOptions{ActionOverride: config.ActionBlock})
+				if value.name == "numeric-pieces" {
+					if verdict.Error != "" || verdict.Action == config.ActionBlock || (len(verdict.DLPMatches) > 0 && !scanner.OnlyInformational(verdict.DLPMatches)) {
+						t.Fatalf("numeric evidence enforced: clean=%v action=%s error=%s", verdict.Clean, verdict.Action, verdict.Error)
+					}
+					return
+				}
+				if verdict.Error != "" || verdict.Clean != value.clean {
+					t.Fatalf("clean=%v want=%v action=%s error=%s", verdict.Clean, value.clean, verdict.Action, verdict.Error)
+				}
+				if !value.clean && (verdict.Action != config.ActionBlock || len(verdict.DLPMatches) == 0) {
+					t.Fatalf("card lost enforcement: action=%s matches=%d", verdict.Action, len(verdict.DLPMatches))
+				}
+			})
+		}
+	}
+}
+
+func TestCardEnvelopeMediaViews(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	card := cardtest.Number()
+	for _, value := range []struct {
+		name, raw string
+		clean     bool
+	}{
+		{"recovered-card", `{"data":"` + pngWrappedText("card "+card+" end") + `"}`, false},
+		{"opaque-barrier", `{"a":"` + card[:8] + `","data":"` + pngWrappedText("") + `","z":"` + card[8:] + `"}`, true},
+		{"recovered-barrier", `{"a":"` + card[:8] + `","data":"` + pngWrappedText("ordinary") + `","z":"` + card[8:] + `"}`, true},
+	} {
+		for _, shape := range []struct{ name, prefix, suffix string }{
+			{"tools-list", `"result":{"tools":[],"note":`, `}`},
+			{"response-envelope", `"extra":`, ``},
+			{"structured-content", `"result":{"structuredContent":`, `}`},
+		} {
+			t.Run(shape.name+"/"+value.name, func(t *testing.T) {
+				body := []byte(`{"jsonrpc":"2.0","id":1,` + shape.prefix + value.raw + shape.suffix + `}`)
+				verdict := ScanResponseDispatch(body, sc, true, ResponseScanOptions{ActionOverride: config.ActionBlock})
+				if verdict.Error != "" || verdict.Clean != value.clean {
+					t.Fatalf("clean=%v want=%v action=%s error=%s", verdict.Clean, value.clean, verdict.Action, verdict.Error)
+				}
+				if !value.clean && (verdict.Action != config.ActionBlock || len(verdict.DLPMatches) == 0) {
+					t.Fatalf("decoded card lost enforcement: action=%s matches=%d", verdict.Action, len(verdict.DLPMatches))
+				}
+			})
+		}
+	}
+}
+
 func TestCardA2ANumberStreamKeepsKnownValues(t *testing.T) {
 	card := cardtest.Number()
 	for _, known := range []bool{false, true} {

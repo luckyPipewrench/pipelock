@@ -750,6 +750,8 @@ func TestJSONInspectionRemediationReasonFormats(t *testing.T) {
 		{ScannerDLP, "DLP: " + UninspectableJSONNumberPattern},
 		{AuditCrossRequestFragment, "fragment reassembly DLP match: " + UninspectableJSONNumberPattern},
 		{AuditCrossRequestFragment, "cross-request fragment refused: " + UninspectableJSONNumberPattern + "; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"},
+		{AuditA2AResponse, "a2a: DLP: " + UninspectableJSONNumberPattern},
+		{AuditA2AScan, "a2a: injection: ordinary; DLP: ordinary, " + UninspectableJSONNumberPattern + "; payload exceeded node budget"},
 	} {
 		t.Run(tt.reason, func(t *testing.T) {
 			got, ok := GuidanceForResult(tt.label, tt.reason)
@@ -768,7 +770,7 @@ func TestJSONInspectionRemediationRequiresPatternIdentity(t *testing.T) {
 			t.Fatalf("display text %q changed guidance: %+v", pattern, got)
 		}
 	}
-	for _, label := range []string{ScannerSSRF, ScannerDLP, AuditResponseScan, ScannerBodyDLP, AuditCrossRequestFragment} {
+	for _, label := range []string{ScannerSSRF, ScannerDLP, AuditResponseScan, ScannerBodyDLP, AuditCrossRequestFragment, AuditA2AScan, AuditA2AResponse} {
 		got, ok := GuidanceForResult(label, "client text mentions "+UninspectableJSONNumberPattern)
 		baseline, _ := GuidanceFor(label)
 		if !ok || got != baseline {

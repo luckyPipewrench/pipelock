@@ -1511,6 +1511,41 @@ func TestBuildA2AReason_Empty(t *testing.T) {
 	}
 }
 
+// A2A audit events retain only the scan reason. An inspection refusal blocks
+// without consulting a2a_scanning.action, so its hint must not offer that knob.
+func TestA2AJSONInspectionRemediationHint(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := enabledA2ACfg()
+	cfg.Action = config.ActionWarn
+	for _, body := range []string{`[1e10001]`, `[` + strings.Repeat("9", 4097) + `]`} {
+		for _, scan := range []struct {
+			name string
+			run  func([]byte) A2AScanResult
+		}{
+			{"request", func(b []byte) A2AScanResult { return ScanA2ARequestBody(t.Context(), b, sc, cfg) }},
+			{"response", func(b []byte) A2AScanResult { return ScanA2AResponseBody(t.Context(), b, sc, cfg) }},
+		} {
+			v := scan.run([]byte(body))
+			if !v.InspectionIncomplete || !scanner.HasInspectionLimit(v.DLPFindings) {
+				t.Fatalf("%s: inspection refusal not produced: %+v", scan.name, v)
+			}
+			for _, label := range []string{scanner.AuditA2AScan, scanner.AuditA2AResponse} {
+				g, ok := scanner.GuidanceForResult(label, v.Reason)
+				if !ok || !g.Immutable || !strings.Contains(g.OperatorKnob, "limits are fixed") {
+					t.Fatalf("%s %s reason %q: hint %+v", scan.name, label, v.Reason, g)
+				}
+			}
+		}
+	}
+	for _, name := range []string{"ordinary", "prefix " + scanner.UninspectableJSONNumberPattern} {
+		reason := buildA2AReason(A2AScanResult{DLPFindings: []scanner.TextDLPMatch{{PatternName: name}}})
+		g, _ := scanner.GuidanceForResult(scanner.AuditA2AResponse, reason)
+		if g.Immutable || !strings.Contains(g.OperatorKnob, "a2a_scanning.action: warn") {
+			t.Fatalf("ordinary A2A DLP %q changed hint: %+v", reason, g)
+		}
+	}
+}
+
 // --- CardCacheKeyFromRequest ---
 
 func TestCardCacheKeyFromRequest_Unauthenticated(t *testing.T) {

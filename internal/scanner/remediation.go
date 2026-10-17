@@ -434,10 +434,21 @@ func jsonInspectionLimitGuidance() RemediationGuidance {
 	}
 }
 
-// These formats are emitted by the URL scanner, HTTP body gates, and HTTP/MCP
-// fragment reassembly. Other reason text is not a pattern-name authority.
+// These formats are emitted by the URL scanner, HTTP body gates, A2A scanning,
+// and HTTP/MCP fragment reassembly. Other reason text is not a pattern-name
+// authority.
 func isJSONInspectionLimitReason(label, reason string) bool {
 	switch label {
+	case AuditA2AScan, AuditA2AHeader, AuditA2AResponse:
+		// A2A joins generated finding parts with "; " after "a2a: "; only the
+		// DLP part lists pattern names.
+		if parts, ok := strings.CutPrefix(reason, "a2a: "); ok {
+			for part := range strings.SplitSeq(parts, "; ") {
+				if names, ok := strings.CutPrefix(part, "DLP: "); ok && jsonInspectionLimitInNames(names) {
+					return true
+				}
+			}
+		}
 	case ScannerBodyDLP:
 		if names, ok := strings.CutPrefix(reason, "request body contains secret: "); ok {
 			return jsonInspectionLimitInNames(names)

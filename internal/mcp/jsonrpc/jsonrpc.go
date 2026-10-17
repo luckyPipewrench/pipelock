@@ -318,7 +318,21 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 	extracted := ExtractStringsFromJSONResult(raw)
 	if len(extracted.Strings) > 0 {
 		joined := strings.Join(extracted.Strings, fallbackTextSeparator)
-		return TextResult{Text: joined, CardText: joined, Truncated: extracted.Truncated, Numeric: numeric}
+		// Retain scalar barriers in the card view. String-only extraction drops
+		// nulls, booleans and numbers and can manufacture a card across them.
+		// Numbers stay on the separate numeric channel, with null as a barrier.
+		var cards []string
+		for _, atom := range extract.AllStringsFromJSONOrderedResult(raw).Atoms {
+			if atom.Key {
+				continue
+			}
+			if atom.Number {
+				cards = append(cards, Null)
+			} else {
+				cards = append(cards, atom.Card)
+			}
+		}
+		return TextResult{Text: joined, CardText: strings.Join(cards, fallbackTextSeparator), Truncated: extracted.Truncated, Numeric: numeric}
 	}
 
 	return TextResult{Truncated: extracted.Truncated, Numeric: numeric}

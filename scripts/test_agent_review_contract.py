@@ -64,6 +64,9 @@ class ProfileTests(unittest.TestCase):
             contract.read_data(self.path)
         with self.assertRaises(ValueError):
             contract.read_data(self.root / '..' / self.root.name / 'profile.toml')
+        # Valid content, so only the symlink refusal can make these reads fail.
+        self.path.write_text(self.good)
+        self.assertEqual(self.good, contract.read_data(self.path))
         link = self.root / 'link'
         link.symlink_to(self.path)
         directory = self.root / 'directory'

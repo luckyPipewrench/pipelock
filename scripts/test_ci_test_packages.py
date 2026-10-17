@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import io
 import re
 import tempfile
@@ -419,6 +420,26 @@ def _selected_by(selectors: dict[str, str], name: str) -> list[str]:
     return [shard for shard, selector in selectors.items() if selector_selects(selector, name)]
 
 
+def _legacy_exact_names_regex(names: list[str]) -> str:
+    """The original kind-prefix-only selector, for equivalence checks."""
+    groups: dict[str, list[str]] = {}
+    other: list[str] = []
+    for name in sorted(set(names)):
+        prefix = next((p for p in ci_test_packages.TEST_KIND_PREFIXES if name.startswith(p)), None)
+        if prefix is None:
+            other.append(re.escape(name))
+        else:
+            groups.setdefault(prefix, []).append(re.escape(name[len(prefix):]))
+    alternatives = [f"{prefix}(?:{'|'.join(rests)})" for prefix, rests in groups.items()]
+    alternatives.extend(other)
+    return "^(?:" + "|".join(alternatives) + ")$"
+
+
+def _incompressible_names(count: int) -> list[str]:
+    """Deterministic long identifiers with little shared prefix after Test."""
+    return [f"Test{hashlib.shake_256(str(i).encode()).hexdigest(100)}" for i in range(count)]
+
+
 def _go_split_regexp(pattern: str) -> list[list[str]]:
     """Mirror testing.splitRegexp: alternatives of '/'-separated elements."""
     alternatives: list[list[str]] = []
@@ -618,6 +639,60 @@ class TestTestNameSplit(unittest.TestCase):
         self.assertEqual(len(_go_split_regexp("^(?:TestA)|^(?:TestB)$")), 2)
         self.assertEqual(_go_split_regexp("^(?:TestA)$/sub"), [["^(?:TestA)$", "sub"]])
 
+    def test_compact_regex_preserves_literals_and_terminal_prefixes(self) -> None:
+        names = ["", "Test", "TestA", "TestAx", "TestAy", "TestB", "FuzzA", "ExampleA",
+                 "Other", "TestÅ", "Testλ", "Test.+", "Test[ab]", "Test(x|y)",
+                 "Test$", "Test\\", "Test" + "Long" * 1000]
+        pattern = exact_names_regex(names)
+        self.assertEqual(pattern, exact_names_regex(list(reversed(names)) + names))
+        self.assertEqual(_go_split_regexp(pattern), [[pattern]])
+        probes = set(names) | {"TestAxExtra", "TestAz", "Testa", "Testx", "Testy", "Testab"}
+        probes.update("X" + name for name in names)
+        probes.update(name + "Extra" for name in names)
+        probes.update(name[:-1] for name in names)
+        for name in probes:
+            with self.subTest(name=name):
+                self.assertEqual(re.search(pattern, name) is not None, name in names)
+
+    def test_real_race_and_unit_selectors_preserve_membership_and_have_headroom(self) -> None:
+        for lane, splits, shard_names, selector_for in (
+            ("race", TEST_SPLITS, SHARDS, shard_selector),
+            ("unit", ci_test_packages.UNIT_SPLITS, ci_test_packages.unit_shard_names(),
+             ci_test_packages.unit_shard_selector),
+        ):
+            heavy_shards: set[str] = set()
+            for tree, root in HEAVY_TREES.items():
+                names = tree_test_names(ci_test_packages.ROOT / root)
+                self.assertTrue(names, tree)
+                count = splits.get(tree, 1)
+                shards = [tree] if count == 1 else [f"{tree}-{i}" for i in range(count)]
+                heavy_shards.update(shards)
+                selections: list[set[str]] = []
+                for shard in shards:
+                    with self.subTest(lane=lane, shard=shard):
+                        self.assertIn(shard, shard_names)
+                        selector = selector_for(shard)
+                        with patch.object(ci_test_packages, "exact_names_regex", _legacy_exact_names_regex), \
+                             patch.object(ci_test_packages, "MAX_SELECTOR_BYTES", sys.maxsize):
+                            legacy = selector_for(shard)
+                        # A single anchored component has identical Python and
+                        # Go search semantics; subtests inherit its top-level match.
+                        pattern = selector.partition("=")[2]
+                        self.assertEqual(_go_split_regexp(pattern), [[pattern]])
+                        selected = {name for name in names if selector_selects(selector, name)}
+                        self.assertEqual(selected, {name for name in names if selector_selects(legacy, name)})
+                        self.assertTrue(selected)
+                        selections.append(selected)
+                        # Leave at least a third of the existing cap for tree growth.
+                        self.assertLess(len(selector.encode("utf-8")), ci_test_packages.MAX_SELECTOR_BYTES * 2 // 3)
+                        unseen = "TestNotInTheInventoryForSelectorEquivalence"
+                        for name in (unseen, names[0] + "Extra", "X" + names[-1]):
+                            self.assertEqual(selector_selects(selector, name), selector_selects(legacy, name))
+                self.assertEqual(set().union(*selections), set(names), (lane, tree))
+                self.assertEqual(sum(map(len, selections)), len(names), (lane, tree))
+            for shard in set(shard_names) - heavy_shards:
+                self.assertEqual(selector_for(shard), "")
+
     def test_prefix_collision_across_sub_shards_selects_each_once(self) -> None:
         names = ["TestScan", "TestScanTextForDLP"]
         count = TEST_SPLITS["scanner"]
@@ -643,7 +718,7 @@ class TestTestNameSplit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty name set"):
             exact_names_regex([])
         # Enough oversize names that even one bucket of the split overflows.
-        huge = [f"Test{'x' * 200}{index}" for index in range(1000 * TEST_SPLITS["proxy"])]
+        huge = _incompressible_names(1000 * TEST_SPLITS["proxy"])
         with self.assertRaisesRegex(ValueError, "raise TEST_SPLITS"):
             shard_selector("proxy-0", huge)
 
@@ -695,7 +770,7 @@ class TestTestNameSplit(unittest.TestCase):
         self.assertEqual(sorted(len(bucket) for bucket in buckets), [3, 3, 3, 3])
 
     def test_final_shard_oversize_names_a_remedy_that_shrinks_it(self) -> None:
-        huge = [f"Test{'x' * 200}{index}" for index in range(2000)]
+        huge = _incompressible_names(2000)
         last = f"proxy-{TEST_SPLITS['proxy'] - 1}"
         with self.assertRaises(ValueError) as caught:
             shard_selector(last, huge)

@@ -189,10 +189,11 @@ def module_path() -> str:
     raise ValueError("go.mod has no module line")
 
 
-# The kernel refuses a single argv entry longer than 128 KiB (MAX_ARG_STRLEN),
+# Linux's include/uapi/linux/binfmts.h sets MAX_ARG_STRLEN to PAGE_SIZE * 32
+# (128 KiB with 4 KiB pages), including the terminating NUL,
 # and `go test` forwards the selector to the test binary as one argument. Keep
-# clear of that with room for the flag prefix; a tree that outgrows it needs a
-# larger split count, and failing here says so instead of failing exec later.
+# clear of that with room for the flag prefix; fail here instead of at exec if
+# even the compact selector outgrows the limit.
 MAX_SELECTOR_BYTES = 120_000
 
 # Top-level functions `go test` runs under -run/-skip. Matching is deliberately
@@ -300,23 +301,27 @@ def exact_names_regex(names: list[str]) -> str:
 
     Both anchors sit outside one group, so `TestScan` cannot match
     `TestScanTextForDLP` and nothing can match a longer or shorter name. Names
-    are grouped under their kind prefix only to keep the argument short.
+    share literal prefixes in a radix tree to keep the argument short.
     The pattern contains no `/`, so go test applies it to top-level names and
     leaves every subtest of a selected test to run.
     """
     if not names:
         raise ValueError("refusing to build a selector for an empty name set")
-    groups: dict[str, list[str]] = {}
-    other: list[str] = []
-    for name in sorted(set(names)):
-        prefix = next((p for p in TEST_KIND_PREFIXES if name.startswith(p)), None)
-        if prefix is None:
-            other.append(re.escape(name))
-        else:
-            groups.setdefault(prefix, []).append(re.escape(name[len(prefix):]))
-    alternatives = [f"{prefix}(?:{'|'.join(rests)})" for prefix, rests in groups.items()]
-    alternatives.extend(other)
-    return "^(?:" + "|".join(alternatives) + ")$"
+
+    def compact(values: list[str]) -> str:
+        # Sorted endpoints determine the common prefix of the whole group.
+        # Consume it at once so long names do not add one stack frame per char.
+        prefix = os.path.commonprefix((values[0], values[-1]))
+        branches: dict[str, list[str]] = {}
+        for value in values:
+            rest = value[len(prefix):]
+            branches.setdefault(rest[:1], []).append(rest)
+        alternatives = [compact(rests) if char else "" for char, rests in branches.items()]
+        suffix = alternatives[0] if len(alternatives) == 1 else "(?:" + "|".join(alternatives) + ")"
+        # An empty alternative preserves a name that is also another's prefix.
+        return re.escape(prefix) + suffix
+
+    return "^(?:" + compact(sorted(set(names))) + ")$"
 
 
 def load_durations(path: Path = DURATIONS_FILE) -> dict[str, dict[str, float]]:

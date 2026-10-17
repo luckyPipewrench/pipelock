@@ -1673,13 +1673,45 @@ jobs:
           path: engine
           persist-credentials: false
 
+      # A pull request may only move the pin forward. Any commit on engine main
+      # would pass the check above, including an older engine whose validator is
+      # weaker, so a pin the base branch already carries must be an ancestor of
+      # the new one. A base without a pin (first adoption) has nothing to compare.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event_name == 'pull_request'
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/workflows/agent-review.yaml
+          sparse-checkout-cone-mode: false
+
+      - name: Read the base branch engine revision
+        id: base_pin
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          caller=base/.github/workflows/agent-review.yaml
+          pattern='^    uses: pipelab-org/agent-review/\.github/workflows/agent-review-reusable\.yaml@[0-9a-f]{40} # main$'
+          if [ -f "$caller" ] && line="$(grep -E "$pattern" "$caller")"; then
+            pin="${line##*@}"
+            pin="${pin%% *}"
+            echo "sha=$pin" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Require the pin on the engine main branch
         env:
           PIN: ${{ steps.pin.outputs.sha }}
+          BASE_PIN: ${{ steps.base_pin.outputs.sha }}
         run: |
           set -euo pipefail
           if ! git -C engine merge-base --is-ancestor "$PIN" HEAD; then
             echo "agent review pin is not a commit on pipelab-org/agent-review main" >&2
+            exit 1
+          fi
+          if [ -n "${BASE_PIN:-}" ] && ! git -C engine merge-base --is-ancestor "$BASE_PIN" "$PIN"; then
+            echo "agent review pin $PIN is older than the base branch pin $BASE_PIN" >&2
             exit 1
           fi
           git -C engine checkout --quiet --detach "$PIN"

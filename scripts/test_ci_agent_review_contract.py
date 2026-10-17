@@ -53,11 +53,25 @@ class AgentReviewContractJobTest(unittest.TestCase):
 
     def test_checkouts_are_pinned_and_hold_no_credentials(self) -> None:
         checkouts = [step for step in self.steps if "uses" in step]
-        self.assertEqual(2, len(checkouts))
+        self.assertEqual(3, len(checkouts))
         for step in checkouts:
             self.assertEqual(CHECKOUT, step["uses"])
             self.assertIs(False, step["with"]["persist-credentials"])
-        caller, engine = checkouts
+        caller, engine, base = checkouts
+        # The base branch's caller, read only on pull requests, supplies the pin
+        # the new one must descend from. Its ref is GitHub's base commit, never a
+        # name the pull request controls.
+        self.assertEqual("github.event_name == 'pull_request'", base["if"])
+        self.assertEqual(
+            {
+                "ref": "${{ github.event.pull_request.base.sha }}",
+                "path": "base",
+                "persist-credentials": False,
+                "sparse-checkout": ".github/workflows/agent-review.yaml\n",
+                "sparse-checkout-cone-mode": False,
+            },
+            base["with"],
+        )
         self.assertNotIn("repository", caller["with"])
         self.assertNotIn("ref", caller["with"])
         self.assertEqual("caller", caller["with"]["path"])
@@ -168,14 +182,19 @@ class AgentReviewContractJobTest(unittest.TestCase):
             side = git(engine, "rev-parse", "HEAD")
             git(engine, "switch", "--quiet", "main")
             git(engine, "commit", "--quiet", "--allow-empty", "-m", "new")
+            new = git(engine, "rev-parse", "HEAD")
 
-            def run(pin: str) -> subprocess.CompletedProcess:
+            def run(pin: str, base: str | None = None) -> subprocess.CompletedProcess:
                 git(engine, "switch", "--quiet", "main")
+                env = os.environ | {"PIN": pin}
+                env.pop("BASE_PIN", None)
+                if base is not None:
+                    env["BASE_PIN"] = base
                 return subprocess.run(
                     ["bash", "-euo", "pipefail", "-c", script],
                     check=False,
                     cwd=temp,
-                    env=os.environ | {"PIN": pin},
+                    env=env,
                     text=True,
                     capture_output=True,
                 )
@@ -186,6 +205,17 @@ class AgentReviewContractJobTest(unittest.TestCase):
             for name, pin in {"off main": side, "unknown": "f" * 40, "empty": ""}.items():
                 with self.subTest(pin=name):
                     refused = run(pin)
+                    self.assertNotEqual(0, refused.returncode)
+                    self.assertEqual("main", git(engine, "branch", "--show-current"))
+
+            # A pull request may move the pin forward or keep it, never back.
+            for name, pin, base in (("forward", new, old), ("same", new, new), ("no base pin", new, "")):
+                with self.subTest(move=name):
+                    moved = run(pin, base)
+                    self.assertEqual(0, moved.returncode, moved.stderr)
+            for name, pin, base in (("backward", old, new), ("base off main", new, side), ("base unknown", new, "e" * 40)):
+                with self.subTest(move=name):
+                    refused = run(pin, base)
                     self.assertNotEqual(0, refused.returncode)
                     self.assertEqual("main", git(engine, "branch", "--show-current"))
 

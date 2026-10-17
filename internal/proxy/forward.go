@@ -2000,6 +2000,18 @@ func (p *Proxy) handleForwardHTTP(w http.ResponseWriter, r *http.Request) {
 
 		if ceeRes.Blocked {
 			p.metrics.RecordBlocked(r.URL.Hostname(), "cross_request", time.Since(start), agentLabel)
+			emitForwardReceipt(withForwardRedaction(receipt.EmitOpts{
+				ActionID:   actionID,
+				Verdict:    config.ActionBlock,
+				Layer:      "cross_request",
+				Pattern:    ceeReceiptPattern(ceeRes),
+				Transport:  TransportForward,
+				Method:     r.Method,
+				Target:     targetURL,
+				RequestID:  requestID,
+				Agent:      agent,
+				PolicyHash: ceeAdmission.PolicyHash,
+			}))
 			writeBlockedError(w,
 				blockInfoFor(blockreason.CrossRequestDeny, "cross_request"),
 				"blocked: "+ceeRes.Reason, http.StatusForbidden)

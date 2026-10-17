@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/mcp"
 	"github.com/luckyPipewrench/pipelock/internal/metrics"
+	"github.com/luckyPipewrench/pipelock/internal/receipt"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
@@ -306,5 +308,84 @@ func TestJSONInspectionProxyFragmentAttribution(t *testing.T) {
 	}
 	if !result.Blocked || result.BlockKind != scanner.UninspectableJSONNumberPattern {
 		t.Fatalf("fragment refusal attribution: blocked=%v kind=%s", result.Blocked, result.BlockKind)
+	}
+}
+
+func TestJSONInspectionForwardFragmentReceipt(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	cfg.RequestBodyScanning.Enabled = false
+	cfg.CrossRequestDetection.Enabled = true
+	cfg.CrossRequestDetection.Action = config.ActionWarn
+	cfg.CrossRequestDetection.EntropyBudget.Enabled = false
+	cfg.CrossRequestDetection.FragmentReassembly.Enabled = true
+	cfg.ApplyDefaults()
+	cfg.DNS.HostOverrides = map[string][]string{"api.vendor.example": {"93.184.216.34"}}
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	var records bytes.Buffer
+	log, err := audit.NewWithStream("json", "stdout", "", true, true, &records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(log.Close)
+	p, err := New(cfg, log, sc, metrics.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(p.Close)
+	if p.fragmentBufferPtr.Load() == nil {
+		t.Fatal("CEE fragment buffer not initialized")
+	}
+	rph := newReceiptProxyHelper(t)
+	p.receiptEmitterPtr.Store(rph.emitter)
+	hits := 0
+	p.client = &http.Client{Transport: forwardBoundaryRoundTripper(func(r *http.Request) (*http.Response, error) {
+		hits++
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/plain"}}, Body: io.NopCloser(strings.NewReader("accepted")), Request: r}, nil
+	})}
+	card := cardtest.Number()
+	parts := []string{`{"n":1e10001,"s":"` + card[:8], card[8:] + `"}`}
+	var blocked *httptest.ResponseRecorder
+	for i, part := range parts {
+		req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "http://api.vendor.example/upload", strings.NewReader(part))
+		req.Header.Set("Content-Type", "text/plain")
+		req.RemoteAddr = "192.0.2.1:12345"
+		w := httptest.NewRecorder()
+		p.handleForwardHTTP(w, req)
+		want := http.StatusOK
+		if i == 1 {
+			want = http.StatusForbidden
+			blocked = w
+		}
+		if w.Code != want {
+			t.Fatalf("fragment=%d status=%d want=%d body=%s", i, w.Code, want, w.Body.String())
+		}
+	}
+	if hits != 1 {
+		t.Fatalf("hits=%d want=1", hits)
+	}
+	receipts := rph.findReceipts(t)
+	denials := 0
+	for _, r := range receipts {
+		if err := receipt.VerifyWithKey(r, rph.pubHex); err != nil {
+			t.Fatal(err)
+		}
+		if r.ActionRecord.Layer == "cross_request" && r.ActionRecord.Verdict == config.ActionBlock {
+			denials++
+			if r.ActionRecord.Pattern != scanner.UninspectableJSONNumberPattern {
+				t.Fatalf("pattern=%s", r.ActionRecord.Pattern)
+			}
+			requireSignedRecordedReceipt(t, rph, receipts, blocked.Header().Get("X-Pipelock-Receipt"))
+			if r.ActionRecord.PolicyHash != cfg.CanonicalPolicyHash() {
+				t.Fatal("receipt policy hash differs from deciding config")
+			}
+		}
+	}
+	if !strings.Contains(records.String(), "fragment reassembly DLP match: "+scanner.UninspectableJSONNumberPattern) {
+		t.Fatalf("missing audit cause: %s", records.String())
+	}
+	if denials != 1 {
+		t.Fatalf("forward CEE denial receipts=%d want=1; total receipts=%d; status=%d hits=%d", denials, len(receipts), blocked.Code, hits)
 	}
 }

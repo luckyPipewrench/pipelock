@@ -954,21 +954,21 @@ func TestInstallLocalRejectsUnsignedV2WithoutRecordingFloor(t *testing.T) {
 func remoteFreshnessCandidate(name string, format int, monotonic uint64) (*domrules.Bundle, *domrules.LockFile) {
 	const signer = "test-signer"
 	return &domrules.Bundle{
-		FormatVersion:    format,
-		Name:             name,
-		Tier:             domrules.TierCommunity,
-		MonotonicVersion: monotonic,
-		PublishedAt:      "2026-08-27T00:00:00Z",
-		ExpiresAt:        time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339),
-		KeyID:            signer,
-	}, &domrules.LockFile{
-		InstalledVersion:  "2026.08.0",
-		InstalledAt:       "2026-08-27T00:00:00Z",
-		Source:            "https://rules.example/bundle.yaml",
-		LastCheck:         "2026-08-27T00:00:00Z",
-		BundleSHA256:      "candidate-digest",
-		SignerFingerprint: signer,
-	}
+			FormatVersion:    format,
+			Name:             name,
+			Tier:             domrules.TierCommunity,
+			MonotonicVersion: monotonic,
+			PublishedAt:      "2026-08-27T00:00:00Z",
+			ExpiresAt:        time.Now().UTC().AddDate(10, 0, 0).Format(time.RFC3339),
+			KeyID:            signer,
+		}, &domrules.LockFile{
+			InstalledVersion:  "2026.08.0",
+			InstalledAt:       "2026-08-27T00:00:00Z",
+			Source:            "https://rules.example/bundle.yaml",
+			LastCheck:         "2026-08-27T00:00:00Z",
+			BundleSHA256:      "candidate-digest",
+			SignerFingerprint: signer,
+		}
 }
 
 func writeInstalledBundleForFreshnessTest(t *testing.T, rulesDir, name string, data []byte) {

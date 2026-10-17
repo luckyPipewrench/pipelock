@@ -101,3 +101,37 @@ func TestJoinCardAtomsSkipsOnlyKeys(t *testing.T) {
 		t.Fatal("value forged a typed number boundary")
 	}
 }
+
+func TestJSONNumberStreamViews(t *testing.T) {
+	for _, tt := range []struct{ name, raw, text, card string }{
+		{"malformed", `[1,`, "", ""},
+		{"strings", `{"text":"1234","flag":true,"empty":null}`, "", ""},
+		{"integer", `{"label":"envelope","value":1234}`, "1234", "1234"},
+		{"adjacent numbers", `{"label":"envelope","values":[1234,5678]}`, "12345678", "1234" + jsonnumber.NumberBoundary + "5678"},
+		{"decimal", `[0.1234]`, "0.1234", jsonnumber.IntegralView(json.Number("0.1234"))},
+		{"uninspectable spelling", `[1e10001]`, "1e10001", "1e10001"},
+		{"depth", strings.Repeat("[", 65) + "1" + strings.Repeat("]", 65), "", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			text, card := JSONNumberStreamViews([]byte(tt.raw))
+			if text != tt.text || card != tt.card {
+				t.Fatalf("text=%q card=%q, want text=%q card=%q", text, card, tt.text, tt.card)
+			}
+		})
+	}
+}
+
+func TestCardAtomScalarDepthLimits(t *testing.T) {
+	for _, leaf := range []string{"true", "null", "1234", `"label"`} {
+		raw := strings.Repeat("[", MaxExtractDepth+1) + leaf + strings.Repeat("]", MaxExtractDepth+1)
+		result := AllStringsFromJSONOrderedResult(json.RawMessage(raw))
+		if !result.Truncated || len(result.Atoms) != 0 {
+			t.Fatalf("over-depth leaf %s admitted", leaf)
+		}
+		raw = strings.Repeat("[", MaxExtractDepth) + leaf + strings.Repeat("]", MaxExtractDepth)
+		result = AllStringsFromJSONOrderedResult(json.RawMessage(raw))
+		if result.Truncated || len(result.Atoms) != 1 {
+			t.Fatalf("boundary leaf %s rejected", leaf)
+		}
+	}
+}

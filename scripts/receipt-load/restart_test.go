@@ -180,17 +180,18 @@ func TestRealRestartContinuity(t *testing.T) {
 				}
 			}
 			t.Logf("%d chains: %d measured + %d warmup, restart after %d, stop %.6fs / %.0fs, both verifications passed", chains, opt.requests, opt.warmup, opt.restartAfter, got.Restart.StopSeconds, got.Restart.ShutdownBudgetSeconds)
-			if chains != 1 {
-				return
-			}
-			// Removing a valid run's predecessor link leaves individually valid
-			// chains. The restart topology check must still reject that evidence.
 			plan := newWorkload(opt.seed, opt.warmup, opt.requests)
 			// Continuity uses only lifecycle data, so no request attribution is needed.
 			after, err := scanRecorder(dirs.recorder, plan, "unused.vendor.example:80")
 			if err != nil {
 				t.Fatal(err)
 			}
+			if chains != 1 {
+				rejectUnlinkedGroup(t, dirs, after, chains)
+				return
+			}
+			// Removing a valid run's predecessor link leaves individually valid
+			// chains. The restart topology check must still reject that evidence.
 			before := newRecorderObservation(plan.total())
 			var predecessor string
 			for session := range after.opens {
@@ -219,6 +220,36 @@ func TestRealRestartContinuity(t *testing.T) {
 			t.Log("missing-link negative rejected; existing whole-recorder verification alone passed")
 		})
 	}
+}
+
+// rejectUnlinkedGroup checks the grouped rule against real signed lifecycle
+// data. The binding is part of signed opens, so a fresh unlinked successor
+// group is modeled in memory: on disk it would fail signature verification
+// before the topology check could be the deciding guard.
+func rejectUnlinkedGroup(t *testing.T, dirs runDirs, after *recorderObservation, chains int) {
+	t.Helper()
+	before, fresh := newRecorderObservation(0), newRecorderObservation(0)
+	for session, open := range after.opens {
+		if open.GroupBinding != nil && open.GroupBinding.PreviousGroupID == "" {
+			before.opens[session], before.closes[session] = open, after.closes[session]
+		}
+	}
+	if err := checkRestartContinuity(dirs, before, after, chains); err != nil {
+		t.Fatalf("real grouped restart rejected: %v", err)
+	}
+	for session, open := range after.opens {
+		copied := *open
+		if before.opens[session] == nil && open.GroupBinding != nil {
+			binding := *open.GroupBinding
+			binding.PreviousGroupID, binding.PreviousOpenManifestSHA256 = "", ""
+			copied.GroupBinding = &binding
+		}
+		fresh.opens[session], fresh.closes[session] = &copied, after.closes[session]
+	}
+	if err := checkRestartContinuity(dirs, before, fresh, chains); err == nil {
+		t.Fatal("fresh unlinked successor group accepted")
+	}
+	t.Log("unlinked successor group negative rejected")
 }
 
 func TestRestartGroupTopology(t *testing.T) {

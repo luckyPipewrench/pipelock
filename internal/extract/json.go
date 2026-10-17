@@ -815,7 +815,8 @@ func appendJSONLeafValuePartial(state *jsonLeafPartialState, path []byte, value 
 type JSONStringsResult struct {
 	// CardStrings parallels Strings only for type-aware extraction; literal strings are unchanged.
 	CardStrings []string
-	// Atoms preserves JSON number provenance for joins of the card view.
+	// Atoms preserves source order and JSON number provenance for card joins,
+	// including keys and null barriers. Strings and CardStrings use sorted keys.
 	Atoms     []DLPAtom
 	Strings   []string
 	Truncated bool
@@ -837,11 +838,9 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		return JSONStringsResult{}
 	}
 	var result, cards []string
-	var atoms []DLPAtom
-	appendAtom := func(text, card string, number bool) {
+	appendAtom := func(text, card string) {
 		result = append(result, text)
 		cards = append(cards, card)
-		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number})
 	}
 	truncated := false
 	var extract func(v interface{}, depth int)
@@ -852,12 +851,12 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 		}
 		switch val := v.(type) {
 		case string:
-			appendAtom(val, val, false)
+			appendAtom(val, val)
 		case json.Number:
-			appendAtom(val.String(), jsonnumber.IntegralView(val), true)
+			appendAtom(val.String(), jsonnumber.IntegralView(val))
 		case bool:
 			text := strconv.FormatBool(val)
-			appendAtom(text, text, false)
+			appendAtom(text, text)
 		case []interface{}:
 			for _, item := range val {
 				extract(item, depth+1)
@@ -872,7 +871,7 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 			}
 			sort.Strings(keys)
 			for _, k := range keys {
-				appendAtom(k, k, false)
+				appendAtom(k, k)
 				extract(val[k], depth+1)
 			}
 		}
@@ -883,7 +882,8 @@ func AllStringsFromJSONResult(raw json.RawMessage) JSONStringsResult {
 	if err := dec.Decode(&parsed); err == nil {
 		extract(parsed, 0)
 	}
-	return JSONStringsResult{Strings: result, CardStrings: cards, Atoms: atoms, Truncated: truncated}
+	ordered := AllStringsFromJSONOrderedResult(raw)
+	return JSONStringsResult{Strings: result, CardStrings: cards, Atoms: ordered.Atoms, Truncated: truncated || ordered.Truncated}
 }
 
 // AllStringsFromJSONOrdered extracts string-ish JSON tokens in source order,
@@ -904,6 +904,10 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 	dec.UseNumber()
 
 	var result []string
+	var atoms []DLPAtom
+	appendAtom := func(text, card string, number bool) {
+		atoms = append(atoms, DLPAtom{Text: text, Card: card, Number: number})
+	}
 	depth := 0
 	truncated := false
 	for {
@@ -930,16 +934,23 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 		case string:
 			if depth <= maxExtractDepth {
 				result = append(result, v)
+				appendAtom(v, v, false)
 			}
 		case json.Number:
 			if depth <= maxExtractDepth {
 				result = append(result, v.String())
+				appendAtom(v.String(), jsonnumber.IntegralView(v), true)
 			}
 		case bool:
 			if depth <= maxExtractDepth {
 				result = append(result, strconv.FormatBool(v))
+				appendAtom(strconv.FormatBool(v), strconv.FormatBool(v), false)
+			}
+		case nil:
+			if depth <= maxExtractDepth {
+				appendAtom("null", "null", false)
 			}
 		}
 	}
-	return JSONStringsResult{Strings: result, Truncated: truncated}
+	return JSONStringsResult{Strings: result, Atoms: atoms, Truncated: truncated}
 }

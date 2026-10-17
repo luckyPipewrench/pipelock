@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -30,15 +31,11 @@ func TestCardRunClassification(t *testing.T) {
 			text := strings.Join(extracted.Strings, "\n")
 			view := extract.JoinCardAtoms(extracted.Atoms, " ")
 			results := []TextDLPResult{s.ScanTextForDLPWithCardView(t.Context(), tt.Body, jsonnumber.CardView(tt.Body, extract.MaxExtractDepth))}
-			// Object keys interrupt the flattened atom view. Its callers also
-			// inspect the original document and individual leaves.
-			if strings.HasPrefix(tt.Body, "[") {
-				results = append(results,
-					s.ScanTextForDLPWithTypedCardView(t.Context(), text, view),
-					s.ScanTextForDLPInboundWithTypedCardView(t.Context(), text, view),
-					s.ScanTextForDLPQuietWithTypedCardView(t.Context(), text, view),
-					s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Atoms, "\n"))
-			}
+			results = append(results,
+				s.ScanTextForDLPWithTypedCardView(t.Context(), text, view),
+				s.ScanTextForDLPInboundWithTypedCardView(t.Context(), text, view),
+				s.ScanTextForDLPQuietWithTypedCardView(t.Context(), text, view),
+				s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Atoms, "\n"))
 			for _, result := range results {
 				if result.Clean != (tt.Clean || tt.Warn) || OnlyInformational(result.Matches) != tt.Warn {
 					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyInformational(result.Matches), tt.Clean, tt.Warn)
@@ -317,5 +314,52 @@ func TestCardRunFragmentMaskedWarningsRemainInformational(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCardUnionUsesShippedReconstructionRule(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	// This configured rule finds the same digit values but excludes separators.
+	// Typed reconstruction still follows the shared shipped-rule UNION.
+	cfg.DLP.Patterns = []config.DLPPattern{{Name: "Card fixture", Regex: strings.ReplaceAll(jsonnumber.ShippedCardPattern, "[- ]?", ""), Validator: "luhn", Severity: config.SeverityHigh}}
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, tt := range cardtest.UnionCases() {
+		t.Run(tt.Name, func(t *testing.T) {
+			matches := s.ScanJSONCardRuns(t.Context(), tt.Body)
+			if HasEnforcingMatch(matches) != (!tt.Clean && !tt.Warn) {
+				t.Fatal("configured matching changed the shared reconstruction policy")
+			}
+		})
+	}
+}
+
+func TestCardTypedViewOwnsReconstruction(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "Other credential fixture", Regex: `credential-marker`, Severity: config.SeverityHigh})
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	found := false
+	for _, tt := range cardtest.UnionCases() {
+		if tt.Name != "context prefixed split" {
+			continue
+		}
+		found = true
+		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body, tt.Body); result.Clean {
+			t.Fatal("positive typed source missed")
+		}
+		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body, ""); !result.Clean {
+			t.Fatal("text join fabricated typed card evidence")
+		}
+		if result := s.ScanTextForDLPWithTypedCardView(t.Context(), tt.Body+" credential-marker", ""); result.Clean || !slices.ContainsFunc(result.Matches, func(m TextDLPMatch) bool { return m.PatternName == "Other credential fixture" }) {
+			t.Fatal("non-card credentials lost reconstruction")
+		}
+	}
+	if !found {
+		t.Fatal("positive corpus row missing")
 	}
 }

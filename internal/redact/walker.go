@@ -78,7 +78,7 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 	if err := checkNoDuplicateKeys(body); err != nil {
 		return nil, nil, err
 	}
-	// Generic card joins share the scanner's complete-piece rule. Informational
+	// Generic card joins share the scanner's UNION rule. Informational
 	// joins are recorded by DLP and left unchanged by redaction.
 	runs, limit := jsonnumber.CardRunsWithLimit(string(body), lim.MaxDepth+1)
 	if limit == jsonnumber.CardRunDepthLimit {

@@ -181,7 +181,7 @@ func TestCardJSONInputTypes(t *testing.T) {
 		{"JSON string", `{"n":"{\"n\":0.` + card + `}"}`, false},
 		{"encoded string", `{"n":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`, false},
 		{"metric and string", `{"n":0.` + card + `,"s":"` + card + `"}`, false},
-		{"split string", `{"a":"` + card[:8] + `","b":"` + card[8:] + `","n":0.` + card + `}`, false},
+		{"keys interrupt split string", `{"a":"` + card[:8] + `","b":"` + card[8:] + `","n":0.` + card + `}`, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			line := []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":` + tt.params + `}`)

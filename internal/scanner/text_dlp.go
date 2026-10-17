@@ -636,16 +636,9 @@ func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMa
 func (s *Scanner) classifyCardRun(match *TextDLPMatch, run jsonnumber.CardRun) {
 	match.span.ViewLabel = spanViewLabel("json_number_run", match.span.ViewLabel)
 	match.numberOnlyCardRun = run.NumberOnly
-	informational := run.NumberOnly
-	if strings.Contains(run.SpaceCandidate, " ") && !run.NumberOnly {
-		informational = true
-		for _, p := range s.dlpPatterns {
-			if p.genericCard && p.name == match.PatternName && run.Enforces(p.re) {
-				informational = false
-				break
-			}
-		}
-	}
+	// Configured luhn rules decide whether there is a finding; the shared
+	// shipped-rule UNION decides whether typed reconstruction can enforce it.
+	informational := !run.EnforcesShippedRule()
 	match.informational = informational
 	match.Warn = match.Warn || informational
 }
@@ -697,10 +690,16 @@ func (s *Scanner) scanTextDLPViews(ctx context.Context, text, cardView string, o
 	var limit jsonnumber.CardRunLimit
 	// Extracted text may concatenate several numbers into one scalar spelling;
 	// only the typed boundaries can classify that synthetic view.
-	trimmed := strings.TrimSpace(text)
+	runText := text
+	if opts.typedCardView {
+		// Reconstruction belongs to the supplied typed view. A sorted or
+		// pairwise text join must not manufacture another JSON document.
+		runText = cardView
+	}
+	trimmed := strings.TrimSpace(runText)
 	structured := len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[')
 	if !opts.typedCardView || structured {
-		runs, limit = jsonnumber.CardRunsWithLimit(text, extract.MaxExtractDepth)
+		runs, limit = jsonnumber.CardRunsWithLimit(runText, extract.MaxExtractDepth)
 	}
 	// Only a structured document is refused over budget. Scalar text such as a
 	// string value of digits keeps its ordinary checks, as StructuredCardView

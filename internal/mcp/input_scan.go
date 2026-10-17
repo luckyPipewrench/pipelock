@@ -769,8 +769,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 		}
 	}
 	vals := extracted.Strings
-	atoms := extracted.CardAtoms
-	positions := extracted.StringPositions
+	cardAtoms := extract.AllStringsFromJSONResult(raw).Atoms
 	if len(vals) <= 1 {
 		return result
 	}
@@ -778,7 +777,7 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
 	if concat != joined {
-		if r := sc.ScanTextForDLPWithTypedCardView(ctx, concat, extract.JoinCardAtoms(atoms, "")); len(r.Matches) > 0 {
+		if r := sc.ScanTextForDLPWithTypedCardView(ctx, concat, extract.JoinCardAtoms(cardAtoms, "")); len(r.Matches) > 0 {
 			result = mergeInputDLP(result, r)
 			if !r.Clean {
 				return result
@@ -804,14 +803,10 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			if len(vals[j]) == 0 {
 				continue
 			}
-			// Pair selection must not erase an intervening non-digit value
-			// for generic cards. Other credentials retain pairwise inspection.
-			forwardCard := atoms[positions[i]].Card + "," + atoms[positions[j]].Card
-			reverseCard := atoms[positions[j]].Card + "," + atoms[positions[i]].Card
-			if positions[j] == positions[i]+1 {
-				forwardCard = extract.JoinCardAtoms([]extract.DLPAtom{atoms[positions[i]], atoms[positions[j]]}, "")
-				reverseCard = extract.JoinCardAtoms([]extract.DLPAtom{atoms[positions[j]], atoms[positions[i]]}, "")
-			}
+			// Generic cards use the source-ordered typed sequence above. Pairwise
+			// reconstruction belongs only to other credential detectors; it must
+			// not erase keys or scalar interruptions or reverse card pieces.
+			forwardCard, reverseCard := "", ""
 			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[i]+vals[j], forwardCard); len(r.Matches) > 0 {
 				result = mergeInputDLP(result, r)
 				if !r.Clean {

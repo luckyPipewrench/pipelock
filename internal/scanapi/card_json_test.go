@@ -54,9 +54,10 @@ func TestCardJSONToolCallTypes(t *testing.T) {
 }
 
 func TestCardJSONSharedToolCallCorpus(t *testing.T) {
-	h := newTestHandler(t)
 	for _, tt := range cardtest.JSONCases() {
 		t.Run(tt.Name, func(t *testing.T) {
+			h := newTestHandler(t)
+			t.Cleanup(h.scanner.Close)
 			body := `{"kind":"tool_call","input":{"tool_name":"report","arguments":` + tt.Body + `}}`
 			req := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/api/v1/scan", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")

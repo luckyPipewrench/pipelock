@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/redact"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
@@ -65,5 +66,32 @@ func TestCardJSONRequestBody(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCardUnionBodySorting(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	s := scanner.MustNew(cfg)
+	t.Cleanup(s.Close)
+	for _, tt := range cardtest.UnionCases() {
+		t.Run(tt.Name, func(t *testing.T) {
+			extracted := extractBodyTextForDLP([]byte(tt.Body), BodyScanRequest{ContentType: contentTypeJSON})
+			if extracted.Err != "" {
+				t.Fatal(extracted.Err)
+			}
+			views := bodyDLPViews{texts: extracted.Texts, cards: extracted.CardTexts, atoms: extracted.Atoms, rawJSON: tt.Body}
+			for _, mode := range []struct {
+				name  string
+				sigv4 bool
+			}{{"ordinary", false}, {"sigv4", true}} {
+				t.Run(mode.name, func(t *testing.T) {
+					matches := scanBodyTextViewsForDLPWithAudience(t.Context(), s, views, "", nil, nil, mode.sigv4, nil, "", nil)
+					if scanner.HasEnforcingMatch(matches) != (!tt.Clean && !tt.Warn) || scanner.OnlyInformational(matches) != tt.Warn {
+						t.Fatal("body sorting changed source card evidence")
+					}
+				})
+			}
+		})
 	}
 }

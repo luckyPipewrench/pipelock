@@ -202,7 +202,7 @@ func TestCardJSONInputWarnContinuesCredentialInspection(t *testing.T) {
 	for _, payload := range []string{
 		`{"ids":[4111,1111,1111,1111]}`,
 		`{"ids":[4111,1111,1111,1111],"encoded":"` + base64.StdEncoding.EncodeToString([]byte(card)) + `"}`,
-		`{"ids":[4111,1111,1111,1111],"a":"` + card[:8] + `","b":"` + card[8:] + `"}`,
+		`{"ids":[4111,1111,1111,1111],"pieces":["` + card[:8] + `","` + card[8:] + `"]}`,
 	} {
 		for _, envelope := range []string{
 			`{"jsonrpc":"2.0","id":1,"result":` + payload + `}`,
@@ -211,7 +211,7 @@ func TestCardJSONInputWarnContinuesCredentialInspection(t *testing.T) {
 		} {
 			v := ScanRequest(t.Context(), []byte(envelope), s, config.ActionBlock, config.ActionForward)
 			want := config.ActionBlock
-			if !strings.Contains(payload, `"encoded"`) && !strings.Contains(payload, `"a"`) {
+			if !strings.Contains(payload, `"encoded"`) && !strings.Contains(payload, `"pieces"`) {
 				want = config.ActionWarn
 			}
 			if v.Clean || v.Action != want || v.Error != "" || len(v.Matches) == 0 {

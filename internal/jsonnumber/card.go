@@ -29,7 +29,7 @@ var boundarySeparator = regexp.MustCompile(`,\x1f([sntu]?),`)
 // NumberOnly requires at least two pieces, all JSON number integer components.
 type CardRun struct {
 	Digits         string
-	SpaceCandidate string // complete pieces joined by one ASCII space
+	SpaceCandidate string // complete pieces joined by one ASCII space, or an exact WINDOW hit
 	NumberOnly     bool
 }
 
@@ -39,8 +39,8 @@ const ShippedCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
 
 var shippedCardRule = regexp.MustCompile(ShippedCardPattern)
 
-// Enforces reports whether a validated candidate matches a rule as complete
-// pieces joined by one ASCII space. Number-only runs remain informational.
+// Enforces applies UNION to a validated candidate: either a complete-piece
+// rule match or a shipped-rule WINDOW hit. Number-only runs stay informational.
 func (run CardRun) Enforces(pattern *regexp.Regexp) bool {
 	if run.NumberOnly {
 		return false
@@ -197,6 +197,65 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 	return runs
 }
 
+// appendCardWindows applies the shipped rule's ordinary greedy FindAll to the
+// typed scalar sequence. Keep literal string context and separators: compacting
+// them would invent matches outside that rule. Only hits crossing a typed join
+// belong here; whole-leaf matching remains the caller's ordinary scan.
+func appendCardWindows(runs []CardRun, pieces []cardPiece) []CardRun {
+	if len(pieces) < 2 {
+		return runs
+	}
+	var joined strings.Builder
+	type span struct {
+		start, end int
+		number     bool
+	}
+	spans := make([]span, 0, len(pieces))
+	for i, piece := range pieces {
+		if i > 0 {
+			joined.WriteByte(' ')
+		}
+		start := joined.Len()
+		if piece.spelling != "" {
+			joined.WriteString(piece.spelling)
+		} else {
+			joined.WriteString(piece.digits)
+		}
+		spans = append(spans, span{start, joined.Len(), piece.number})
+	}
+	text := joined.String()
+	seen := make(map[CardRun]struct{}, len(runs))
+	for _, run := range runs {
+		seen[run] = struct{}{}
+	}
+	next := 0
+	for _, loc := range shippedCardRule.FindAllStringIndex(text, -1) {
+		candidate := text[loc[0]:loc[1]]
+		if !ValidCardNumber(candidate) {
+			continue
+		}
+		for next < len(spans) && spans[next].end <= loc[0] {
+			next++
+		}
+		count, stringHit := 0, false
+		for i := next; i < len(spans) && spans[i].start < loc[1]; i++ {
+			if spans[i].end > loc[0] {
+				count++
+				stringHit = stringHit || !spans[i].number
+			}
+		}
+		if count > 1 {
+			digits := strings.NewReplacer(" ", "", "-", "").Replace(candidate)
+			run := CardRun{Digits: digits, SpaceCandidate: candidate, NumberOnly: !stringHit}
+			if _, exists := seen[run]; !exists {
+				seen[run] = struct{}{}
+				runs = append(runs, run)
+			}
+		}
+	}
+	return runs
+}
+
 // BoundaryCardRuns returns runs made by joining typed scalar atoms. A run
 // needs a typed boundary, so ordinary comma-separated prose is not promoted.
 func BoundaryCardRuns(view string) []CardRun {
@@ -207,6 +266,7 @@ func BoundaryCardRuns(view string) []CardRun {
 	parts := boundarySeparator.Split(view, -1)
 	var runs []CardRun
 	var pieces []cardPiece
+	var windows []cardPiece
 	flush := func() {
 		if len(pieces) > 1 {
 			runs = appendCardSubruns(runs, pieces)
@@ -227,6 +287,7 @@ func BoundaryCardRuns(view string) []CardRun {
 		if number || untrusted {
 			part = strings.TrimRight(part, ",")
 		}
+		windows = append(windows, cardPiece{spelling: part, number: number && !untrusted})
 		piece := cardPiece{digits: part}
 		if number && !untrusted {
 			if !allDigits(part) {
@@ -244,13 +305,14 @@ func BoundaryCardRuns(view string) []CardRun {
 		pieces = append(pieces, piece)
 	}
 	flush()
-	return runs
+	return appendCardWindows(runs, windows)
 }
 
 // CardRuns returns adjacent scalar candidates and single numeric cards.
 // NumberOnly is true only for at least two numeric pieces. Object keys are
-// skipped; arrays, object siblings and nesting do not break a run. A non-digit
-// value does. Each number contributes
+// string pieces; arrays and nesting do not break a run. A non-digit key or
+// value interrupts complete-piece candidates and remains literal WINDOW context.
+// Each number contributes
 // only its written integer component, preserving the single-number fraction
 // policy while still examining separate numbers together. Callers apply their
 // existing card rule to these candidates. Invalid, over-depth or over-budget
@@ -278,13 +340,10 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 	}
 	dec := json.NewDecoder(strings.NewReader(text))
 	dec.UseNumber()
-	type frame struct {
-		object    bool
-		expectKey bool
-	}
-	var stack []frame
+	depth := 0
 	var runs []CardRun
 	var pieces []cardPiece
+	var windows []cardPiece
 	flush := func() {
 		runs = appendCardSubruns(runs, pieces)
 		pieces = nil
@@ -293,7 +352,7 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 		tok, err := dec.Token()
 		if err == io.EOF {
 			flush()
-			return runs, CardRunWithinBudget
+			return appendCardWindows(runs, windows), CardRunWithinBudget
 		}
 		if err != nil {
 			return nil, CardRunNumberLimit
@@ -302,18 +361,15 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 		case json.Delim:
 			switch v {
 			case '{', '[':
-				stack = append(stack, frame{object: v == '{', expectKey: v == '{'})
-				if len(stack) > maxDepth {
+				depth++
+				if depth > maxDepth {
 					return nil, CardRunDepthLimit
 				}
 			case '}', ']':
-				stack = stack[:len(stack)-1]
+				depth--
 			}
 		case string:
-			if len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey {
-				stack[len(stack)-1].expectKey = false
-				continue
-			}
+			windows = append(windows, cardPiece{spelling: v})
 			if piece, ok := stringCardPiece(v); ok {
 				pieces = append(pieces, piece)
 			} else {
@@ -326,6 +382,7 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 			integer, _, _ := strings.Cut(v.String(), ".")
 			integer, _, _ = strings.Cut(integer, "e")
 			integer, _, _ = strings.Cut(integer, "E")
+			windows = append(windows, cardPiece{spelling: integer, number: true})
 			if allDigits(integer) {
 				pieces = append(pieces, cardPiece{digits: integer, number: true})
 			} else {
@@ -336,10 +393,10 @@ func CardRunsWithLimit(text string, maxDepth int) ([]CardRun, CardRunLimit) {
 				}
 			}
 		default:
+			// Booleans and null must retain their place in the scalar sequence.
+			barrier, _ := json.Marshal(v)
+			windows = append(windows, cardPiece{spelling: string(barrier)})
 			flush()
-		}
-		if len(stack) > 0 && stack[len(stack)-1].object && !stack[len(stack)-1].expectKey {
-			stack[len(stack)-1].expectKey = true
 		}
 	}
 }

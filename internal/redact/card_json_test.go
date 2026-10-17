@@ -49,7 +49,7 @@ func TestRewriteJSONSplitCardNumbers(t *testing.T) {
 	}{
 		{"array", `{"ids":[4111,1111,1111,1111]}`, false},
 		{"sibling fields", `{"a":4111,"b":1111,"c":1111,"d":1111}`, false},
-		{"mixed pieces", `{"a":"4111","b":1111,"c":1111,"d":1111}`, true},
+		{"mixed pieces", `["4111",1111,1111,1111]`, true},
 		{"ordinary telemetry", `{"bbox":[1200.21,3400.22,5600.23,7800.24]}`, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +81,9 @@ func TestRewriteJSONSharedCardCorpus(t *testing.T) {
 			_, report, err := RewriteJSON([]byte(tt.Body), NewDefaultMatcher(), NewRedactor(), Limits{})
 			if (tt.Clean || tt.Warn) && err != nil {
 				t.Fatalf("benign JSON blocked: %v", err)
+			}
+			if (tt.Clean || tt.Warn) && report != nil && report.TotalRedactions != 0 {
+				t.Fatal("non-enforcing corpus row was redacted")
 			}
 			if !tt.Clean && !tt.Warn && err == nil && (report == nil || report.TotalRedactions == 0) {
 				t.Fatal("card neither redacted nor refused")

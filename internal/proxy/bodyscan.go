@@ -1164,6 +1164,9 @@ func extractJSONBodyDLPStrings(body []byte, req BodyScanRequest) ([]string, []st
 			}
 			markJSONBodyDLPValueConsumed(stack)
 		case nil:
+			if depth <= extractJSONMaxDepth {
+				atoms = append(atoms, extract.DLPAtom{Card: "null"})
+			}
 			markJSONBodyDLPValueConsumed(stack)
 		}
 		if depth == 0 {
@@ -1429,7 +1432,7 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 		cards = texts
 	}
 	atoms := views.atoms
-	if len(atoms) != len(texts) {
+	if len(atoms) < len(texts) {
 		atoms = make([]extract.DLPAtom, len(texts))
 		for i := range texts {
 			atoms[i] = extract.DLPAtom{Text: texts[i], Card: cards[i]}
@@ -1463,8 +1466,8 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 			}
 		}
 	}
-	// The sorted join below catches order-independent cross-field secrets.
-	// Numeric card runs also need the JSON document's original scalar order.
+	// The sorted text join catches order-independent cross-field secrets.
+	// Cards retain the source scalar order, including keys and null barriers.
 	if len(atoms) > 1 {
 		var hasNumber bool
 		for _, atom := range atoms {
@@ -1488,16 +1491,23 @@ func scanBodyTextViewsForDLPWithAudience(ctx context.Context, sc *scanner.Scanne
 	}
 	slices.SortStableFunc(indices, func(a, b int) int { return strings.Compare(texts[a], texts[b]) })
 	var sorted []string
-	var sortedAtoms []extract.DLPAtom
 	for _, i := range indices {
 		sorted = append(sorted, texts[i])
-		sortedAtoms = append(sortedAtoms, atoms[i])
 	}
 	var result scanner.TextDLPResult
 	if allowEmbeddedSigV4 {
+		// The scanner scrubs Text and Card independently, so keep the sorted
+		// non-card text alongside the original card sequence and provenance.
+		sortedAtoms := slices.Clone(atoms)
+		for i := range sortedAtoms {
+			sortedAtoms[i].Text = ""
+			if i < len(sorted) {
+				sortedAtoms[i].Text = sorted[i]
+			}
+		}
 		result = sc.ScanRequestBodyTextPartsWithCardAtoms(ctx, sortedAtoms, bodyDLPJoinSeparator)
 	} else {
-		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(sortedAtoms, bodyDLPJoinSeparator))
+		result = sc.ScanTextForDLPWithTypedCardView(ctx, strings.Join(sorted, bodyDLPJoinSeparator), extract.JoinCardAtoms(atoms, bodyDLPJoinSeparator))
 	}
 	if len(result.Matches) > 0 {
 		if matches := filterMatches(result.Matches); len(matches) > 0 {

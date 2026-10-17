@@ -1321,11 +1321,11 @@ func TestWSFilterUniqueDLPMatches_SkipsExcludedAndDuplicates(t *testing.T) {
 	if len(filtered) != 2 {
 		t.Fatalf("filtered matches = %d, want 2", len(filtered))
 	}
-	if wsDLPMatchKey(filtered[0]) != "dup\x00hex" {
-		t.Fatalf("first filtered key = %q, want dup\\x00hex", wsDLPMatchKey(filtered[0]))
+	if wsDLPMatchKey(filtered[0]) != "dup\x00hex\x00false" {
+		t.Fatalf("first filtered key = %q, want dup\\x00hex\\x00false", wsDLPMatchKey(filtered[0]))
 	}
-	if wsDLPMatchKey(filtered[1]) != "other\x00" {
-		t.Fatalf("second filtered key = %q, want other\\x00", wsDLPMatchKey(filtered[1]))
+	if wsDLPMatchKey(filtered[1]) != "other\x00\x00false" {
+		t.Fatalf("second filtered key = %q, want other\\x00\\x00false", wsDLPMatchKey(filtered[1]))
 	}
 }
 

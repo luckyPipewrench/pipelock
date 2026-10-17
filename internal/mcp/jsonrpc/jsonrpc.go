@@ -29,6 +29,10 @@ const Version = "2.0"
 // json.RawMessage values that are non-nil Go slices.
 const Null = "null"
 
+// fallbackTextSeparator joins values from a non-standard JSON shape. The
+// space survives DLP normalization; the newline keeps values on their own line.
+const fallbackTextSeparator = " \n"
+
 // ContentBlock represents a single content block in an MCP tool result.
 type ContentBlock struct {
 	Type        string            `json:"type"`
@@ -309,9 +313,12 @@ func extractTextResult(raw json.RawMessage, includeNumeric bool, budget *MediaTe
 
 	// Fallback: recursively extract all string values from arbitrary JSON.
 	// Catches non-standard result shapes (plain string, nested objects, etc).
+	// DLP normalization deletes the newline, so the space keeps each value's
+	// word boundary, as the typed content join above does.
 	extracted := ExtractStringsFromJSONResult(raw)
 	if len(extracted.Strings) > 0 {
-		return TextResult{Text: strings.Join(extracted.Strings, "\n"), CardText: strings.Join(extracted.Strings, "\n"), Truncated: extracted.Truncated, Numeric: numeric}
+		joined := strings.Join(extracted.Strings, fallbackTextSeparator)
+		return TextResult{Text: joined, CardText: joined, Truncated: extracted.Truncated, Numeric: numeric}
 	}
 
 	return TextResult{Truncated: extracted.Truncated, Numeric: numeric}

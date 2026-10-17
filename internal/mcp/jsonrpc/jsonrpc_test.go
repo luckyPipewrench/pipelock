@@ -235,7 +235,7 @@ func TestExtractText_FallbackNestedObject(t *testing.T) {
 	raw := json.RawMessage(`{"key1":"value1","key2":{"nested":"value2"}}`)
 	got := ExtractText(raw)
 	// SortedKeys ensures deterministic order: key1 < key2, then nested inside key2.
-	want := "value1\nvalue2"
+	want := "value1 \nvalue2"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -244,7 +244,7 @@ func TestExtractText_FallbackNestedObject(t *testing.T) {
 func TestExtractText_FallbackArray(t *testing.T) {
 	raw := json.RawMessage(`["alpha","beta","gamma"]`)
 	got := ExtractText(raw)
-	want := "alpha\nbeta\ngamma"
+	want := "alpha \nbeta \ngamma"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -255,7 +255,7 @@ func TestExtractText_FallbackMixedTypes(t *testing.T) {
 	raw := json.RawMessage(`{"a":"text",  "b":42, "c":true, "d":null, "e":"more"}`)
 	got := ExtractText(raw)
 	// SortedKeys: a < b < c < d < e → "text" and "more" extracted.
-	want := "text\nmore"
+	want := "text \nmore"
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}

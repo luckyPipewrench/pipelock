@@ -147,6 +147,36 @@ func TestCardResponseFieldCombinations(t *testing.T) {
 	}
 }
 
+func TestCardFallbackShapeKeepsWordBoundaries(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.ResponseScanning.Action = config.ActionBlock
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	for _, cardValue := range []bool{false, true} {
+		value := "ordinary"
+		if cardValue {
+			value = cardtest.Number()
+		}
+		values := map[string]any{"a": "order", "b": value, "c": "tail"}
+		for name, message := range map[string]map[string]any{
+			"result": {"jsonrpc": "2.0", "id": 1, "result": values},
+			"error":  {"jsonrpc": "2.0", "id": 1, "error": map[string]any{"code": -1, "message": "failed", "data": values}},
+			"params": {"jsonrpc": "2.0", "method": "notifications/message", "params": values},
+		} {
+			body, err := json.Marshal(message)
+			if err != nil {
+				t.Fatal(err)
+			}
+			verdict := ScanResponse(body, sc)
+			if verdict.Error != "" || verdict.Clean == cardValue || (cardValue && len(verdict.DLPMatches) == 0) {
+				t.Fatalf("%s card=%v: clean=%v error=%s", name, cardValue, verdict.Clean, verdict.Error)
+			}
+		}
+	}
+}
+
 func TestCardA2ANumberStreamKeepsKnownValues(t *testing.T) {
 	card := cardtest.Number()
 	for _, known := range []bool{false, true} {

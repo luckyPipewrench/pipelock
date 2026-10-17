@@ -32,6 +32,7 @@ type result struct {
 	Inputs         inputsReport      `json:"inputs"`
 	Performance    performanceReport `json:"performance"`
 	Integrity      integrityReport   `json:"integrity"`
+	Restart        *restartReport    `json:"restart,omitempty"`
 }
 
 type inputsReport struct {

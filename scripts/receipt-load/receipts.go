@@ -90,11 +90,13 @@ type recorderObservation struct {
 	lastReceipt   time.Time
 	latestFileMod time.Time
 	nativeRuns    map[string]string
+	opens         map[string]*receipt.SessionOpen
+	closes        map[string]bool
 	totalFiles    int
 }
 
 func newRecorderObservation(total int) *recorderObservation {
-	return &recorderObservation{slots: make([]slotObservation, total), nativeRuns: make(map[string]string)}
+	return &recorderObservation{slots: make([]slotObservation, total), nativeRuns: make(map[string]string), opens: make(map[string]*receipt.SessionOpen), closes: make(map[string]bool)}
 }
 
 func (r *recorderObservation) slot(slot int) *slotObservation { return &r.slots[slot] }
@@ -260,14 +262,15 @@ func v1Kind(phase, verdict string) receiptKind {
 func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 	var detail struct {
 		ActionRecord struct {
-			ActionID   string `json:"action_id"`
-			RunNonce   string `json:"run_nonce"`
-			Phase      string `json:"decision_phase"`
-			Verdict    string `json:"verdict"`
-			Target     string `json:"target"`
-			Method     string `json:"method"`
-			Transport  string `json:"transport"`
-			ActionType string `json:"action_type"`
+			ActionID   string                  `json:"action_id"`
+			RunNonce   string                  `json:"run_nonce"`
+			Phase      string                  `json:"decision_phase"`
+			Verdict    string                  `json:"verdict"`
+			Target     string                  `json:"target"`
+			Method     string                  `json:"method"`
+			Transport  string                  `json:"transport"`
+			ActionType string                  `json:"action_type"`
+			Control    *receipt.SessionControl `json:"session_control"`
 		} `json:"action_record"`
 		SignerKey string `json:"signer_key"`
 	}
@@ -275,6 +278,16 @@ func (s *recorderScanner) v1Receipt(env evidenceEnvelope) error {
 		return fmt.Errorf("action detail: %w", err)
 	}
 	ar := detail.ActionRecord
+	if ar.Control != nil {
+		switch ar.Control.Kind {
+		case receipt.SessionControlOpen:
+			if ar.Control.Open != nil {
+				s.obs.opens[env.Session] = ar.Control.Open
+			}
+		case receipt.SessionControlClose:
+			s.obs.closes[env.Session] = ar.Control.Close != nil
+		}
+	}
 	if env.Session == "" || ar.RunNonce == "" {
 		return errors.New("v1 receipt lacks recorder session or native run")
 	}

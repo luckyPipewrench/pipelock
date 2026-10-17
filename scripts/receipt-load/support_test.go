@@ -113,6 +113,12 @@ func fakeMain(behavior string, args []string) int {
 		fmt.Println("{}")
 		return 0
 	case "check":
+		if behavior == "verifyfail" {
+			dir := filepath.Join(filepath.Dir(flagValue(args, "--config")), "recorder")
+			if err := os.MkdirAll(dir, 0o750); err != nil {
+				return 1
+			}
+		}
 		fmt.Println("Config validation: OK")
 		return 0
 	case "version":
@@ -130,6 +136,14 @@ func fakeMain(behavior string, args []string) int {
 		fmt.Println("GROUP_VALID")
 		return 0
 	case "run":
+		if behavior == "restartfail" {
+			marker := flagValue(args, "--config") + ".started"
+			file, err := os.OpenFile(filepath.Clean(marker), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err != nil {
+				return 9
+			}
+			_ = file.Close()
+		}
 		if behavior == "exitfast" {
 			return 9
 		}

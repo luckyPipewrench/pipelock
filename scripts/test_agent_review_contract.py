@@ -28,7 +28,8 @@ class ProfileTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        # Resolve platform temp symlinks such as macOS /var -> /private/var; the reader refuses symlinked paths.
+        self.root = Path(self.temp.name).resolve()
         self.path = self.root / 'profile.toml'
         self.good = '[review]\ninstructions="Review correctness"\n[ignore]\nglob=["**/vendor/**"]\n'
         self.path.write_text(self.good)
@@ -91,7 +92,7 @@ class ProfileTests(unittest.TestCase):
 class CallerTests(unittest.TestCase):
     def test_exact_local_and_pinned_remote_templates(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'caller.yaml'
+            path = Path(directory).resolve() / 'caller.yaml'
             path.write_text(contract.EXPECTED_CALLER)
             contract.validate_caller(path, SHA, allow_local=True)
             with self.assertRaises(ValueError):
@@ -141,7 +142,7 @@ class CallerTests(unittest.TestCase):
         self.assertEqual('${{ github.workflow_ref }}', step['env']['CALLER_WORKFLOW_REF'])
         # A matching caller file and profile still fail when another file is running.
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             (root / '.github/workflows').mkdir(parents=True)
             (root / '.github/workflows/agent-review.yaml').write_text(
                 contract.EXPECTED_CALLER.replace(contract.LOCAL_CALL, contract.REMOTE_CALL + SHA + ' # main'))
@@ -221,7 +222,7 @@ class ReuseTests(unittest.TestCase):
             with patch.dict(os.environ, REVIEW_SOURCE_SHA='e' * 40):
                 self.assertNotEqual(original, adapter.review_binding(settings, 'example/project', '1', 'a' * 40, 'b' * 40)[0])
             with tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / 'profile.toml'
+                path = Path(directory).resolve() / 'profile.toml'
                 path.write_text('[review]\ninstructions="Other review"\n[ignore]\nglob=[]\n')
                 with patch.dict(os.environ, REVIEW_PROFILE_PATH=str(path)):
                     self.assertNotEqual(original, adapter.review_binding(settings, 'example/project', '1', 'a' * 40, 'b' * 40)[0])
@@ -235,7 +236,7 @@ class ReporterTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.event_path = Path(self.temp.name) / 'event.json'
+        self.event_path = Path(self.temp.name).resolve() / 'event.json'
         self.event = {'action': 'created', 'repository': {'full_name': 'example/project'},
                       'issue': {'number': 1, 'pull_request': {'url': 'untrusted'}},
                       'comment': {'body': '/agent-review', 'author_association': 'MEMBER',

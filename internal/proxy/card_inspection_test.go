@@ -50,19 +50,21 @@ func TestJSONInspectionBodyAndWebSocketWarn(t *testing.T) {
 			if tt.name != "ordinary-card" && r.scanClientText(t.Context(), audit.NewNop(), []byte(tt.body)) != tt.refuse {
 				t.Fatal("outbound WebSocket inspection decision differs")
 			}
+			// Server-to-client text and HTTP response bodies are injection-only;
+			// the typed card budget does not refuse them.
 			received, blocked := r.enforceUpstreamTextPayload(t.Context(), audit.NewNop(), []byte(tt.body), false)
-			if blocked != tt.refuse || (!blocked && string(received) != tt.body) {
+			if blocked || string(received) != tt.body {
 				t.Fatalf("inbound WebSocket decision: blocked=%v", blocked)
 			}
 			response := sc.ScanResponseBodyWithSuppress(t.Context(), []byte(tt.body), "https://api.vendor.example", nil)
-			if response.Failed() != tt.refuse {
-				t.Fatalf("HTTP response incomplete=%v error=%s", response.Failed(), response.ScanError)
+			if response.Failed() {
+				t.Fatalf("HTTP response refused: error=%s", response.ScanError)
 			}
 		})
 	}
 }
 
-func TestJSONInspectionHTTPResponseWarn(t *testing.T) {
+func TestJSONInspectionHTTPResponseInjectionOnly(t *testing.T) {
 	for _, exempt := range []bool{false, true} {
 		t.Run(map[bool]string{false: "inspected", true: "exempt"}[exempt], func(t *testing.T) {
 			body := `[1e10001]`
@@ -91,19 +93,12 @@ func TestJSONInspectionHTTPResponseWarn(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := http.StatusServiceUnavailable
-			if exempt {
-				want = http.StatusOK
-			}
-			if resp.StatusCode != want {
-				t.Fatalf("HTTP status=%d want=%d", resp.StatusCode, want)
-			}
-			if exempt && string(data) != body {
-				t.Fatal("explicit full-trust exemption changed")
+			if resp.StatusCode != http.StatusOK || string(data) != body {
+				t.Fatalf("injection-only response changed: status=%d", resp.StatusCode)
 			}
 		})
 	}
-	// Fetch uses the same raw-body refusal before extracted text loses JSON shape.
+	// Fetch responses are injection-only as well.
 	upstream := newIPv4Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `[1e10001]`)
@@ -115,7 +110,7 @@ func TestJSONInspectionHTTPResponseWarn(t *testing.T) {
 	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/fetch?url="+upstream.URL, nil)
 	response := httptest.NewRecorder()
 	p.handleFetch(response, request)
-	if response.Code != http.StatusServiceUnavailable {
+	if response.Code != http.StatusOK {
 		t.Fatalf("fetch status=%d", response.Code)
 	}
 }
@@ -219,7 +214,7 @@ func TestJSONInspectionA2AHTTPTransports(t *testing.T) {
 	}
 }
 
-func TestJSONInspectionInterceptResponseWarn(t *testing.T) {
+func TestJSONInspectionInterceptResponseInjectionOnly(t *testing.T) {
 	for _, body := range []string{`[1e10001]`, `[1,2]`} {
 		upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -235,22 +230,18 @@ func TestJSONInspectionInterceptResponseWarn(t *testing.T) {
 			t.Fatal(err)
 		}
 		resp := interceptAndRequest(t, upstream, cache, pool, cfg, sc, logger, met, req)
-		_, err = io.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := http.StatusOK
-		if body == `[1e10001]` {
-			want = http.StatusServiceUnavailable
-		}
-		if resp.StatusCode != want {
-			t.Fatalf("intercept status=%d want=%d", resp.StatusCode, want)
+		if resp.StatusCode != http.StatusOK || string(data) != body {
+			t.Fatalf("intercept response changed: status=%d", resp.StatusCode)
 		}
 	}
 }
 
-func TestJSONInspectionReverseResponseWarn(t *testing.T) {
+func TestJSONInspectionReverseResponseInjectionOnly(t *testing.T) {
 	for _, body := range []string{`[1e10001]`, `[1,2]`} {
 		cfg := testScannerConfig()
 		cfg.ResponseScanning.Action = config.ActionWarn
@@ -259,17 +250,13 @@ func TestJSONInspectionReverseResponseWarn(t *testing.T) {
 			_, _ = io.WriteString(w, body)
 		})
 		resp := testGet(t, server.URL)
-		_, err := io.ReadAll(resp.Body)
+		data, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := http.StatusOK
-		if body == `[1e10001]` {
-			want = http.StatusForbidden
-		}
-		if resp.StatusCode != want {
-			t.Fatalf("reverse status=%d want=%d", resp.StatusCode, want)
+		if resp.StatusCode != http.StatusOK || string(data) != body {
+			t.Fatalf("reverse response changed: status=%d", resp.StatusCode)
 		}
 	}
 }
@@ -290,5 +277,34 @@ func TestJSONInspectionProxyFragmentsWarn(t *testing.T) {
 		if result.Blocked != (i == 1) {
 			t.Fatalf("fragment %d blocked=%v", i, result.Blocked)
 		}
+	}
+}
+
+func TestJSONInspectionProxyFragmentAttribution(t *testing.T) {
+	cfg := testScannerConfig()
+	cfg.DLP.ScanEnv = false
+	ceeCfg := cfg.CrossRequestDetection
+	ceeCfg.Enabled = true
+	ceeCfg.Action = config.ActionWarn
+	ceeCfg.FragmentReassembly.Enabled = true
+	buffer := scanner.NewFragmentBuffer(65536, 10, 300)
+	t.Cleanup(buffer.Close)
+	sc := scanner.MustNew(cfg)
+	t.Cleanup(sc.Close)
+	card := cardtest.Number()
+	parts := []string{`{"n":1e10001,"s":"` + card[:8], card[8:] + `"}`}
+	probe := sc.ScanTextForDLP(t.Context(), parts[0]+parts[1])
+	if !scanner.HasInspectionLimit(probe.Matches) || len(probe.Matches) < 2 || probe.Matches[0].IsInspectionLimit() {
+		t.Fatal("mixed-finding fixture did not exercise ordinary-first ordering")
+	}
+	var result ceeResult
+	for i, part := range parts {
+		result = ceeAdmit(t.Context(), ceeAdmitOptions{Outbound: []byte(part), TargetURL: "https://api.vendor.example", Agent: "inspection", ClientIP: "192.0.2.1", RequestID: "inspection", Config: ceeCfg, Fragments: buffer, Scanner: sc, Logger: audit.NewNop(), Metrics: metrics.New()})
+		if i == 0 && result.Blocked {
+			t.Fatal("partial fragment refused")
+		}
+	}
+	if !result.Blocked || result.BlockKind != scanner.UninspectableJSONNumberPattern {
+		t.Fatalf("fragment refusal attribution: blocked=%v kind=%s", result.Blocked, result.BlockKind)
 	}
 }

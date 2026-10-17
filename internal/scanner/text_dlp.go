@@ -645,21 +645,6 @@ func (s *Scanner) ScanTextForDLPQuietWithTypedCardView(ctx context.Context, text
 	return s.scanTextDLPViews(ctx, text, cardView, textDLPOptions{scanSecretLeak: true, typedCardView: true})
 }
 
-// JSONInspectionLimitExceeded checks the same typed budget used by card runs.
-// Only complete objects and arrays carry that contract; scalar text and invalid
-// JSON retain their ordinary scan or transport parsing behavior.
-func (s *Scanner) JSONInspectionLimitExceeded(text string) bool {
-	if !s.hasGenericCardPatterns() {
-		return false
-	}
-	trimmed := strings.TrimSpace(text)
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-		return false
-	}
-	_, limit := jsonnumber.CardRunsWithLimit(trimmed, extract.MaxExtractDepth)
-	return limit != jsonnumber.CardRunWithinBudget
-}
-
 // ScanJSONCardRuns checks adjacent scalar pieces in a typed JSON document
 // without admitting its numeric leaves to prompt or non-card pattern scans.
 func (s *Scanner) ScanJSONCardRuns(ctx context.Context, text string) []TextDLPMatch {

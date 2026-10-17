@@ -944,15 +944,27 @@ func ceeFragmentEvaluate(ctx context.Context, appendResult scanner.FragmentAppen
 		return nil
 	}
 	m.RecordCrossRequestDLPMatch()
-	detail := fmt.Sprintf("fragment reassembly DLP match: %s", matches[0].PatternName)
+	primary := matches[0]
+	inspectionLimit := scanner.HasFragmentInspectionLimit(matches)
+	if inspectionLimit {
+		// Attribute the block to the refusal that forced it, not to an
+		// ordinary finding the configured warn action would have released.
+		for _, match := range matches {
+			if match.IsInspectionLimit() {
+				primary = match
+				break
+			}
+		}
+	}
+	detail := fmt.Sprintf("fragment reassembly DLP match: %s", primary.PatternName)
 	actx := newHTTPAuditContext(ctx, logger, httpAuditEvent{Method: "CEE", TargetURL: targetURL, ClientIP: clientIP, RequestID: requestID, Agent: agent})
-	if ceeCfg.Action == config.ActionBlock || scanner.HasFragmentInspectionLimit(matches) {
+	if ceeCfg.Action == config.ActionBlock || inspectionLimit {
 		logger.LogBlocked(actx, "cross_request_fragment", detail)
 		return &ceeResult{
 			Blocked:     true,
 			FragmentHit: true,
 			Reason:      ceereason.ClientFragmentMatch,
-			BlockKind:   matches[0].PatternName,
+			BlockKind:   primary.PatternName,
 		}
 	}
 	logger.LogAnomaly(actx, "cross_request_fragment", detail, 0)

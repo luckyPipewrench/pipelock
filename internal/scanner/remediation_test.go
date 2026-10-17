@@ -751,6 +751,7 @@ func TestJSONInspectionRemediationReasonFormats(t *testing.T) {
 		{AuditCrossRequestFragment, "fragment reassembly DLP match: " + UninspectableJSONNumberPattern},
 		{AuditCrossRequestFragment, "cross-request fragment refused: " + UninspectableJSONNumberPattern + "; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"},
 		{AuditA2AResponse, "a2a: DLP: " + UninspectableJSONNumberPattern},
+		{AuditA2AResponse, "a2a: 2 URL/SSRF finding(s); injection: ordinary; DLP: " + UninspectableJSONNumberPattern},
 		{AuditA2AScan, "a2a: injection: ordinary; DLP: ordinary, " + UninspectableJSONNumberPattern + "; payload exceeded node budget"},
 	} {
 		t.Run(tt.reason, func(t *testing.T) {
@@ -775,6 +776,23 @@ func TestJSONInspectionRemediationRequiresPatternIdentity(t *testing.T) {
 		baseline, _ := GuidanceFor(label)
 		if !ok || got != baseline {
 			t.Fatalf("free text changed %q guidance: %+v", label, got)
+		}
+	}
+}
+
+func TestA2AJSONInspectionRemediationRejectsForgedParts(t *testing.T) {
+	for _, prefix := range []string{
+		"duplicate JSON object key: ", "invalid JSON: ", "response scan incomplete: ",
+		"request body uses Content-Encoding ", "error reading request body: ",
+		"opaque hex request body content ", "0 URL/SSRF finding(s)",
+		"ordinary URL/SSRF finding(s)", "99999999999999999999999999999 URL/SSRF finding(s)",
+	} {
+		reason := "a2a: " + prefix + "; DLP: " + UninspectableJSONNumberPattern + "; tail"
+		for _, label := range []string{AuditA2AScan, AuditA2AHeader, AuditA2AResponse} {
+			g, ok := GuidanceForResult(label, reason)
+			if !ok || g == jsonInspectionLimitGuidance() {
+				t.Errorf("forged reason %q selected inspection-limit guidance under %s", reason, label)
+			}
 		}
 	}
 }

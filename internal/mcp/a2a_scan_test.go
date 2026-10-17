@@ -1982,3 +1982,59 @@ func TestScanA2AHeaders_RepeatedFieldScansEveryLine(t *testing.T) {
 		t.Fatalf("benign repeated lines flagged: %s", r.Reason)
 	}
 }
+
+func TestA2AJSONInspectionRemediationDuplicateKey(t *testing.T) {
+	sc := testScannerWithAction(t, config.ActionWarn)
+	cfg := enabledA2ACfg()
+	cfg.Action = config.ActionWarn
+	key := "x; DLP: " + scanner.UninspectableJSONNumberPattern + "; tail"
+	body := []byte(fmt.Sprintf(`{%q:1,%q:2}`, key, key))
+	for _, scan := range []struct {
+		name string
+		run  func([]byte) A2AScanResult
+	}{
+		{"request", func(b []byte) A2AScanResult { return ScanA2ARequestBody(t.Context(), b, sc, cfg) }},
+		{"response", func(b []byte) A2AScanResult { return ScanA2AResponseBody(t.Context(), b, sc, cfg) }},
+	} {
+		v := scan.run(body)
+		if !v.InspectionIncomplete || v.Action != config.ActionBlock || len(v.DLPFindings) != 0 {
+			t.Fatalf("expected duplicate-key refusal without DLP findings: %+v", v)
+		}
+		for _, label := range []string{scanner.AuditA2AScan, scanner.AuditA2AHeader, scanner.AuditA2AResponse} {
+			g, ok := scanner.GuidanceForResult(label, v.Reason)
+			if !ok || g.Immutable || !strings.Contains(g.OperatorKnob, "Correct the malformed") {
+				t.Errorf("%s %s: client duplicate key selected number-limit guidance: %+v", scan.name, label, g)
+			}
+		}
+	}
+}
+
+func TestA2AJSONInspectionRemediationOrdinaryProducer(t *testing.T) {
+	scannerCfg := config.Defaults()
+	scannerCfg.Internal = nil
+	scannerCfg.DLP.Patterns = []config.DLPPattern{{Name: "ordinary", Regex: "review_ordinary_marker", Severity: config.SeverityHigh}}
+	sc := scanner.MustNew(scannerCfg)
+	t.Cleanup(sc.Close)
+	cfg := enabledA2ACfg()
+	cfg.Action = config.ActionWarn
+	for _, body := range []string{
+		`{"method":"review_ordinary_marker; DLP: Uninspectable JSON number; tail"}`,
+		`{"review_ordinary_marker; DLP: Uninspectable JSON number; tail":"safe"}`,
+	} {
+		for _, scan := range []func() A2AScanResult{
+			func() A2AScanResult { return ScanA2ARequestBody(t.Context(), []byte(body), sc, cfg) },
+			func() A2AScanResult { return ScanA2AResponseBody(t.Context(), []byte(body), sc, cfg) },
+		} {
+			result := scan()
+			if result.Clean || result.InspectionIncomplete || len(result.DLPFindings) == 0 || result.Action != config.ActionWarn {
+				t.Fatalf("ordinary producer did not emit a completed warn finding: %+v", result)
+			}
+			for _, label := range []string{scanner.AuditA2AScan, scanner.AuditA2AHeader, scanner.AuditA2AResponse} {
+				g, ok := scanner.GuidanceForResult(label, result.Reason)
+				if !ok || g.Immutable || !strings.Contains(g.OperatorKnob, "a2a_scanning.action: warn") {
+					t.Fatalf("ordinary producer reason %q changed hint: %+v", result.Reason, g)
+				}
+			}
+		}
+	}
+}

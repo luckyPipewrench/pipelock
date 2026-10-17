@@ -3,7 +3,10 @@
 
 package scanner
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 // ScannerBodyDLP and ScannerDenialOfWallet identify blocks emitted outside the
 // URL scanner pipeline.
@@ -444,9 +447,21 @@ func isJSONInspectionLimitReason(label, reason string) bool {
 		// DLP part lists pattern names.
 		if parts, ok := strings.CutPrefix(reason, "a2a: "); ok {
 			for part := range strings.SplitSeq(parts, "; ") {
-				if names, ok := strings.CutPrefix(part, "DLP: "); ok && jsonInspectionLimitInNames(names) {
-					return true
+				if names, ok := strings.CutPrefix(part, "DLP: "); ok {
+					return jsonInspectionLimitInNames(names)
 				}
+				// Only generated URL counts and injection pattern names can
+				// precede DLP in buildA2AReason. Parser errors can quote a
+				// client-chosen key containing the same part delimiter.
+				if strings.HasPrefix(part, "injection: ") {
+					continue
+				}
+				if count, ok := strings.CutSuffix(part, " URL/SSRF finding(s)"); ok {
+					if n, err := strconv.Atoi(count); err == nil && n > 0 {
+						continue
+					}
+				}
+				return false
 			}
 		}
 	case ScannerBodyDLP:

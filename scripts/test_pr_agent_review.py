@@ -128,15 +128,17 @@ class WorkflowTests(unittest.TestCase):
         pr = {"state": "open", "head": {"repo": {"fork": False, "full_name": "example/project"},
                                             "sha": "a" * 40},
               "base": {"repo": {"full_name": "example/project"}, "sha": "b" * 40}}
-        cases = [(pr, True)]
+        # (fixture, admitted, step succeeds): ineligible repositories exit cleanly with
+        # no admission; malformed commit hashes are refused with a nonzero status.
+        cases = [(pr, True, True)]
         for section, key, value in (("head", "sha", "invalid"), ("base", "sha", None),
                                     ("head", "repo", None),
                                     ("base", "repo", {"full_name": "other/project"}),
                                     ("head", "repo", {"fork": True, "full_name": "example/project"})):
             invalid = copy.deepcopy(pr)
             invalid[section][key] = value
-            cases.append((invalid, False))
-        cases.append((dict(pr, state="closed"), False))
+            cases.append((invalid, False, key != "sha"))
+        cases.append((dict(pr, state="closed"), False, True))
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             gh = root / "gh"
@@ -146,7 +148,7 @@ class WorkflowTests(unittest.TestCase):
             fixture, output = root / "pr.json", root / "output"
             env = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}", PR_FIXTURE=str(fixture),
                        GITHUB_REPOSITORY="example/project", PR_NUMBER="1", GITHUB_OUTPUT=str(output))
-            for data, expected in cases:
+            for data, expected, succeeds in cases:
                 with self.subTest(pr=data):
                     fixture.write_text(json.dumps(data))
                     output.write_text("")
@@ -154,8 +156,7 @@ class WorkflowTests(unittest.TestCase):
                                             text=True, timeout=10, check=False)
                     wanted = f"admitted=true\nhead={'a' * 40}\nbase={'b' * 40}\n" if expected else ""
                     self.assertEqual(wanted, output.read_text(), result.stderr)
-                    if expected:
-                        self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertEqual(succeeds, result.returncode == 0, result.stderr)
             fixture.write_text(json.dumps(pr))
             output.write_text("")
             result = subprocess.run(["bash", "-c", script], env=dict(env, API_EXIT="1"),

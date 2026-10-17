@@ -719,7 +719,7 @@ func TestJSONInspectionRemediationHint(t *testing.T) {
 					t.Fatalf("inspection guidance = %+v, mapped = %v", g, ok)
 				}
 				hint := OperatorHintForResult(label, reason)
-				for _, want := range []string{"Reduce nesting or number size", "upstream payload", "limits are fixed"} {
+				for _, want := range []string{"Reduce nesting or number size", "payload at its source", "limits are fixed"} {
 					if !strings.Contains(hint, want) {
 						t.Errorf("hint = %q, want %q", hint, want)
 					}

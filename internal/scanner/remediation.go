@@ -417,7 +417,7 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 	// the transport's content policy and suppression controls.
 	if strings.Contains(reason, UninspectableJSONNumberPattern) {
 		return RemediationGuidance{
-			OperatorKnob: "Reduce nesting or number size in the upstream payload. Typed JSON number and depth limits are fixed; incomplete inspection is refused.",
+			OperatorKnob: "Reduce nesting or number size in the JSON payload at its source. Typed JSON number and depth limits are fixed; incomplete inspection is refused.",
 			Immutable:    true,
 			AgentReason:  "Request blocked: the JSON payload exceeds a fixed inspection limit.",
 		}, true

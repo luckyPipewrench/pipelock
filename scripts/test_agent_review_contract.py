@@ -119,6 +119,46 @@ class CallerTests(unittest.TestCase):
                 contract.validate_caller(path, 'main')
         self.assertEqual(contract.EXPECTED_CALLER, (ROOT / '.github/workflows/agent-review.yaml').read_text())
 
+    def test_contract_binds_the_running_caller_file(self):
+        repo = 'example/project'
+        contract.validate_caller_ref(f'{repo}/.github/workflows/agent-review.yaml@refs/heads/main', repo)
+        for ref in (None, '', f'{repo}/.github/workflows/agent-review.yaml@',
+                    f'{repo}/.github/workflows/other.yaml@refs/heads/main',
+                    f'{repo}/.github/workflows/agent-review.yaml.bak@refs/heads/main',
+                    f'example/other/.github/workflows/agent-review.yaml@refs/heads/main',
+                    f'x{repo}/.github/workflows/agent-review.yaml@refs/heads/main'):
+            with self.subTest(ref=ref), self.assertRaises(ValueError):
+                contract.validate_caller_ref(ref, repo)
+        for bad_repo in (None, '', 'example', 'example/project/extra'):
+            with self.subTest(repo=bad_repo), self.assertRaises(ValueError):
+                contract.validate_caller_ref(f'{bad_repo}/.github/workflows/agent-review.yaml@refs/heads/main', bad_repo)
+        step = WORKFLOW['jobs']['review']['steps'][2]
+        self.assertEqual('${{ github.workflow_ref }}', step['env']['CALLER_WORKFLOW_REF'])
+        # A matching caller file and profile still fail when another file is running.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / '.github/workflows').mkdir(parents=True)
+            (root / '.github/workflows/agent-review.yaml').write_text(
+                contract.EXPECTED_CALLER.replace(contract.LOCAL_CALL, contract.REMOTE_CALL + SHA + ' # main'))
+            (root / '.github/agent-review.toml').write_text('[review]\ninstructions="Review correctness"\n[ignore]\nglob=[]\n')
+            argv = ['agent_review_contract.py', '--root', str(root), '--source-sha', SHA]
+            for ref, code in ((f'{repo}/.github/workflows/agent-review.yaml@refs/heads/main', None),
+                              (f'{repo}/.github/workflows/decoy-caller.yaml@refs/heads/main', 1)):
+                with (self.subTest(ref=ref), patch('sys.argv', argv),
+                      patch.dict(os.environ, {'GITHUB_REPOSITORY': repo, 'CALLER_WORKFLOW_REF': ref}),
+                      patch('sys.stdout', io.StringIO()), patch('sys.stderr', io.StringIO())):
+                    if code is None:
+                        contract.main()
+                    else:
+                        with self.assertRaises(SystemExit) as raised:
+                            contract.main()
+                        self.assertEqual(code, raised.exception.code)
+
+    def test_every_job_repeats_the_exact_admission_gate(self):
+        gate = WORKFLOW['jobs']['admit']['if']
+        self.assertEqual(gate, WORKFLOW['jobs']['source']['if'])
+        self.assertTrue(WORKFLOW['jobs']['notify-failure']['if'].startswith('always() && ' + gate + ' && ('))
+
     def test_source_binding_and_queue_precede_provider_work(self):
         source = WORKFLOW['jobs']['source']
         self.assertEqual('./.github/workflows/pr-review-source.yaml', source['uses'])

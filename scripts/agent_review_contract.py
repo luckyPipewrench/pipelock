@@ -95,6 +95,20 @@ def validate_caller(path, source_sha, *, allow_local=False):
     return source_sha
 
 
+def validate_caller_ref(workflow_ref, repository):
+    """Bind the validated file to the caller GitHub actually loaded.
+
+    A called workflow's github context belongs to its caller, so workflow_ref
+    names the running caller file rather than a same-commit decoy.
+    https://docs.github.com/en/actions/reference/workflows-and-actions/reusing-workflow-configurations#github-context
+    """
+    if not (isinstance(repository, str) and re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository)):
+        raise ValueError("caller repository identity is invalid")
+    prefix = f"{repository}/.github/workflows/agent-review.yaml@"
+    if not (isinstance(workflow_ref, str) and re.fullmatch(re.escape(prefix) + r"\S+", workflow_ref)):
+        raise ValueError("running caller is not the validated caller file")
+
+
 def load_profile(path):
     """The initial profile API permits only instructions and explicit exclusions."""
     raw = read_data(path)
@@ -119,6 +133,7 @@ def main():
     parser.add_argument("--source-sha", required=True)
     args = parser.parse_args()
     try:
+        validate_caller_ref(os.environ.get("CALLER_WORKFLOW_REF"), os.environ.get("GITHUB_REPOSITORY"))
         validate_caller(args.root / ".github/workflows/agent-review.yaml", args.source_sha,
                         allow_local=os.environ.get("GITHUB_REPOSITORY") == "pipelab-org/pipelock")
         load_profile(args.root / ".github/agent-review.toml")

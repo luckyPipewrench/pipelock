@@ -126,6 +126,8 @@ jobs:
           sparse-checkout-cone-mode: false
       - name: Validate the trusted caller and restricted profile before inference
         env:
+          # The caller's ref, not this file's: rejects a decoy agent-review.yaml.
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           REVIEW_SOURCE_SHA: ${{ needs.source.outputs.reviewer_sha }}
         run: python trusted-agent-review/scripts/agent_review_contract.py --root trusted-agent-profile --source-sha "$REVIEW_SOURCE_SHA"
       - name: Review the admitted diff

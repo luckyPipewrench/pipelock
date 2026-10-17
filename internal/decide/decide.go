@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/luckyPipewrench/pipelock/internal/config"
+	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/mcp/policy"
 	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
@@ -149,7 +150,7 @@ func decideShell(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Conf
 
 	var evidence []Evidence
 
-	// DLP: scan the command for secrets. DLP findings are always block-level.
+	// DLP: scan the command; informational card evidence remains a warning.
 	dlpResult := sc.ScanTextForDLP(context.Background(), p.Command)
 	evidence = append(evidence, evidenceFromDLP(dlpResult)...)
 
@@ -206,9 +207,8 @@ func decideMCP(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Config
 	}
 
 	// DLP + injection: respect MCP input scanning toggle and action.
-	if scanText != "" && cfg.MCPInputScanning.Enabled {
-		dlpResult := sc.ScanTextForDLP(context.Background(), scanText)
-		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
+	if p.ToolInput != "" && cfg.MCPInputScanning.Enabled {
+		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
 
 		injResult := sc.ScanResponse(context.Background(), scanText)
 		evidence = append(evidence, evidenceFromInjection(injResult, cfg.MCPInputScanning.Action)...)
@@ -321,9 +321,8 @@ func decideToolUse(cfg *config.Config, sc *scanner.Scanner, policyCfg *policy.Co
 		}
 	}
 
-	if scanText != "" {
-		dlpResult := sc.ScanTextForDLP(context.Background(), scanText)
-		evidence = append(evidence, evidenceFromDLP(dlpResult)...)
+	if p.ToolInput != "" {
+		evidence = append(evidence, evidenceFromJSONDLP(sc, scanText, p.ToolInput, argStrings)...)
 
 		if sc.ResponseScanningEnabled() {
 			injResult := sc.ScanResponse(context.Background(), scanText)
@@ -417,17 +416,35 @@ func buildDecision(cfg *config.Config, evidence []Evidence) Decision {
 	}
 }
 
-func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
-	if result.Clean {
-		return nil
+// evidenceFromJSONDLP preserves scalar boundaries in synthetic argument joins.
+// The existing extractor keeps its limits and string-only injection/policy view.
+func evidenceFromJSONDLP(sc *scanner.Scanner, text, raw string, values []string) []Evidence {
+	if !json.Valid([]byte(raw)) {
+		return evidenceFromDLP(sc.ScanTextForDLP(context.Background(), text))
 	}
+	atoms := extract.AllStringsFromJSONResult(json.RawMessage(raw)).Atoms
+	cardView := extract.JoinCardAtoms(atoms, " ")
+	result := sc.ScanTextForDLPWithTypedCardView(context.Background(), text, cardView)
+	evidence := evidenceFromDLP(result)
+	for _, value := range values {
+		evidence = append(evidence, evidenceFromDLP(sc.ScanTextForDLP(context.Background(), value))...)
+	}
+	evidence = append(evidence, evidenceFromDLP(scanner.TextDLPResult{Matches: sc.ScanJSONCardRuns(context.Background(), raw)})...)
+	return evidence
+}
+
+func evidenceFromDLP(result scanner.TextDLPResult) []Evidence {
 	var ev []Evidence
 	for _, m := range result.Matches {
+		action := config.ActionBlock
+		if m.IsInformational() {
+			action = config.ActionWarn
+		}
 		ev = append(ev, Evidence{
 			Scanner:  scanner.ScannerDLP,
 			Pattern:  m.PatternName,
 			Severity: m.Severity,
-			Action:   config.ActionBlock, // DLP findings are always block-level
+			Action:   action,
 			core:     scanner.IsCoreCriticalMatch(m),
 		})
 	}

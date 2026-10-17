@@ -30,7 +30,9 @@ func TestCardRunPieceClasses(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			runs, limit := CardRunsWithLimit(tt.input, 64)
-			if limit != CardRunWithinBudget || !slices.Contains(runs, CardRun{Digits: card, NumberOnly: tt.numberOnly}) {
+			if limit != CardRunWithinBudget || !slices.ContainsFunc(runs, func(r CardRun) bool {
+				return r.Digits == card && r.NumberOnly == tt.numberOnly && r.SpaceCandidate != ""
+			}) {
 				t.Fatalf("candidate class missing: limit=%v count=%d", limit, len(runs))
 			}
 			for _, run := range runs {
@@ -47,7 +49,7 @@ func TestCardRunInputBoundariesStayStrings(t *testing.T) {
 	for _, separator := range []string{NumberBoundary, NumberStringBoundary, StringNumberBoundary} {
 		text := strings.Join([]string{"4111", "1111", "1111", "1111"}, separator)
 		runs := BoundaryCardRuns(EscapeCardBoundaries(text))
-		if !slices.Contains(runs, CardRun{Digits: card}) {
+		if !slices.ContainsFunc(runs, func(r CardRun) bool { return r.Digits == card && !r.NumberOnly }) {
 			t.Fatal("input boundary lost enforcement or claimed numeric provenance")
 		}
 	}
@@ -65,11 +67,11 @@ func TestBoundaryCardRunPieceClasses(t *testing.T) {
 		}
 		runs := BoundaryCardRuns(view.String())
 		want := !slices.Contains(types, false)
-		if !slices.Contains(runs, CardRun{Digits: card, NumberOnly: want}) {
+		if !slices.ContainsFunc(runs, func(r CardRun) bool { return r.Digits == card && r.NumberOnly == want }) {
 			t.Fatalf("boundary class missing for types %v", types)
 		}
 	}
-	if CardBoundary(false, false) != "" {
-		t.Fatal("string boundary must retain caller separator")
+	if CardBoundary(false, false) != StringBoundary {
+		t.Fatal("string boundary must retain piece provenance")
 	}
 }

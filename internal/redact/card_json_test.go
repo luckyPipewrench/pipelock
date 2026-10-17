@@ -25,7 +25,7 @@ func TestRewriteJSONCardNumbers(t *testing.T) {
 		{"41111111" + "11111111e0", true},
 		{"4.11111111" + "1111111e15", false},
 		{"-4.11111111" + "1111111e15", false},
-		{"41111111" + "11111111110.0", false},
+		{"41111111" + "11111111110.0", true},
 	} {
 		t.Run(tt.number, func(t *testing.T) {
 			body := []byte(`{"n":` + tt.number + `}`)
@@ -82,7 +82,7 @@ func TestRewriteJSONSharedCardCorpus(t *testing.T) {
 			if (tt.Clean || tt.Warn) && err != nil {
 				t.Fatalf("benign JSON blocked: %v", err)
 			}
-			if !tt.Clean && !tt.Warn && err == nil && (report == nil || !report.Applied) {
+			if !tt.Clean && !tt.Warn && err == nil && (report == nil || report.TotalRedactions == 0) {
 				t.Fatal("card neither redacted nor refused")
 			}
 		})

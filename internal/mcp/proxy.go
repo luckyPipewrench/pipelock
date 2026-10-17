@@ -884,7 +884,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
-		numberOnlyDecision := len(verdict.Matches) == 0 && scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches)
+		numberOnlyDecision := len(verdict.Matches) == 0 && scanner.OnlyInformational(verdict.DLPMatches)
 		if rec != nil && !numberOnlyDecision {
 			action = decide.UpgradeAction(action, rec.EscalationLevel(), adaptiveCfg)
 		}
@@ -932,7 +932,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 					observeMCPResponseTaint(taintOpts, true)
 				case hitl.DecisionStrip:
 					_, _ = fmt.Fprintf(logW, "pipelock: line %d: operator chose strip\n", lineNum)
-					if len(verdict.DLPMatches) > 0 && !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches) {
+					if len(verdict.DLPMatches) > 0 && !scanner.OnlyInformational(verdict.DLPMatches) {
 						// The injection stripper has no lossless DLP rewrite for arbitrary
 						// JSON-RPC result shapes. Never forward an unredacted credential.
 						effectiveAction = config.ActionBlock
@@ -955,7 +955,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 				}
 			}
 		case config.ActionStrip:
-			if len(verdict.DLPMatches) > 0 && !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches) {
+			if len(verdict.DLPMatches) > 0 && !scanner.OnlyInformational(verdict.DLPMatches) {
 				// The injection stripper has no lossless DLP rewrite for arbitrary
 				// JSON-RPC result shapes. Never forward an unredacted credential.
 				effectiveAction = config.ActionBlock
@@ -1058,7 +1058,7 @@ func ForwardScanned(reader transport.MessageReader, writer transport.MessageWrit
 		}
 		emitTrackedOutcome(mcpResponseStatus(outbound), "mcp_response_scan", outbound)
 
-		// Signal recording: number-only warnings do not affect the score.
+		// Signal recording: informational card warnings do not affect the score.
 		if adaptiveCfg != nil && adaptiveCfg.Enabled && !numberOnlyDecision {
 			ep := decide.EscalationParams{
 				Threshold:     adaptiveCfg.EscalationThreshold,
@@ -1487,7 +1487,7 @@ func stripResponseWithOptions(line []byte, sc *scanner.Scanner, ctx context.Cont
 	checkOpts.OnSuppressedResponse = nil
 	checkOpts.OnObservedCoreResponse = nil
 	checkOpts.OnDroppedDLP = nil
-	if verdict := ScanResponseOpts(out, sc, checkOpts); verdict.Error != "" || (!verdict.Clean && (len(verdict.Matches) > 0 || !scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches))) {
+	if verdict := ScanResponseOpts(out, sc, checkOpts); verdict.Error != "" || (!verdict.Clean && (len(verdict.Matches) > 0 || !scanner.OnlyInformational(verdict.DLPMatches))) {
 		return nil, fmt.Errorf("stripped response is not clean")
 	}
 	if checked := scan(string(out)); !checked.Clean || checked.Failed() {

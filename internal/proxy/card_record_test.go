@@ -32,12 +32,12 @@ func TestCardJSONNumberOnlyAuditAndBodyAction(t *testing.T) {
 			if result.Clean || result.Action != config.ActionWarn || len(result.DLPMatches) == 0 || string(out) != body {
 				t.Fatal("number-only body did not retain warning and original values")
 			}
-			if !result.IsNumberOnlyCardRuns() || !isBodyAdaptiveExempt(scannerLabelBodyDLP, result, "api.vendor.example", cfg) {
+			if !result.IsInformationalCardRuns() || !isBodyAdaptiveExempt(scannerLabelBodyDLP, result, "api.vendor.example", cfg) {
 				t.Fatal("number-only warning eligible for adaptive block")
 			}
 			mixed := result
 			mixed.InjectionMatches = []scanner.ResponseMatch{{PatternName: "synthetic injection"}}
-			if mixed.IsNumberOnlyCardRuns() {
+			if mixed.IsInformationalCardRuns() {
 				t.Fatal("warning masked another finding")
 			}
 			var records bytes.Buffer

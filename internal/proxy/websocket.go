@@ -1916,7 +1916,7 @@ func (r *wsRelay) scanClientCrossMessageTextViews(ctx context.Context, log *audi
 }
 
 func (r *wsRelay) blockCrossMessageRedaction(log *audit.Logger, matches []scanner.TextDLPMatch) bool {
-	if r.redaction != nil && r.redaction.required && len(matches) > 0 && !scanner.OnlyNumberOnlyCardRuns(matches) {
+	if r.redaction != nil && r.redaction.required && len(matches) > 0 && !scanner.OnlyInformational(matches) {
 		reason := "redaction blocked request: websocket cross-message secret cannot be redacted"
 		r.recordFinding(session.SignalBlock, log, scannerLabelRedaction, reason)
 		log.LogWSBlocked(audit.WSBlockedEvent{
@@ -2028,7 +2028,7 @@ func (r *wsRelay) handleClientTextFindings(log *audit.Logger, dlpMatches []scann
 		}
 		wsBundleRules := dlpBundleRules(dlpMatches)
 		hardBlock := shouldHardBlockCriticalDLP(dlpMatches, r.cfg.EnforceEnabled())
-		numberOnly := scanner.OnlyNumberOnlyCardRuns(dlpMatches)
+		numberOnly := scanner.OnlyInformational(dlpMatches)
 		if hardBlock || (r.cfg.EnforceEnabled() && !numberOnly) {
 			reason := fmt.Sprintf("DLP match: %s", strings.Join(names, ", "))
 			r.recordFinding(session.SignalBlock, log, scanner.ScannerDLP, reason)
@@ -2262,7 +2262,7 @@ func wsFilterUniqueDLPMatches(matches []scanner.TextDLPMatch, excluded map[strin
 }
 
 func wsDLPMatchKey(match scanner.TextDLPMatch) string {
-	return match.PatternName + "\x00" + match.Encoded
+	return match.PatternName + "\x00" + match.Encoded + "\x00" + strconv.FormatBool(match.IsInformational())
 }
 
 func wsAddAddressFindingKeys(seen map[string]struct{}, findings []addressprotect.Finding) {
@@ -2431,7 +2431,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 	}
 
 	originalAction := action
-	if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
+	if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
 		action = decide.UpgradeAction(action, r.escalationLevel(), &r.cfg.AdaptiveEnforcement)
 	}
 	if action != originalAction {
@@ -2460,7 +2460,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 			})
 			return false
 		}
-		if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
 			r.recordFinding(session.SignalBlock, log, scannerLabel, reason)
 		}
 		blockReason := reason
@@ -2492,7 +2492,7 @@ func (r *wsRelay) handleClientMessageBodyResult(log *audit.Logger, bodyBytes []b
 		plwsutil.WriteClientCloseFrame(r.upstreamConn, ws.StatusPolicyViolation, closePayload)
 		return true
 	case config.ActionWarn:
-		if !result.IsEntropyOnly() && !result.IsNumberOnlyCardRuns() {
+		if !result.IsEntropyOnly() && !result.IsInformationalCardRuns() {
 			r.recordFinding(session.SignalNearMiss, log, scannerLabel, reason)
 		}
 		if len(result.DLPMatches) > 0 {

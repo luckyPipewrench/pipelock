@@ -183,9 +183,9 @@ type InputVerdict struct {
 	RedactedDLPOnly bool `json:"redacted_dlp_only,omitempty"`
 }
 
-// IsNumberOnlyCardRuns excludes other findings and incomplete inspection.
-func (v InputVerdict) IsNumberOnlyCardRuns() bool {
-	return scanner.OnlyNumberOnlyCardRuns(v.Matches) && len(v.Inject) == 0 && len(v.URLFindings) == 0 && len(v.AddressFindings) == 0 && v.Error == "" && !v.RedactedDLPOnly
+// IsInformationalCardRuns excludes other findings and incomplete inspection.
+func (v InputVerdict) IsInformationalCardRuns() bool {
+	return scanner.OnlyInformational(v.Matches) && len(v.Inject) == 0 && len(v.URLFindings) == 0 && len(v.AddressFindings) == 0 && v.Error == "" && !v.RedactedDLPOnly
 }
 
 // IsEntropyOnly checks the findings rather than the transport's generic label.
@@ -1199,7 +1199,7 @@ func ForwardScannedInput(
 		// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 		entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		originalAction := effectiveAction
-		numberOnlyDecision := verdict.IsNumberOnlyCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
+		numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 		if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 			effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)
 		}

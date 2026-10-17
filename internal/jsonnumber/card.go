@@ -20,29 +20,50 @@ const NumberBoundary = ",\x1f,"
 const (
 	NumberStringBoundary = ",\x1fs,"
 	StringNumberBoundary = ",\x1fn,"
+	StringBoundary       = ",\x1ft,"
 )
 
-var (
-	boundaryRun       = regexp.MustCompile(`[0-9]+(?:,+\x1f[snt]?,[0-9]+)+`)
-	boundarySeparator = regexp.MustCompile(`,+\x1f([snt]?),`)
-)
+var boundarySeparator = regexp.MustCompile(`,\x1f([sntu]?),`)
 
 // CardRun retains the provenance of a candidate as well as its digits.
 // NumberOnly requires at least two pieces, all JSON number integer components.
 type CardRun struct {
-	Digits     string
-	NumberOnly bool
+	Digits         string
+	SpaceCandidate string // complete pieces joined by one ASCII space
+	NumberOnly     bool
 }
 
+// ShippedCardPattern is the canonical generic card rule. Config and the
+// structured redactor share it; the scanner applies the configured luhn rule.
+const ShippedCardPattern = `\b\d{4}(?:[- ]?\d){11,15}\b`
+
+var shippedCardRule = regexp.MustCompile(ShippedCardPattern)
+
+// Enforces reports whether a validated candidate matches a rule as complete
+// pieces joined by one ASCII space. Number-only runs remain informational.
+func (run CardRun) Enforces(pattern *regexp.Regexp) bool {
+	if run.NumberOnly {
+		return false
+	}
+	loc := pattern.FindStringIndex(run.SpaceCandidate)
+	return loc != nil && loc[0] == 0 && loc[1] == len(run.SpaceCandidate)
+}
+
+// EnforcesShippedRule shares the scanner's default criterion with consumers
+// that cannot import the scanner, such as the structured redactor.
+func (run CardRun) EnforcesShippedRule() bool { return run.Enforces(shippedCardRule) }
+
 type cardPiece struct {
-	digits string
-	number bool
+	digits    string
+	number    bool
+	untrusted bool
 }
 
 // EscapeCardBoundaries retains scans of input markers without granting type
-// provenance. The t marker declares both neighboring pieces to be strings.
+// provenance. The u marker retains untrusted spelling without granting
+// synthetic-piece classification to input control bytes.
 func EscapeCardBoundaries(text string) string {
-	return strings.NewReplacer("\x1fn,", "\x1ft,", "\x1fs,", "\x1ft,", "\x1f,", "\x1ft,").Replace(text)
+	return strings.NewReplacer("\x1fn,", "\x1fu,", "\x1fs,", "\x1fu,", "\x1ft,", "\x1fu,", "\x1f,", "\x1fu,").Replace(text)
 }
 
 // CardBoundary encodes the types at a join in an extractor-produced view.
@@ -56,7 +77,7 @@ func CardBoundary(leftNumber, rightNumber bool) string {
 	if rightNumber {
 		return StringNumberBoundary
 	}
-	return ""
+	return StringBoundary
 }
 
 // These are the existing validateLuhn length bounds. Run enumeration uses
@@ -126,17 +147,28 @@ func ValidCardIssuer(digits []byte, n int) bool {
 func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 	for start, first := range pieces {
 		var candidate strings.Builder
+		var spaced strings.Builder
 		numberOnly := true
+		untrusted := false
 		for end := start; end < len(pieces); end++ {
 			candidate.WriteString(pieces[end].digits)
+			if end > start {
+				spaced.WriteByte(' ')
+			}
+			spaced.WriteString(pieces[end].digits)
 			numberOnly = numberOnly && pieces[end].number
+			untrusted = untrusted || pieces[end].untrusted
 			size := candidate.Len()
 			if size > cardRunMaxDigits {
 				break
 			}
 			if (end > start || first.number) && size >= cardRunMinDigits {
 				if value := candidate.String(); ValidCardNumber(value) {
-					runs = append(runs, CardRun{Digits: value, NumberOnly: numberOnly && end > start})
+					spaceCandidate := spaced.String()
+					if untrusted {
+						spaceCandidate = value
+					}
+					runs = append(runs, CardRun{Digits: value, SpaceCandidate: spaceCandidate, NumberOnly: numberOnly && end > start && !untrusted})
 				}
 			}
 		}
@@ -147,23 +179,40 @@ func appendCardSubruns(runs []CardRun, pieces []cardPiece) []CardRun {
 // BoundaryCardRuns returns runs made by joining typed scalar atoms. A run
 // needs a typed boundary, so ordinary comma-separated prose is not promoted.
 func BoundaryCardRuns(view string) []CardRun {
-	var runs []CardRun
-	for _, match := range boundaryRun.FindAllString(view, -1) {
-		boundaries := boundarySeparator.FindAllStringSubmatch(match, -1)
-		parts := boundarySeparator.Split(match, -1)
-		pieces := make([]cardPiece, len(parts))
-		for i, part := range parts {
-			number := true
-			if i > 0 && (boundaries[i-1][1] == "s" || boundaries[i-1][1] == "t") {
-				number = false
-			}
-			if i < len(boundaries) && (boundaries[i][1] == "n" || boundaries[i][1] == "t") {
-				number = false
-			}
-			pieces[i] = cardPiece{digits: part, number: number}
-		}
-		runs = appendCardSubruns(runs, pieces)
+	boundaries := boundarySeparator.FindAllStringSubmatch(view, -1)
+	if len(boundaries) == 0 {
+		return nil
 	}
+	parts := boundarySeparator.Split(view, -1)
+	var runs []CardRun
+	var pieces []cardPiece
+	flush := func() {
+		if len(pieces) > 1 {
+			runs = appendCardSubruns(runs, pieces)
+		}
+		pieces = nil
+	}
+	for i, part := range parts {
+		number := true
+		if i > 0 && (boundaries[i-1][1] == "s" || boundaries[i-1][1] == "t") {
+			number = false
+		}
+		if i < len(boundaries) && (boundaries[i][1] == "n" || boundaries[i][1] == "t") {
+			number = false
+		}
+		untrusted := i > 0 && boundaries[i-1][1] == "u" || i < len(boundaries) && boundaries[i][1] == "u"
+		// Only numeric atoms carry IntegralView's trailing comma mask. A string
+		// prefix, suffix, sign or comma must not be cropped into a new piece.
+		if number || untrusted {
+			part = strings.TrimRight(part, ",")
+		}
+		if !allDigits(part) {
+			flush()
+			continue
+		}
+		pieces = append(pieces, cardPiece{digits: part, number: number && !untrusted, untrusted: untrusted})
+	}
+	flush()
 	return runs
 }
 

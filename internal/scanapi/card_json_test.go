@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/luckyPipewrench/pipelock/internal/cardtest"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestCardJSONToolCallTypes(t *testing.T) {
@@ -89,7 +90,11 @@ func TestCardJSONToolCallInspectionLimits(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 			t.Fatal(err)
 		}
-		if result.Decision != DecisionDeny && result.Status != StatusError {
+		wantRule := "DLP-" + scanner.UninspectableJSONNumberPattern
+		if strings.Count(args, "[") > 1 {
+			wantRule = "UNINSPECTABLE-json-depth"
+		}
+		if w.Code != http.StatusOK || result.Status != StatusCompleted || result.Decision != DecisionDeny || len(result.Findings) == 0 || result.Findings[0].RuleID != wantRule {
 			t.Fatalf("inspection limit allowed: status=%d decision=%s", w.Code, result.Decision)
 		}
 	}

@@ -4,12 +4,16 @@
 package proxy
 
 import (
+	"fmt"
 	"testing"
+
+	"github.com/luckyPipewrench/pipelock/internal/cardtest"
 
 	"github.com/luckyPipewrench/pipelock/internal/audit"
 	"github.com/luckyPipewrench/pipelock/internal/config"
 	"github.com/luckyPipewrench/pipelock/internal/extract"
 	"github.com/luckyPipewrench/pipelock/internal/jsonnumber"
+	"github.com/luckyPipewrench/pipelock/internal/scanner"
 )
 
 func TestCardJSONCrossMessageViews(t *testing.T) {
@@ -29,7 +33,7 @@ func TestCardJSONCrossMessageViews(t *testing.T) {
 		{"metric then split string", `{"n":0.` + card + `,"s":"` + card[:8], card[8:] + `"}`, true},
 	} {
 		for _, redaction := range []bool{false, true} {
-			t.Run(tt.name, func(t *testing.T) {
+			t.Run(fmt.Sprintf("%s/redaction=%v", tt.name, redaction), func(t *testing.T) {
 				relay.redaction = nil
 				if redaction {
 					relay.redaction = &redactionRuntime{required: true}
@@ -39,5 +43,25 @@ func TestCardJSONCrossMessageViews(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestCardJSONCrossMessageEvidenceClass(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	relay, _ := newWebSocketFrameSuppressionRelay(t, cfg, "wss://api.vendor.example/socket")
+	card := cardtest.Number()
+	raw := `["` + card[:2] + `","` + card[2:9] + `","` + card[9:] + `"]`
+	previous := relay.scanner.ScanTextForDLP(t.Context(), raw)
+	combined := relay.scanner.ScanTextForDLP(t.Context(), `{"ids":`+raw+`,"card":"`+card+`"}`)
+	current := relay.scanner.ScanTextForDLP(t.Context(), "ordinary report")
+	matches, _ := wsCrossMessageDLPMatches(combined, previous, current)
+	if !scanner.HasEnforcingMatch(matches) {
+		t.Fatal("prior informational card suppressed enforcing evidence")
+	}
+	matches, warns := wsCrossMessageDLPMatches(previous, previous, current)
+	if len(matches) != 0 || len(warns) != 0 {
+		t.Fatal("same-class warning repeated across messages")
 	}
 }

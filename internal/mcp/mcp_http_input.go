@@ -891,7 +891,7 @@ func scanHTTPInputDecision(msg []byte, logW io.Writer, sessionKey, auditSessionK
 
 	// Escalation upgrade: may promote warn/ask to block for elevated sessions.
 	entropyOnlyDecision := verdict.IsEntropyOnly() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
-	numberOnlyDecision := verdict.IsNumberOnlyCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
+	numberOnlyDecision := verdict.IsInformationalCardRuns() && !policyVerdict.Matched && bindingAction == "" && chainAction == ""
 	originalAction := effectiveAction
 	if rec != nil && !entropyOnlyDecision && !numberOnlyDecision {
 		effectiveAction = decide.UpgradeAction(effectiveAction, rec.EscalationLevel(), adaptiveCfg)

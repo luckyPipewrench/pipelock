@@ -288,14 +288,14 @@ func ScanGenericSSEStreamWithOptions(
 			}
 			droppedDLP.record(dropped)
 			dlpResult.Matches = appendUniqueA2ADLPFindings(dlpResult.Matches, result.Matches)
-			dlpResult.Clean = len(dlpResult.Matches) == 0
+			dlpResult.Clean = !scanner.HasEnforcingMatch(dlpResult.Matches)
 		}
-		if !dlpResult.Clean {
+		if len(dlpResult.Matches) > 0 {
 			findingErr := fmt.Errorf("%w: dlp: %s",
 				ErrSSEStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			if scanner.CardRunAction(dlpResult.Matches, cfg.Action) == config.ActionWarn {
 				onFinding(findingErr)
-				clearDLPTailAfterCurrent = !scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches)
+				clearDLPTailAfterCurrent = !scanner.OnlyInformational(dlpResult.Matches)
 				skipTailDLP = clearDLPTailAfterCurrent
 			} else {
 				return findingErr
@@ -363,7 +363,7 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if (tailDLPResult.Clean || scanner.OnlyNumberOnlyCardRuns(tailDLPResult.Matches)) && idDataText != "" {
+			if (tailDLPResult.Clean || scanner.OnlyInformational(tailDLPResult.Matches)) && idDataText != "" {
 				var next scanner.TextDLPResult
 				next, droppedMatches = keepUnsuppressedDLP(sc.ScanTextForDLPWithCardView(ctx, tail+idDataText, cardTail+cardIDDataText), opts.Target, opts.Suppress)
 				tailDLPResult = mergeInputDLP(tailDLPResult, next)
@@ -372,12 +372,12 @@ func ScanGenericSSEStreamWithOptions(
 				}
 				droppedDLP.record(droppedMatches)
 			}
-			if !tailDLPResult.Clean {
+			if len(tailDLPResult.Matches) > 0 {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s",
 					ErrSSEStreamFinding, sseDLPMatchNames(tailDLPResult.Matches))
 				if scanner.CardRunAction(tailDLPResult.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyNumberOnlyCardRuns(tailDLPResult.Matches)
+					resetDLPTail = !scanner.OnlyInformational(tailDLPResult.Matches)
 				} else {
 					return findingErr
 				}
@@ -389,11 +389,11 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if !result.Clean {
+			if len(result.Matches) > 0 {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
 				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyNumberOnlyCardRuns(result.Matches)
+					resetDLPTail = !scanner.OnlyInformational(result.Matches)
 				} else {
 					return findingErr
 				}
@@ -405,11 +405,11 @@ func ScanGenericSSEStreamWithOptions(
 				return err
 			}
 			droppedDLP.record(droppedMatches)
-			if !result.Clean {
+			if len(result.Matches) > 0 {
 				findingErr := fmt.Errorf("%w: cross-event dlp: %s", ErrSSEStreamFinding, sseDLPMatchNames(result.Matches))
 				if scanner.CardRunAction(result.Matches, cfg.Action) == config.ActionWarn {
 					onFinding(findingErr)
-					resetDLPTail = !scanner.OnlyNumberOnlyCardRuns(result.Matches)
+					resetDLPTail = !scanner.OnlyInformational(result.Matches)
 				} else {
 					return findingErr
 				}
@@ -779,7 +779,7 @@ func passthroughSSE(ctx context.Context, body io.Reader, w io.Writer, flusher ht
 
 // keepUnsuppressedDLP removes suppressed DLP matches and recomputes Clean.
 func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []config.SuppressEntry) (scanner.TextDLPResult, []scanner.TextDLPMatch) {
-	if res.Clean || len(suppress) == 0 {
+	if len(res.Matches) == 0 || len(suppress) == 0 {
 		return res, nil
 	}
 	var kept []scanner.TextDLPMatch
@@ -792,7 +792,7 @@ func keepUnsuppressedDLP(res scanner.TextDLPResult, target string, suppress []co
 		}
 	}
 	res.Matches = kept
-	res.Clean = len(kept) == 0
+	res.Clean = !scanner.HasEnforcingMatch(kept)
 	return res, dropped
 }
 

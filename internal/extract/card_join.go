@@ -40,18 +40,14 @@ func JSONNumberStreamViews(raw []byte) (string, string) {
 	return strings.Join(texts, ""), JoinCardAtoms(numbers, "")
 }
 
-// JoinCardAtoms separates JSON numbers with a typed barrier. The primary card
-// scan cannot join across it; the candidate pass can inspect only such joins.
-// String boundaries retain the caller's join.
-func JoinCardAtoms(atoms []DLPAtom, stringSep string) string {
+// JoinCardAtoms preserves every scalar boundary in the card-only view.
+// Other detectors keep the caller's original text join; card candidates retain
+// both the piece boundaries and number types through subsequent scan passes.
+func JoinCardAtoms(atoms []DLPAtom, _ string) string {
 	var b strings.Builder
 	for i, atom := range atoms {
 		if i > 0 {
-			if atoms[i-1].Number || atom.Number {
-				b.WriteString(jsonnumber.CardBoundary(atoms[i-1].Number, atom.Number))
-			} else {
-				b.WriteString(stringSep)
-			}
+			b.WriteString(jsonnumber.CardBoundary(atoms[i-1].Number, atom.Number))
 		}
 		if atom.Number {
 			b.WriteString(atom.Card)

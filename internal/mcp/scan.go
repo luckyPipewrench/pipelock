@@ -460,7 +460,7 @@ func toolsListEnvelopeText(trimmed []byte, budget *jsonrpc.MediaTextBudget) (str
 
 // responseFindingAction excludes number-only card evidence from escalation.
 func responseFindingAction(sc *scanner.Scanner, opts ResponseScanOptions, injection []scanner.ResponseMatch, dlp []scanner.TextDLPMatch) string {
-	if len(injection) == 0 && scanner.OnlyNumberOnlyCardRuns(dlp) {
+	if len(injection) == 0 && scanner.OnlyInformational(dlp) {
 		return config.ActionWarn
 	}
 	return responseScanAction(sc, opts)
@@ -1242,7 +1242,7 @@ func ScanResponseA2A(line []byte, sc *scanner.Scanner, a2aOpts *A2AResponseOpts)
 			return verdict
 		}
 		verdict, injection := scanA2AResponseDispatchClass(line, sc, a2aOpts)
-		numberOnly := verdict.Action == config.ActionWarn && verdict.Error == "" && len(verdict.Matches) == 0 && scanner.OnlyNumberOnlyCardRuns(verdict.DLPMatches)
+		numberOnly := verdict.Action == config.ActionWarn && verdict.Error == "" && len(verdict.Matches) == 0 && scanner.OnlyInformational(verdict.DLPMatches)
 		if !verdict.Clean && !numberOnly {
 			verdict.Action = config.StricterAction(a2aDefaultAction(a2aOpts.Cfg), verdict.Action)
 			// This path replaces the response scan, so the response action

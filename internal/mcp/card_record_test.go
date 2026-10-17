@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -104,19 +105,19 @@ func TestCardJSONAdaptiveInputWarn(t *testing.T) {
 	}
 
 	a2a := ScanA2ARequestBody(t.Context(), []byte(`[4111,1111,1111,1111]`), s, enabledA2ACfg())
-	if !a2a.IsNumberOnlyCardRuns() || !a2a.IsAdaptiveNeutral() {
+	if !a2a.IsInformationalCardRuns() || !a2a.IsAdaptiveNeutral() {
 		t.Fatal("number-only A2A warning changed the adaptive score")
 	}
 	a2a.InspectionIncomplete = true
-	if a2a.IsNumberOnlyCardRuns() {
+	if a2a.IsInformationalCardRuns() {
 		t.Fatal("incomplete inspection received number-only policy")
 	}
 	verdict := ScanRequest(t.Context(), []byte(line), s, config.ActionBlock, config.ActionBlock)
-	if !verdict.IsNumberOnlyCardRuns() {
+	if !verdict.IsInformationalCardRuns() {
 		t.Fatal("number-only input class missing")
 	}
 	verdict.Error = "synthetic incomplete inspection"
-	if verdict.IsNumberOnlyCardRuns() {
+	if verdict.IsInformationalCardRuns() {
 		t.Fatal("incomplete input received number-only policy")
 	}
 }
@@ -245,6 +246,39 @@ func TestCardJSONInputLeafAndUnicodeFallbacks(t *testing.T) {
 			if v.Clean || v.Action != want || v.Error != "" {
 				t.Fatalf("fallback action=%s want=%s error=%s", v.Action, want, v.Error)
 			}
+		}
+	}
+}
+
+func TestCardJSONStreamCorpusRecords(t *testing.T) {
+	s := testScannerWithAction(t, config.ActionBlock)
+	for _, tt := range cardtest.JSONCases() {
+		for _, a2a := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/a2a=%v", tt.Name, a2a), func(t *testing.T) {
+				stream := "data: " + tt.Body + "\n\n" + "data: " + tt.Body + "\n\n"
+				var out bytes.Buffer
+				warnings := 0
+				opts := GenericSSEScanOptions{OnFinding: func(error) { warnings++ }}
+				var err error
+				if a2a {
+					cfg := enabledA2ACfg()
+					cfg.Action = config.ActionBlock
+					err = ScanA2AStreamWithOptions(t.Context(), strings.NewReader(stream), &out, nil, s, A2AStreamOptions{Config: cfg, Warning: opts})
+				} else {
+					err = ScanGenericSSEStreamWithOptions(t.Context(), strings.NewReader(stream), &out, nil, s, enabledSSECfg(), opts)
+				}
+				if (err == nil) != (tt.Clean || tt.Warn) {
+					t.Fatalf("error=%v clean=%v warn=%v", err, tt.Clean, tt.Warn)
+				}
+				if tt.Clean || tt.Warn {
+					if out.String() != stream {
+						t.Fatal("forwarded stream changed")
+					}
+				}
+				if tt.Warn && warnings == 0 {
+					t.Fatal("informational stream evidence not recorded")
+				}
+			})
 		}
 	}
 }

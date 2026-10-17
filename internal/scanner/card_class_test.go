@@ -4,6 +4,7 @@
 package scanner
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -39,8 +40,8 @@ func TestCardRunClassification(t *testing.T) {
 					s.ScanRequestBodyTextPartsWithCardAtoms(t.Context(), extracted.Atoms, "\n"))
 			}
 			for _, result := range results {
-				if result.Clean != tt.Clean || OnlyNumberOnlyCardRuns(result.Matches) != tt.Warn {
-					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyNumberOnlyCardRuns(result.Matches), tt.Clean, tt.Warn)
+				if result.Clean != (tt.Clean || tt.Warn) || OnlyInformational(result.Matches) != tt.Warn {
+					t.Fatalf("clean=%v number-only=%v; want clean=%v warn=%v", result.Clean, OnlyInformational(result.Matches), tt.Clean, tt.Warn)
 				}
 				wantAction := config.ActionBlock
 				if tt.Warn {
@@ -50,7 +51,7 @@ func TestCardRunClassification(t *testing.T) {
 					t.Fatal("card class changed an unrelated action")
 				}
 				for _, m := range result.Matches {
-					if tt.Warn && !m.IsNumberOnlyCardRun() {
+					if tt.Warn && !m.IsInformational() {
 						t.Fatal("card match lost scalar provenance")
 					}
 				}
@@ -75,10 +76,10 @@ func TestCardJSONDirectRunPolicy(t *testing.T) {
 	for _, tt := range cardtest.JSONCases() {
 		matches := s.ScanJSONCardRuns(t.Context(), tt.Body)
 		// Complete string cards use the ordinary string scan.
-		if tt.Name == "number run and string card" {
+		if tt.Name == "number run and string card" || tt.Name == "uneven then whole card" {
 			// The standalone string card is enforced by the ordinary scan;
 			// this direct pass reports only the numeric join.
-			if !OnlyNumberOnlyCardRuns(matches) {
+			if !OnlyInformational(matches) {
 				t.Fatal("numeric run missing beside a standalone string card")
 			}
 			continue
@@ -89,7 +90,7 @@ func TestCardJSONDirectRunPolicy(t *testing.T) {
 			}
 			continue
 		}
-		if len(matches) == 0 || OnlyNumberOnlyCardRuns(matches) != tt.Warn {
+		if len(matches) == 0 || OnlyInformational(matches) != tt.Warn {
 			t.Fatalf("direct run class missing for %s", tt.Name)
 		}
 	}
@@ -110,13 +111,13 @@ func TestCardRunBoundaryTextCannotClaimNumberType(t *testing.T) {
 	for _, separator := range []string{jsonnumber.NumberBoundary, jsonnumber.StringNumberBoundary, jsonnumber.NumberStringBoundary} {
 		text := strings.Join([]string{"4111", "1111", "1111", "1111"}, separator)
 		for _, result := range []TextDLPResult{s.ScanTextForDLP(t.Context(), text), s.ScanTextForDLPWithCardView(t.Context(), text, text)} {
-			if result.Clean || OnlyNumberOnlyCardRuns(result.Matches) {
+			if result.Clean || OnlyInformational(result.Matches) {
 				t.Fatal("input marker received numeric warning policy")
 			}
 		}
 		atoms := []extract.DLPAtom{{Text: text, Card: text}}
 		result := s.ScanTextForDLPWithTypedCardView(t.Context(), text, extract.JoinCardAtoms(atoms, " "))
-		if result.Clean || OnlyNumberOnlyCardRuns(result.Matches) {
+		if result.Clean || OnlyInformational(result.Matches) {
 			t.Fatal("string atom manufactured typed numeric evidence")
 		}
 	}
@@ -150,8 +151,125 @@ func TestCardRunBudgetRefusesOnlyStructuredText(t *testing.T) {
 	// A scalar still contributes its integer component, in or over budget.
 	card := "4111" + "1111" + "1111" + "1111"
 	for _, text := range []string{card + "e-2", card + "e10001", " -" + card + ".5E-10001", card + "." + strings.Repeat("7", 4097)} {
-		if result := s.ScanTextForDLP(t.Context(), text); result.Clean || OnlyNumberOnlyCardRuns(result.Matches) || result.Matches[0].PatternName == UninspectableJSONNumberPattern {
+		if result := s.ScanTextForDLP(t.Context(), text); result.Clean || OnlyInformational(result.Matches) || result.Matches[0].PatternName == UninspectableJSONNumberPattern {
 			t.Fatalf("scalar card %.24q lost enforcement: %+v", text, result.Matches)
 		}
+	}
+}
+
+func TestCardRunInformationalDoesNotHideProtectedValues(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	pieces := []string{card[:2], card[2:9], card[9:]}
+	var atoms []extract.DLPAtom
+	for _, p := range pieces {
+		atoms = append(atoms, extract.DLPAtom{Text: p, Card: p})
+	}
+	view := extract.JoinCardAtoms(atoms, "")
+	s.envSecrets = []string{card}
+	if result := s.ScanTextForDLPWithTypedCardView(t.Context(), card, view); result.Clean {
+		t.Fatal("known secret lost to informational card")
+	}
+	s.envSecrets = nil
+	value := "whsec_" + strings.Repeat("a", 24)
+	body := `["` + strings.Join(pieces, `","`) + `","` + value + `"]`
+	if result := s.ScanTextForDLP(t.Context(), body); result.Clean || OnlyInformational(result.Matches) {
+		t.Fatal("other credential lost to informational card")
+	}
+}
+
+func TestCardRunUntrustedStringMarkersKeepOrdinaryPolicy(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	for _, separator := range []string{jsonnumber.NumberBoundary, jsonnumber.NumberStringBoundary, jsonnumber.StringNumberBoundary, jsonnumber.StringBoundary} {
+		text := strings.Join([]string{card[:2], card[2:9], card[9:]}, separator)
+		result := s.ScanTextForDLPWithTypedCardView(t.Context(), text, extract.JoinCardAtoms([]extract.DLPAtom{{Text: text, Card: text}}, " "))
+		if result.Clean || OnlyInformational(result.Matches) {
+			t.Fatal("untrusted marker manufactured informational scalar pieces")
+		}
+	}
+}
+
+func TestCardRunLaterEnforcementWins(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	informational := s.ScanJSONCardRuns(t.Context(), `["`+card[:2]+`","`+card[2:9]+`","`+card[9:]+`"]`)
+	enforcing := s.ScanTextForDLP(t.Context(), card).Matches
+	for _, matches := range [][]TextDLPMatch{append(informational, enforcing...), append(enforcing, informational...)} {
+		if OnlyInformational(matches) || !HasEnforcingMatch(matches) || CardRunAction(matches, config.ActionBlock) != config.ActionBlock {
+			t.Fatal("informational evidence hid enforcement")
+		}
+	}
+}
+
+func TestCardRunFragmentWarningsRemainInformational(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	cfg.DLP.Patterns = append(cfg.DLP.Patterns, config.DLPPattern{Name: "fixture warn", Regex: `fixturewarn-[a-z]+`, Action: config.ActionWarn, Severity: config.SeverityHigh})
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	text := `["` + card[:2] + `","` + card[2:9] + `","` + card[9:] + `","fixturewarn-alpha"]`
+	if result := s.ScanTextForDLP(t.Context(), text); !result.Clean || !OnlyInformational(result.Matches) || len(result.InformationalMatches) == 0 {
+		t.Fatal("fixture lost its two warning classes")
+	}
+	if matches := scanFragmentsForSecrets(t.Context(), s, []fragment{{data: []byte(text[:7])}, {data: []byte(text[7:])}}); len(matches) != 0 {
+		t.Fatal("fragment reconstruction promoted informational evidence")
+	}
+}
+
+func TestCardRunSingleScalarNotRepeated(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	card := cardtest.Number()
+	atoms := []extract.DLPAtom{{Text: card, Card: card, Number: true}, {Text: "stop", Card: "stop"}}
+	result := s.ScanTextForDLPWithTypedCardView(t.Context(), card+" stop", extract.JoinCardAtoms(atoms, " "))
+	if result.Clean || len(result.Matches) != 1 {
+		t.Fatalf("standalone card count=%d clean=%v", len(result.Matches), result.Clean)
+	}
+}
+
+func TestCardRunFragmentMemoKeepsWarnings(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Internal = nil
+	cfg.DLP.ScanEnv = false
+	s := MustNew(cfg)
+	t.Cleanup(s.Close)
+	warnings := 0
+	s.SetDLPWarnHook(func(_ context.Context, _, _ string) { warnings++ })
+	card := cardtest.Number()
+	text := `["` + card[:2] + `","` + card[2:9] + `","` + card[9:] + `"]`
+	fragments := []fragment{{data: []byte(text[:7])}, {data: []byte(text[7:])}}
+	memo := &fragmentCleanMemo{limit: 4096}
+	for range 2 {
+		warnings = 0
+		if matches := scanOneFragmentContinuityMemo(t.Context(), s, fragments, memo, "card"); len(matches) != 0 {
+			t.Fatal("informational card enforced")
+		}
+		if warnings == 0 {
+			t.Fatal("clean memo suppressed informational warning")
+		}
+	}
+	clean := []fragment{{data: []byte("ordinary ")}, {data: []byte("report")}}
+	_ = scanOneFragmentContinuityMemo(t.Context(), s, clean, memo, "clean")
+	_ = scanOneFragmentContinuityMemo(t.Context(), s, clean, memo, "clean")
+	if memo.hits == 0 {
+		t.Fatal("warning-free positive control did not use memo")
 	}
 }

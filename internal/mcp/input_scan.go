@@ -378,11 +378,11 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// Scan each extracted string individually for encoded secrets
 		// (base64, hex). The joined string is not valid base64/hex as a
 		// unit, so encoding checks only work on individual field values.
-		if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+		if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 			for i, s := range strs {
-				if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
+				if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
 					dlpResult = mergeInputDLP(dlpResult, r)
-					if !scanner.OnlyNumberOnlyCardRuns(r.Matches) {
+					if !scanner.OnlyInformational(r.Matches) {
 						break
 					}
 				}
@@ -393,10 +393,10 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		// across JSON structure (catches patterns split by JSON syntax).
 		// Also unescape JSON \uXXXX sequences so DLP patterns match
 		// secrets encoded with JSON unicode escapes (parser differential fix).
-		if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+		if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 			dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, raw, jsonnumber.CardView(raw, extract.MaxExtractDepth)))
 		}
-		if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+		if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 			if unescaped := unescapeJSONUnicode(raw); unescaped != raw {
 				dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(raw, extract.MaxExtractDepth))))
 			}
@@ -431,12 +431,12 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 		}
 		urlFindings := scanMCPResourceURI(ctx, rpc.Method, rpc.Params, sc)
 
-		if dlpResult.Clean && injResult.Clean && len(addrFindings) == 0 && len(urlFindings) == 0 {
+		if len(dlpResult.Matches) == 0 && injResult.Clean && len(addrFindings) == 0 && len(urlFindings) == 0 {
 			return InputVerdict{ID: rpc.ID, Method: rpc.Method, Clean: true}
 		}
 		var dlpMatches []scanner.TextDLPMatch
 		var injMatches []scanner.ResponseMatch
-		if !dlpResult.Clean {
+		if len(dlpResult.Matches) > 0 {
 			dlpMatches = dlpResult.Matches
 		}
 		if !injResult.Clean {
@@ -502,17 +502,17 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	// Scan each extracted string individually for encoded secrets (base64,
 	// hex). The joined string is not valid base64/hex as a unit, so encoding
 	// checks only work on individual field values.
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		for i, s := range strs {
-			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
 				dlpResult = mergeInputDLP(dlpResult, r)
 			}
 		}
 	}
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, string(trimmed), jsonnumber.CardView(string(trimmed), extract.MaxExtractDepth)))
 	}
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		if unescaped := unescapeJSONUnicode(string(trimmed)); unescaped != string(trimmed) {
 			dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(string(trimmed), extract.MaxExtractDepth))))
 		}
@@ -541,7 +541,7 @@ func scanRequestForAgent(ctx context.Context, line []byte, sc *scanner.Scanner, 
 	var dlpMatches []scanner.TextDLPMatch
 	var injMatches []scanner.ResponseMatch
 
-	if !dlpResult.Clean {
+	if len(dlpResult.Matches) > 0 {
 		dlpMatches = dlpResult.Matches
 	}
 	if !injResult.Clean {
@@ -602,21 +602,21 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	dlpResult = scanSplitSecret(ctx, raw, joined, sc, dlpResult)
 
 	// Scan each extracted string individually for encoded secrets.
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		for i, s := range strs {
-			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); !r.Clean {
+			if r := sc.ScanTextForDLPWithCardView(ctx, s, cards[i]); len(r.Matches) > 0 {
 				dlpResult = mergeInputDLP(dlpResult, r)
 			}
 		}
 	}
 
 	// Fall back to full raw text for cross-structure patterns.
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, text, jsonnumber.CardView(text, extract.MaxExtractDepth)))
 	}
 	// JSON unicode unescape: resolve \uXXXX sequences in raw text so DLP
 	// patterns match secrets encoded with JSON unicode escapes.
-	if dlpResult.Clean || scanner.OnlyNumberOnlyCardRuns(dlpResult.Matches) {
+	if dlpResult.Clean || scanner.OnlyInformational(dlpResult.Matches) {
 		if unescaped := unescapeJSONUnicode(text); unescaped != text {
 			dlpResult = mergeInputDLP(dlpResult, sc.ScanTextForDLPWithCardView(ctx, unescaped, unescapeJSONUnicode(jsonnumber.CardView(string(raw), extract.MaxExtractDepth))))
 		}
@@ -650,7 +650,7 @@ func scanRawBeforeForward(ctx context.Context, raw []byte, sc *scanner.Scanner, 
 	var dlpMatches []scanner.TextDLPMatch
 	var injMatches []scanner.ResponseMatch
 
-	if !dlpResult.Clean {
+	if len(dlpResult.Matches) > 0 {
 		dlpMatches = dlpResult.Matches
 	}
 	if !injResult.Clean {
@@ -753,9 +753,9 @@ const maxPairwiseSplitFields = 64
 //  2. Pairwise concatenation: tries both orderings (a+b, b+a) for every pair
 //     of field values, catching splits where key names defeat alphabetical sort.
 //
-// Enforcing findings stop this pass; number-only warnings keep inspecting.
+// Enforcing findings stop this pass; informational warnings keep inspecting.
 func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc *scanner.Scanner, result scanner.TextDLPResult) scanner.TextDLPResult {
-	if !result.Clean && !scanner.OnlyNumberOnlyCardRuns(result.Matches) {
+	if !result.Clean && !scanner.OnlyInformational(result.Matches) {
 		return result
 	}
 	extracted := jsonrpc.ExtractStringsFromJSONResult(raw)
@@ -769,6 +769,8 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 		}
 	}
 	vals := extracted.Strings
+	atoms := extracted.CardAtoms
+	positions := extracted.StringPositions
 	if len(vals) <= 1 {
 		return result
 	}
@@ -776,8 +778,11 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	// Strategy 1: sorted-key concatenation (catches N-field splits in sorted order).
 	concat := strings.Join(vals, "")
 	if concat != joined {
-		if r := sc.ScanTextForDLPWithCardView(ctx, concat, concat); !r.Clean {
-			return mergeInputDLP(result, r)
+		if r := sc.ScanTextForDLPWithTypedCardView(ctx, concat, extract.JoinCardAtoms(atoms, "")); len(r.Matches) > 0 {
+			result = mergeInputDLP(result, r)
+			if !r.Clean {
+				return result
+			}
 		}
 	}
 	if len(vals) > maxPairwiseSplitFields {
@@ -799,12 +804,25 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 			if len(vals[j]) == 0 {
 				continue
 			}
-			// Try both orderings: vals[i]+vals[j] and vals[j]+vals[i].
-			if r := sc.ScanTextForDLPWithCardView(ctx, vals[i]+vals[j], vals[i]+vals[j]); !r.Clean {
-				return mergeInputDLP(result, r)
+			// Pair selection must not erase an intervening non-digit value
+			// for generic cards. Other credentials retain pairwise inspection.
+			forwardCard := atoms[positions[i]].Card + "," + atoms[positions[j]].Card
+			reverseCard := atoms[positions[j]].Card + "," + atoms[positions[i]].Card
+			if positions[j] == positions[i]+1 {
+				forwardCard = extract.JoinCardAtoms([]extract.DLPAtom{atoms[positions[i]], atoms[positions[j]]}, "")
+				reverseCard = extract.JoinCardAtoms([]extract.DLPAtom{atoms[positions[j]], atoms[positions[i]]}, "")
 			}
-			if r := sc.ScanTextForDLPWithCardView(ctx, vals[j]+vals[i], vals[j]+vals[i]); !r.Clean {
-				return mergeInputDLP(result, r)
+			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[i]+vals[j], forwardCard); len(r.Matches) > 0 {
+				result = mergeInputDLP(result, r)
+				if !r.Clean {
+					return result
+				}
+			}
+			if r := sc.ScanTextForDLPWithTypedCardView(ctx, vals[j]+vals[i], reverseCard); len(r.Matches) > 0 {
+				result = mergeInputDLP(result, r)
+				if !r.Clean {
+					return result
+				}
 			}
 		}
 	}
@@ -812,10 +830,10 @@ func scanSplitSecret(ctx context.Context, raw json.RawMessage, joined string, sc
 	return result
 }
 
-// mergeInputDLP retains number-only evidence while later views find stricter matches.
+// mergeInputDLP retains informational evidence while later views find stricter matches.
 func mergeInputDLP(prior, next scanner.TextDLPResult) scanner.TextDLPResult {
 	prior.Matches = appendUniqueA2ADLPFindings(prior.Matches, next.Matches)
 	prior.InformationalMatches = append(prior.InformationalMatches, next.InformationalMatches...)
-	prior.Clean = len(prior.Matches) == 0
+	prior.Clean = !scanner.HasEnforcingMatch(prior.Matches)
 	return prior
 }

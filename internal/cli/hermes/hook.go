@@ -283,7 +283,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	numberOnly := false
 	defer func() {
 		if numberOnly {
-			decision.warnings = []string{"pipelock: warning: number-only JSON card run detected (action=warn)"}
+			decision.warnings = []string{"pipelock: warning: informational JSON card run detected (action=warn)"}
 		}
 	}()
 	text, cards := views.text, views.cards
@@ -303,7 +303,7 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	var cardBlock *scanner.TextDLPMatch
 	for _, document := range documents {
 		for _, match := range sc.ScanJSONCardRuns(ctx, document) {
-			if match.IsNumberOnlyCardRun() {
+			if match.IsInformational() {
 				numberOnly = true
 				continue
 			}
@@ -322,12 +322,12 @@ func scanCombinedViews(ctx context.Context, sc *scanner.Scanner, views hookScanV
 	// being discarded. Injection scanning (ScanResponse) runs regardless: a
 	// poisoned tool result or operator message is the real inbound threat.
 	firstEnforceable := func(dlp scanner.TextDLPResult, scanned string) *scanner.TextDLPMatch {
-		if dlp.Clean || len(dlp.Matches) == 0 {
+		if len(dlp.Matches) == 0 {
 			return nil
 		}
 		var enforceable []scanner.TextDLPMatch
 		for _, match := range dlp.Matches {
-			if match.IsNumberOnlyCardRun() {
+			if match.IsInformational() {
 				numberOnly = true
 			} else {
 				enforceable = append(enforceable, match)

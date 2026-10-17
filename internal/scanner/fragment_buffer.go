@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -904,12 +905,14 @@ func scanOneFragmentContinuityMemo(ctx context.Context, sc *Scanner, fragments [
 		return nil
 	}
 	result := sc.ScanTextForDLP(ctx, text)
-	if result.Clean && len(result.InformationalMatches) == 0 {
+	if result.Clean && len(result.Matches) == 0 && len(result.InformationalMatches) == 0 {
 		if memo != nil {
 			memo.store(key, text)
 		}
 		return nil
 	}
+
+	result.Matches = slices.DeleteFunc(result.Matches, func(m TextDLPMatch) bool { return m.IsInformational() })
 
 	// Only report matches NOT found in any individual fragment.
 	// These are true cross-request matches (secret spans fragment boundaries).

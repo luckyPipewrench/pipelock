@@ -151,6 +151,10 @@ type ScanVerdict struct {
 // a separate signal from Truncated and has the same consequence: the strings
 // are partial and the caller must block.
 type ExtractStringsResult struct {
+	// CardAtoms retains all scalar values, including values omitted from Strings.
+	CardAtoms []extract.DLPAtom
+	// StringPositions maps Strings to its positions in CardAtoms.
+	StringPositions  []int
 	Strings          []string
 	Truncated        bool
 	IncompleteReason string
@@ -829,23 +833,37 @@ func ExtractStringsFromJSON(raw json.RawMessage) []string {
 // arbitrary JSON and reports whether extraction hit the nesting cap.
 func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 	var result []string
+	var atoms []extract.DLPAtom
+	var positions []int
 	truncated := false
-	var extract func(v interface{}, depth int)
-	extract = func(v interface{}, depth int) {
+	var visit func(v interface{}, depth int)
+	visit = func(v interface{}, depth int) {
 		if depth > maxExtractDepth {
 			truncated = true
 			return
 		}
 		switch val := v.(type) {
 		case string:
+			positions = append(positions, len(atoms))
 			result = append(result, val)
+			atoms = append(atoms, extract.DLPAtom{Text: val, Card: val})
+		case json.Number:
+			atoms = append(atoms, extract.DLPAtom{Text: val.String(), Card: jsonnumber.IntegralView(val), Number: true})
+		case bool:
+			value := "false"
+			if val {
+				value = "true"
+			}
+			atoms = append(atoms, extract.DLPAtom{Text: value, Card: value})
+		case nil:
+			atoms = append(atoms, extract.DLPAtom{Text: Null, Card: Null})
 		case []interface{}:
 			for _, item := range val {
-				extract(item, depth+1)
+				visit(item, depth+1)
 			}
 		case map[string]interface{}:
 			for _, k := range SortedKeys(val) {
-				extract(val[k], depth+1)
+				visit(val[k], depth+1)
 			}
 		}
 	}
@@ -853,9 +871,9 @@ func ExtractStringsFromJSONResult(raw json.RawMessage) ExtractStringsResult {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	if err := dec.Decode(&parsed); err == nil && json.Valid(raw) {
-		extract(parsed, 0)
+		visit(parsed, 0)
 	}
-	return ExtractStringsResult{Strings: result, Truncated: truncated}
+	return ExtractStringsResult{Strings: result, CardAtoms: atoms, StringPositions: positions, Truncated: truncated}
 }
 
 // ExtractKeysFromJSONResult recursively extracts JSON object keys and reports

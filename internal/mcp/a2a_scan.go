@@ -193,7 +193,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 			}
 			// DLP scanning
 			dlpResult := sc.ScanTextForDLP(ctx, value)
-			if !dlpResult.Clean {
+			if len(dlpResult.Matches) > 0 {
 				result.Clean = false
 				result.DLPFindings = append(result.DLPFindings, dlpResult.Matches...)
 				if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -298,7 +298,7 @@ func scanA2ABody(ctx context.Context, body []byte, sc *scanner.Scanner, cfg *con
 		if len(texts) > 0 {
 			joined := strings.Join(texts, "\n")
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-			if !dlpResult.Clean {
+			if len(dlpResult.Matches) > 0 {
 				result.Clean = false
 				result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 				if a2aDLPForcesBlock(dlpResult.Matches) {
@@ -403,7 +403,7 @@ func a2aOverflowPass(ctx context.Context, body []byte, sc *scanner.Scanner, resu
 		forceBlock = true
 	}
 	dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, joined, extract.JoinCardAtoms(extracted.Atoms, " "))
-	if !dlpResult.Clean {
+	if len(dlpResult.Matches) > 0 {
 		result.DLPFindings = appendUniqueA2ADLPFindings(result.DLPFindings, dlpResult.Matches)
 		if a2aDLPForcesBlock(dlpResult.Matches) {
 			forceBlock = true
@@ -443,15 +443,15 @@ func a2aDLPForcesBlock(matches []scanner.TextDLPMatch) bool {
 // to deduplicate across its per-leaf and joined-raw scans.
 func appendUniqueA2ADLPFindings(existing, incoming []scanner.TextDLPMatch) []scanner.TextDLPMatch {
 	type matchKey struct {
-		name       string
-		encoded    string
-		numberOnly bool
+		name          string
+		encoded       string
+		informational bool
 	}
 
 	seen := make(map[matchKey]struct{}, len(existing)+len(incoming))
 	result := make([]scanner.TextDLPMatch, 0, len(existing)+len(incoming))
 	for _, match := range append(existing, incoming...) {
-		key := matchKey{name: match.PatternName, encoded: match.Encoded, numberOnly: match.IsNumberOnlyCardRun()}
+		key := matchKey{name: match.PatternName, encoded: match.Encoded, informational: match.IsInformational()}
 		if _, ok := seen[key]; ok {
 			continue
 		}
@@ -1262,11 +1262,11 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 
 		var warnedFinding error
 		recordNumberOnly := func(matches []scanner.TextDLPMatch) bool {
-			if !scanner.OnlyNumberOnlyCardRuns(matches) {
+			if !scanner.OnlyInformational(matches) {
 				return false
 			}
 			if warnedFinding == nil {
-				warnedFinding = fmt.Errorf("%w: number-only JSON card run (action=warn)", ErrA2AStreamFinding)
+				warnedFinding = fmt.Errorf("%w: informational JSON card run (action=warn)", ErrA2AStreamFinding)
 				sc.EmitTextDLPWarnMatches(ctx, matches)
 				if opts.Warning.OnFinding != nil {
 					opts.Warning.OnFinding(warnedFinding)
@@ -1310,7 +1310,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			return fmt.Errorf("%w: injection in sse metadata: %s",
 				ErrA2AStreamFinding, sseInjectionNames(injResult.Matches))
 		}
-		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); !dlpResult.Clean && !recordNumberOnly(dlpResult.Matches) {
+		if dlpResult := sc.ScanTextForDLPWithCardView(ctx, canonical, cardCanonical); len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
 			return fmt.Errorf("%w: dlp in sse metadata: %s",
 				ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 		}
@@ -1336,7 +1336,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 			combined := dlpTail + currentText
 			cardBoundary := jsonnumber.CardBoundary(previousLastNumber, currentFirstNumber)
 			dlpResult := sc.ScanTextForDLPWithTypedCardView(ctx, combined, cardTail+cardBoundary+currentCardText)
-			if !dlpResult.Clean && !recordNumberOnly(dlpResult.Matches) {
+			if len(dlpResult.Matches) > 0 && !recordNumberOnly(dlpResult.Matches) {
 				return fmt.Errorf("%w: cross-event dlp detected: %s",
 					ErrA2AStreamFinding, sseDLPMatchNames(dlpResult.Matches))
 			}
@@ -1347,7 +1347,7 @@ func ScanA2AStreamWithOptions(ctx context.Context, body io.Reader, w io.Writer, 
 		numberText, numberCard := extract.JSONNumberStreamViews(event)
 		if numberTail != "" && numberText != "" {
 			result := sc.ScanTextForDLPWithTypedCardView(ctx, numberTail+numberText, numberCardTail+jsonnumber.NumberBoundary+numberCard)
-			if !result.Clean && !recordNumberOnly(result.Matches) {
+			if len(result.Matches) > 0 && !recordNumberOnly(result.Matches) {
 				return fmt.Errorf("%w: cross-event dlp detected: %s", ErrA2AStreamFinding, sseDLPMatchNames(result.Matches))
 			}
 		}
@@ -1484,7 +1484,7 @@ func (r A2AScanResult) IsAdaptiveNeutral() bool {
 	if r.Clean {
 		return false
 	}
-	if r.IsEntropyOnly() || r.IsNumberOnlyCardRuns() {
+	if r.IsEntropyOnly() || r.IsInformationalCardRuns() {
 		return true
 	}
 	if len(r.DLPFindings) > 0 || len(r.InjectFindings) > 0 {
@@ -1501,9 +1501,9 @@ func (r A2AScanResult) IsAdaptiveNeutral() bool {
 	return true
 }
 
-// IsNumberOnlyCardRuns excludes other evidence and incomplete inspection.
-func (r A2AScanResult) IsNumberOnlyCardRuns() bool {
-	return scanner.OnlyNumberOnlyCardRuns(r.DLPFindings) && len(r.InjectFindings) == 0 && len(r.URLFindings) == 0 && r.EntropyFinding == nil && !r.BudgetExceeded && !r.InspectionIncomplete && r.ScanError == ""
+// IsInformationalCardRuns excludes other evidence and incomplete inspection.
+func (r A2AScanResult) IsInformationalCardRuns() bool {
+	return scanner.OnlyInformational(r.DLPFindings) && len(r.InjectFindings) == 0 && len(r.URLFindings) == 0 && r.EntropyFinding == nil && !r.BudgetExceeded && !r.InspectionIncomplete && r.ScanError == ""
 }
 
 // IsEntropyOnly distinguishes opaque content from concrete A2A findings even

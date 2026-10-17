@@ -55,7 +55,7 @@ func TestCardJSONHookRecordOnSuccessfulExit(t *testing.T) {
 			if err := json.Unmarshal(out.Bytes(), &decision); err != nil || decision.Decision == DecisionBlock {
 				t.Fatalf("hook did not allow warning: %v", err)
 			}
-			if strings.Count(record.String(), "number-only JSON card run") != 1 || !strings.Contains(record.String(), "action=warn") {
+			if strings.Count(record.String(), "informational JSON card run") != 1 || !strings.Contains(record.String(), "action=warn") {
 				t.Fatalf("missing unique operator record: %q", record.String())
 			}
 		}

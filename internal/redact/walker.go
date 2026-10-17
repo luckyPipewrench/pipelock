@@ -78,22 +78,34 @@ func RewriteJSON(body []byte, m *Matcher, r *Redactor, lim Limits) ([]byte, *Rep
 	if err := checkNoDuplicateKeys(body); err != nil {
 		return nil, nil, err
 	}
-	// String-containing joins remain enforcing. Number-only joins are recorded
-	// by DLP and left unchanged: placeholders would change their JSON types.
-	runs, limit := jsonnumber.CardRunsWithLimit(string(body), lim.MaxDepth)
-	if limit != jsonnumber.CardRunWithinBudget {
-		return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(),
-			"JSON number or nesting exceeds card inspection budget")
+	// Generic card joins share the scanner's complete-piece rule. Informational
+	// joins are recorded by DLP and left unchanged by redaction.
+	runs, limit := jsonnumber.CardRunsWithLimit(string(body), lim.MaxDepth+1)
+	if limit == jsonnumber.CardRunDepthLimit {
+		return nil, nil, newBlock(ReasonDepthExceeded, r.Total(), "")
+	}
+	if limit == jsonnumber.CardRunNumberLimit {
+		return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "JSON number exceeds card inspection budget")
+	}
+	cardEnabled := false
+	if m != nil {
+		for _, p := range m.patterns {
+			cardEnabled = cardEnabled || p.class == ClassCreditCard
+		}
 	}
 	for _, run := range runs {
-		if run.NumberOnly {
+		if m == nil {
 			continue
 		}
-		for _, match := range m.Scan(run.Digits) {
-			if match.Class == ClassCreditCard {
-				return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(),
-					"card pattern matched JSON scalar values")
+		// Explicit dictionaries retain exact known-value enforcement even
+		// when a generic card join is informational.
+		for _, dict := range m.dicts {
+			if dict.pattern.MatchString(run.Digits) {
+				return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "known value matched JSON scalar values")
 			}
+		}
+		if cardEnabled && run.EnforcesShippedRule() {
+			return nil, nil, newBlock(ReasonSecretInNumericScalar, r.Total(), "card pattern matched JSON scalar values")
 		}
 	}
 

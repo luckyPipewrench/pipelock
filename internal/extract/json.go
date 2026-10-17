@@ -929,7 +929,11 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 			case '{', '[':
 				depth++
 				stack = append(stack, frame{object: v == '{', expectKey: v == '{'})
-				if depth > maxExtractDepth {
+				// depth counts the open container, so this container sits at
+				// recursive value depth depth-1. Match the recursive walk: an
+				// empty container at the limit is inspectable; content past
+				// it is truncated.
+				if depth > maxExtractDepth+1 {
 					truncated = true
 				}
 			case '}', ']':
@@ -940,6 +944,9 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 			}
 		case string:
 			key := len(stack) > 0 && stack[len(stack)-1].object && stack[len(stack)-1].expectKey
+			if depth > maxExtractDepth {
+				truncated = true
+			}
 			if depth <= maxExtractDepth {
 				result = append(result, v)
 				appendAtom(v, v, false, key)
@@ -949,16 +956,25 @@ func AllStringsFromJSONOrderedResult(raw json.RawMessage) JSONStringsResult {
 				continue
 			}
 		case json.Number:
+			if depth > maxExtractDepth {
+				truncated = true
+			}
 			if depth <= maxExtractDepth {
 				result = append(result, v.String())
 				appendAtom(v.String(), jsonnumber.IntegralView(v), true, false)
 			}
 		case bool:
+			if depth > maxExtractDepth {
+				truncated = true
+			}
 			if depth <= maxExtractDepth {
 				result = append(result, strconv.FormatBool(v))
 				appendAtom(strconv.FormatBool(v), strconv.FormatBool(v), false, false)
 			}
 		case nil:
+			if depth > maxExtractDepth {
+				truncated = true
+			}
 			if depth <= maxExtractDepth {
 				appendAtom("null", "null", false, false)
 			}

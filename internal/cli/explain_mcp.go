@@ -380,7 +380,9 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	report.Action = effectiveMCPExplainAction(verdict)
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
-	if a2aActive {
+	if scanner.HasInspectionLimit(verdict.DLPMatches) {
+		report.Notes = append(report.Notes, scanner.OperatorHintForResult(scanner.ScannerBodyDLP, scanner.UninspectableJSONNumberPattern))
+	} else if a2aActive {
 		if len(report.Patterns) == 0 {
 			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust.")
 		}
@@ -396,7 +398,7 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 			}
 		}
 	}
-	if !a2aActive && len(verdict.DLPMatches) > 0 {
+	if !a2aActive && len(verdict.DLPMatches) > 0 && !scanner.HasInspectionLimit(verdict.DLPMatches) {
 		report.Notes = append(report.Notes, "inbound DLP findings cannot be suppressed through response_scanning; Pipelock blocks them when this server's trust action is block.")
 	}
 	if report.Allowed && !a2aActive {

@@ -684,3 +684,23 @@ func TestQuickstartCmd_PrintsConcreteCommands(t *testing.T) {
 func fakeExplainEventGitHubToken() string {
 	return "ghp_" + strings.Repeat("A", 36)
 }
+
+func TestJSONInspectionExplainHint(t *testing.T) {
+	cfg := config.Defaults()
+	sanitizer, err := newExplainEventSanitizer(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := map[string]any{
+		"event": "body_dlp", "scanner": scanner.ScannerBodyDLP,
+		"patterns": []any{scanner.UninspectableJSONNumberPattern},
+	}
+	report := buildExplainEventReport(raw, "test", "request_id", sanitizer)
+	if !strings.Contains(report.RemediationHint, "Reduce nesting or number size") || strings.Contains(report.RemediationHint, "suppress") {
+		t.Fatalf("event hint = %q", report.RemediationHint)
+	}
+	remediation := explainRemediationFor(scanner.Result{Scanner: scanner.ScannerBodyDLP, Reason: scanner.UninspectableJSONNumberPattern})
+	if !remediation.Immutable || !strings.Contains(remediation.Knob, "Reduce nesting or number size") || strings.Contains(remediation.Knob, "suppress") {
+		t.Fatalf("explain remediation = %+v", remediation)
+	}
+}

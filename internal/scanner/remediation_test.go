@@ -705,3 +705,36 @@ func TestDecideLabelGuidanceNamesOperatorKnobsOnlyToOperator(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONInspectionRemediationHint(t *testing.T) {
+	for label := range remediationGuidance {
+		t.Run(label, func(t *testing.T) {
+			for _, reason := range []string{
+				UninspectableJSONNumberPattern,
+				"request body contains secret: " + UninspectableJSONNumberPattern,
+				"other pattern, " + UninspectableJSONNumberPattern,
+			} {
+				g, ok := GuidanceForResult(label, reason)
+				if !ok || !g.Immutable || g.OperatorBroader != "" {
+					t.Fatalf("inspection guidance = %+v, mapped = %v", g, ok)
+				}
+				hint := OperatorHintForResult(label, reason)
+				for _, want := range []string{"Reduce nesting or number size", "upstream payload", "limits are fixed"} {
+					if !strings.Contains(hint, want) {
+						t.Errorf("hint = %q, want %q", hint, want)
+					}
+				}
+				if strings.Contains(strings.ToLower(hint), "suppress") {
+					t.Fatalf("inspection hint offers suppression: %q", hint)
+				}
+			}
+			ordinary, ok := GuidanceForResult(label, "ordinary finding")
+			if baseline, mapped := GuidanceFor(label); mapped && ok && ordinary.OperatorKnob != baseline.OperatorKnob {
+				// Reason-specific families have their own existing regression tests.
+				if label == ScannerBodyDLP || label == ScannerDLP || label == AuditResponseScan {
+					t.Fatalf("ordinary guidance changed: %+v, want %+v", ordinary, baseline)
+				}
+			}
+		})
+	}
+}

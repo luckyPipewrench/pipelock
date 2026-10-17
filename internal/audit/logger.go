@@ -1102,7 +1102,7 @@ func (l *Logger) LogBodyDLP(ctx LogContext, action string, matchCount int, patte
 		agentField(ctx.agent, ctx.agentAuth).
 		intField("match_count", matchCount).
 		strs("patterns", patternNames).
-		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerBodyDLP, "")).
+		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerBodyDLP, strings.Join(patternNames, ", "))).
 		str("mitre_technique", technique)
 	if len(bundleRules) > 0 {
 		e.bundleRulesField(bundleRules)

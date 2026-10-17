@@ -5,6 +5,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -339,5 +340,31 @@ func TestExplainMCPResponseBlockUsesResponseSentinel(t *testing.T) {
 	}
 	if !errors.Is(err, errExplainResponseBlocked) {
 		t.Fatalf("block sentinel = %v, want %v", err, errExplainResponseBlocked)
+	}
+}
+
+func TestJSONInspectionMCPRemediationHint(t *testing.T) {
+	for _, payload := range []string{
+		`[1e10001]`,
+		`[` + strings.Repeat("9", 4097) + `]`,
+		strings.Repeat("[", 65) + `1` + strings.Repeat("]", 65),
+	} {
+		cfg := config.Defaults()
+		encoded, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":` + string(encoded) + `}]}}`
+		report, err := buildMCPExplainReport(cfg, "service", []byte(response))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Allowed || report.Remediation != nil {
+			t.Fatalf("inspection must block without suppression entries: %+v", report)
+		}
+		notes := strings.Join(report.Notes, " ")
+		if !strings.Contains(notes, "Reduce nesting or number size") || strings.Contains(notes, "trust action is block") {
+			t.Fatalf("inspection notes = %q; report = %+v", notes, report)
+		}
 	}
 }

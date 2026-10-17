@@ -6159,3 +6159,41 @@ func TestLogAgentIdentityCollision_JSONFormat(t *testing.T) {
 		t.Errorf("expected score ~0.7, got %v", entry["score"])
 	}
 }
+
+func TestJSONInspectionRemediationHints(t *testing.T) {
+	pattern := scannerpkg.UninspectableJSONNumberPattern
+	ctx := LogContext{method: "POST", target: "https://api.vendor.example/submit"}
+	for name, log := range map[string]func(*Logger){
+		"body": func(l *Logger) { l.LogBodyDLP(ctx, "block", 1, []string{pattern}, nil) },
+		"blocked": func(l *Logger) {
+			l.LogBlocked(ctx, scannerpkg.ScannerBodyDLP, "request body contains secret: "+pattern)
+		},
+		"response": func(l *Logger) { l.LogResponseScan(ctx, "block", 1, []string{pattern}, nil) },
+		"a2a":      func(l *Logger) { l.LogBodyScan(ctx, EventType(scannerpkg.AuditA2AScan), "block", 1, []string{pattern}) },
+		"websocket": func(l *Logger) {
+			l.LogWSScan(WSScanEvent{Direction: DirectionClientToServer, Action: "block", PatternNames: []string{pattern}, MatchCount: 1})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "audit.log")
+			logger, err := New("json", "file", path, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			log(logger)
+			logger.Close()
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatal(err)
+			}
+			hint, _ := entry["remediation_hint"].(string)
+			if !strings.Contains(hint, "Reduce nesting or number size") || strings.Contains(strings.ToLower(hint), "suppress") {
+				t.Fatalf("inspection hint = %q", hint)
+			}
+		})
+	}
+}

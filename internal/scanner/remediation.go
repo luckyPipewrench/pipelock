@@ -413,6 +413,15 @@ func isQueryEntropyReason(reason string) bool {
 }
 
 func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
+	// Incomplete typed JSON inspection is a fixed safety limit, independent of
+	// the transport's content policy and suppression controls.
+	if strings.Contains(reason, UninspectableJSONNumberPattern) {
+		return RemediationGuidance{
+			OperatorKnob: "Reduce nesting or number size in the upstream payload. Typed JSON number and depth limits are fixed; incomplete inspection is refused.",
+			Immutable:    true,
+			AgentReason:  "Request blocked: the JSON payload exceeds a fixed inspection limit.",
+		}, true
+	}
 	if label == ScannerDLP && strings.Contains(reason, "; GitHub ") && strings.Contains(reason, "outside its validity window") {
 		return RemediationGuidance{
 			OperatorKnob: "Check the host clock and obtain a current GitHub URL. The grant validity window is required and is not extended by a DLP pattern exemption.",

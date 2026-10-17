@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import importlib.util
 import os
 import socket
@@ -36,7 +37,13 @@ class RuntimeTests(unittest.TestCase):
         self.provider.get_pr_description.return_value = ("Untrusted description", [])
         self.provider.get_pr_branch.return_value = "fix/example"
         self.provider.get_commit_messages.return_value = "Untrusted commit"
+        summary = NS(id=8, body='Published fixture summary', html_url='https://github.com/example/project/pull/1#issuecomment-8',
+                     user=NS(login='github-actions[bot]', type='Bot'))
+        self.provider.publish_persistent_comment.return_value = summary
+        self.summary_publish = self.provider.publish_persistent_comment
         self.provider.get_issue_comments.return_value = []
+        self.status = MagicMock()
+        self.provider.pr.create_issue_comment = MagicMock(return_value=self.status)
         self.provider.get_pr_url.return_value = "https://github.com/example/project/pull/1"
         self.provider.get_line_link.return_value = "https://github.com/example/project/pull/1/files"
         self.provider.supports_review_finding_state.return_value = False
@@ -48,6 +55,7 @@ class RuntimeTests(unittest.TestCase):
             patch="@@ -1 +1 @@\n-old\n+new\n",
         )]
         self.env = {
+            "REVIEW_SOURCE_SHA": "c" * 40, "REVIEW_PROFILE_SHA": "d" * 40, "GITHUB_RUN_ID": "123",
             "GITHUB_REPOSITORY": self.repo, "PR_NUMBER": "1", "REVIEW_HEAD": self.head,
             "REVIEW_BASE": self.base, "GITHUB_TOKEN": "fixture-github",
             "ANTHROPIC_API_KEY": "", "ANTHROPIC_API_KEY_2": "", "OPENAI_API_KEY": "fixture-openai",
@@ -183,7 +191,7 @@ class RuntimeTests(unittest.TestCase):
         async def complete(**kwargs):
             self.provider.publish_comment.assert_not_called()
             self.provider.publish_code_suggestions.assert_not_called()
-            self.provider.publish_persistent_comment.assert_not_called()
+            self.summary_publish.assert_not_called()
             slots.append(kwargs["api_key"])
             if kwargs["model"].startswith("anthropic/"):
                 await self.litellm.acompletion(**kwargs)
@@ -226,6 +234,86 @@ class RuntimeTests(unittest.TestCase):
                 self.provider.publish_code_suggestions.assert_not_called()
                 self.provider.publish_persistent_comment.assert_not_called()
 
+    def test_stale_snapshot_never_marks_success(self):
+        async def complete(**kwargs):
+            self.provider.pr.base.sha = "e" * 40
+            return self.response()
+
+        completion = AsyncMock(side_effect=complete)
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_awaited_once()
+        self.provider.publish_persistent_comment.assert_not_called()
+        self.provider.publish_code_suggestions.assert_not_called()
+        self.status.edit.assert_not_called()
+
+    def test_commits_changed_after_publication_never_mark_success(self):
+        summary = self.summary_publish.return_value
+
+        def publish(*args, **kwargs):
+            self.provider.pr.head.sha = "f" * 40
+            return summary
+
+        self.summary_publish.side_effect = publish
+        completion = AsyncMock(return_value=self.response())
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_awaited_once()
+        self.summary_publish.assert_called_once()
+        self.status.edit.assert_not_called()
+
+    def test_reuse_requires_the_current_snapshot(self):
+        with patch.dict(os.environ, self.env):
+            key = review.review_binding(self.settings, self.repo, "1", self.head, self.base)[0]
+        summary = self.summary_publish.return_value
+        digest = hashlib.sha256(summary.body.encode()).hexdigest()
+        record = NS(id=9, user=summary.user, html_url="https://github.com/example/project/pull/1#issuecomment-9",
+                    body=f"<!-- agent-review-status:v1 state=success key={key} summary=8 digest={digest} -->\nDone")
+        self.provider.get_issue_comments.return_value = [record, summary]
+        completion = AsyncMock(return_value=self.response())
+        self.run_adapter(completion)
+        completion.assert_not_awaited()
+        self.assertIn("no new inference", self.provider.pr.create_issue_comment.call_args.args[0])
+        self.provider.pr.create_issue_comment.reset_mock()
+        self.settings, _ = review.configure()  # Each workflow run configures once.
+        self.provider.github_client.get_repo.return_value.get_pull.return_value = NS(
+            state="open", head=NS(repo=NS(full_name=self.repo, fork=False), sha="f" * 40),
+            base=NS(repo=NS(full_name=self.repo), sha=self.base))
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_not_awaited()
+        self.provider.pr.create_issue_comment.assert_not_called()
+
+    def test_missing_credentials_and_failed_publication_never_mark_success(self):
+        completion = AsyncMock(return_value=self.response())
+        self.env["OPENAI_API_KEY"] = ""
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_not_awaited()
+        self.status.edit.assert_not_called()
+        self.env["OPENAI_API_KEY"] = "fixture-openai"
+        self.settings, _ = review.configure()
+        self.provider.publish_persistent_comment.return_value = False
+        with self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_awaited_once()
+        self.status.edit.assert_not_called()
+
+    def test_omitted_coverage_cannot_mark_success(self):
+        from pr_agent.tools.pr_reviewer import PRReviewer
+        prepare = PRReviewer._prepare_pr_review
+
+        def omitted(reviewer):
+            result = prepare(reviewer)
+            reviewer.remaining_files_list = ["src/uncovered.py"]
+            return result
+
+        completion = AsyncMock(return_value=self.response())
+        with patch.object(PRReviewer, "_prepare_pr_review", omitted), self.assertRaises(review.ReviewAbort):
+            self.run_adapter(completion)
+        completion.assert_awaited_once()
+        self.status.edit.assert_not_called()
+
     def test_github_workflow_token_diff_and_comment_endpoints(self):
         # Exercise the real provider and PyGithub objects. Only the REST boundary
         # and model response are fixtures; unexpected endpoints fail the test.
@@ -245,6 +333,7 @@ class RuntimeTests(unittest.TestCase):
                   "html_url": f"https://github.com/example/project/commit/{self.head}",
                   "commit": {"message": "Example change", "author": {"date": "2026-01-01T00:00:00Z"}}}
         requests, comments, unexpected, content_refs = [], [], [], []
+        next_id = [7]
 
         def api(method, url, parameters=None, headers=None, input=None, **kwargs):
             requests.append((method, url, input))
@@ -275,13 +364,17 @@ class RuntimeTests(unittest.TestCase):
                 if url in (f"{pr_url}/comments", f"{pr_url}/reviews"):
                     return {}, []
             if method == "POST" and url == f"{root}/issues/1/comments":
-                comment = dict(input, id=7, url=f"{root}/issues/comments/7", user={"login": "github-actions[bot]"},
-                               html_url="https://github.com/example/project/pull/1#issuecomment-7")
+                comment_id = next_id[0]
+                next_id[0] += 1
+                comment = dict(input, id=comment_id, url=f"{root}/issues/comments/{comment_id}",
+                               user={"login": "github-actions[bot]", "type": "Bot"},
+                               html_url=f"https://github.com/example/project/pull/1#issuecomment-{comment_id}")
                 comments.append(comment)
                 return {}, comment
-            if method == "PATCH" and url == f"{root}/issues/comments/7":
-                comments[0].update(input)
-                return {}, comments[0]
+            if method == "PATCH" and url.startswith(f"{root}/issues/comments/"):
+                comment = next(c for c in comments if c["url"] == url)
+                comment.update(input)
+                return {}, comment
             if method == "POST" and url == f"{pr_url}/reviews":
                 return {}, {"id": 8, "state": "COMMENTED"}
             unexpected.append((method, url))
@@ -300,17 +393,19 @@ class RuntimeTests(unittest.TestCase):
                     runner.run(review.review(self.settings))
                 except review.ReviewAbort:
                     self.fail(f"Review aborted after fixture requests: {[(m, u) for m, u, _ in requests]}")
-                # A second run must update the persistent summary rather than duplicate it.
+                # An identical successful snapshot must not pay for another completion.
                 self.settings, _ = review.configure()
                 with patch.dict(os.environ, self.env):
+                    runner.run(review.review(self.settings))
+                self.settings, _ = review.configure()
+                with patch.dict(os.environ, dict(self.env, REVIEW_SOURCE_SHA="e" * 40)):
                     runner.run(review.review(self.settings))
         self.assertEqual(2, completion.await_count)
         self.assertEqual([], unexpected)
         self.assertEqual({self.head, self.base}, set(content_refs))
-        self.assertIn(("GET", "/user"), [(m, u) for m, u, _ in requests])
         self.assertIn(("GET", f"{pr_url}/files"), [(m, u) for m, u, _ in requests])
-        self.assertEqual(1, sum(m == "POST" and u == f"{root}/issues/1/comments" for m, u, _ in requests))
-        self.assertEqual(1, sum(m == "PATCH" for m, _, _ in requests))
+        self.assertEqual(4, sum(m == "POST" and u == f"{root}/issues/1/comments" for m, u, _ in requests))
+        self.assertEqual(3, sum(m == "PATCH" for m, _, _ in requests))
         inline = [data for method, url, data in requests if method == "POST" and url == f"{pr_url}/reviews"]
         self.assertTrue(inline)
         self.assertEqual(self.head, inline[0]["commit_id"])
@@ -318,6 +413,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("src/file.py", str(inline[0]["comments"]))
         self.assertIn(self.head, comments[0]["body"])
         self.assertIn(self.base, comments[0]["body"])
+        self.assertTrue(comments[0]["body"].startswith("<!-- agent-review-status:v1 state=success"))
+        self.assertIn('"total_tokens": 150', comments[0]["body"])
+        self.assertEqual('github-actions[bot]', comments[0]['user']['login'])
+        self.assertIn('no new inference', comments[2]['body'])
+        self.assertIn('e' * 40, comments[1]['body'])
 
 
 if __name__ == "__main__":

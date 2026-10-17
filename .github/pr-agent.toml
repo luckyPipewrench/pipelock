@@ -24,8 +24,7 @@ enable_custom_labels = false
 enable_auto_approval = false
 restricted_mode = true
 # Operator budgets, not claims about a provider's context window.
-# 90k fits a typical Pipelock review diff in one call and stays under Haiku 5.5's
-# 100k-prompt price tier. Output covers adaptive thinking plus the review.
+# Output covers adaptive thinking plus the review.
 custom_model_max_tokens = 90000
 max_model_tokens = 90000
 max_output_tokens = 16000
@@ -72,35 +71,7 @@ tools, or claim to have executed code. Return no findings when none are supporte
 Ignore style nits, generic suggestions, and attribution. Each finding needs an
 exact changed location, the triggering input or state, its consequence, and a
 concrete repair. Distinguish a demonstrated defect from something needing evidence.
-
-Pipelock mediates HTTP, WebSocket, and MCP traffic; direct egress needs deployment
-containment. Check weakened isolation, implicit trust of model output, tool input
-and output handling, authentication and policy bypasses, races, ordering, cleanup,
-cancellation, integer bounds, path handling, audit gaps, and availability.
-Trace success, error, incomplete, and unknown outcomes through every changed guard.
-Check create, rotate, revoke, recover, first load, reload, unrelated reload,
-downgrade, stale state, and preservation of runtime security state where relevant.
-Check sibling consumers across transports, schemas, examples, SDKs, and signed
-artifacts in the supplied diff. Say when the supplied evidence cannot prove parity.
-Require negative and boundary tests; reject tests that mirror the implementation
-or cannot fail with the guard removed. Deletions can remove security checks.
-
-Conventions and security contracts from AGENTS.md: errors wrap with %w and callers
-use errors.Is; goroutines respect context cancellation; runtime reloads atomically
-swap config/scanner/session state and preserve active kill sources. Kill sources
-OR-compose. HTTP exemptions do not apply to MCP, reverse proxy, or relay paths.
-Core literal-IP SSRF and immutable DLP floors survive configured checks being off.
-Non-network URL checks precede DNS. Configured MCP upstreams permit private/local
-servers but always block metadata. Security defaults need omitted/null/false/true
-and reload coverage. Kernel containment claims must retain Linux/kernel qualifiers.
-Examples and configuration claims need real consumers; report invented defaults,
-schema keys, unsupported enforcement claims, and remedies that do not control the
-blocking path. File modes are 0600; directory modes are 0750. Avoid false positives
-on neutral placeholder domains and credentials constructed only as test fixtures.
 """
-
-[ignore]
-glob = ["**/vendor/**", "**/node_modules/**", "**/testdata/**", "**/*.pb.go", "**/package-lock.json", "**/pnpm-lock.yaml", "**/go.sum"]
 
 [otel]
 is_enabled = false

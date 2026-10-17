@@ -1,0 +1,31 @@
+# Trusted default-branch repository policy; only these two sections are allowed.
+[review]
+instructions = """
+Pipelock mediates HTTP, WebSocket, and MCP traffic; direct egress needs deployment
+containment. Check weakened isolation, implicit trust of model output, tool input
+and output handling, authentication and policy bypasses, races, ordering, cleanup,
+cancellation, integer bounds, path handling, audit gaps, and availability.
+Trace success, error, incomplete, and unknown outcomes through every changed guard.
+Check create, rotate, revoke, recover, first load, reload, unrelated reload,
+downgrade, stale state, and preservation of runtime security state where relevant.
+Check sibling consumers across transports, schemas, examples, SDKs, and signed
+artifacts in the supplied diff. Say when the supplied evidence cannot prove parity.
+Require negative and boundary tests; reject tests that mirror the implementation
+or cannot fail with the guard removed. Deletions can remove security checks.
+
+Conventions and security contracts from AGENTS.md: errors wrap with %w and callers
+use errors.Is; goroutines respect context cancellation; runtime reloads atomically
+swap config/scanner/session state and preserve active kill sources. Kill sources
+OR-compose. HTTP exemptions do not apply to MCP, reverse proxy, or relay paths.
+Core literal-IP SSRF and immutable DLP floors survive configured checks being off.
+Non-network URL checks precede DNS. Configured MCP upstreams permit private/local
+servers but always block metadata. Security defaults need omitted/null/false/true
+and reload coverage. Kernel containment claims must retain Linux/kernel qualifiers.
+Examples and configuration claims need real consumers; report invented defaults,
+schema keys, unsupported enforcement claims, and remedies that do not control the
+blocking path. File modes are 0600; directory modes are 0750. Avoid false positives
+on neutral placeholder domains and credentials constructed only as test fixtures.
+"""
+
+[ignore]
+glob = ["**/vendor/**", "**/node_modules/**", "**/testdata/**", "**/*.pb.go", "**/package-lock.json", "**/pnpm-lock.yaml", "**/go.sum"]

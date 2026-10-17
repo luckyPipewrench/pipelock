@@ -6,6 +6,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -699,8 +700,62 @@ func TestJSONInspectionExplainHint(t *testing.T) {
 	if !strings.Contains(report.RemediationHint, "Reduce nesting or number size") || strings.Contains(report.RemediationHint, "suppress") {
 		t.Fatalf("event hint = %q", report.RemediationHint)
 	}
-	remediation := explainRemediationFor(scanner.Result{Scanner: scanner.ScannerBodyDLP, Reason: scanner.UninspectableJSONNumberPattern})
+	remediation := explainRemediationFor(scanner.Result{Scanner: scanner.ScannerBodyDLP, Reason: "request body contains secret: " + scanner.UninspectableJSONNumberPattern})
 	if !remediation.Immutable || !strings.Contains(remediation.Knob, "Reduce nesting or number size") || strings.Contains(remediation.Knob, "suppress") {
 		t.Fatalf("explain remediation = %+v", remediation)
+	}
+}
+
+func TestRemediationNestedJSONInspectionKey(t *testing.T) {
+	sanitizer, err := newExplainEventSanitizer(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, label := range []string{scanner.ScannerSSRF, scanner.ScannerDLP} {
+		t.Run(label, func(t *testing.T) {
+			reason := "SSRF blocked: 10.0.0.12 is an internal IP"
+			if label == scanner.ScannerDLP {
+				reason = "DLP match: Test credential (high)"
+			}
+			nested := fmt.Sprintf("nested URL in query parameter %q: %s", scanner.UninspectableJSONNumberPattern, reason)
+			report := buildExplainEventReport(map[string]any{"event": "blocked", "scanner": label, "reason": nested}, "test", "request_id", sanitizer)
+			baseline := scanner.OperatorHintForResult(label, reason)
+			remediation := explainRemediationFor(scanner.Result{Scanner: label, Reason: nested})
+			if baseline == "" || !strings.HasPrefix(report.RemediationHint, baseline) || remediation.Immutable || !strings.HasPrefix(remediation.Knob, baseline) {
+				t.Fatalf("event = %+v; remediation = %+v; want %q", report, remediation, baseline)
+			}
+		})
+	}
+}
+
+func TestJSONInspectionExplainRequiresPatternIdentity(t *testing.T) {
+	sanitizer, err := newExplainEventSanitizer(config.Defaults())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fields := range []map[string]any{
+		{"patterns": []any{"prefix " + scanner.UninspectableJSONNumberPattern}},
+		{"patterns": []any{"ordinary, " + scanner.UninspectableJSONNumberPattern}},
+		{"pattern_name": scanner.UninspectableJSONNumberPattern + " suffix"},
+		{"display_label": scanner.UninspectableJSONNumberPattern},
+		{"reason": "client text mentions " + scanner.UninspectableJSONNumberPattern},
+	} {
+		fields["event"] = "body_dlp"
+		fields["scanner"] = scanner.ScannerBodyDLP
+		report := buildExplainEventReport(fields, "test", "request_id", sanitizer)
+		if report.RemediationHint != scanner.OperatorHintFor(scanner.ScannerBodyDLP) {
+			t.Fatalf("display text changed hint: %+v", report)
+		}
+	}
+	for _, field := range []string{"pattern_name", "pattern", "patterns", "findings"} {
+		raw := map[string]any{"event": "body_dlp", "scanner": scanner.ScannerBodyDLP, "reason": "other finding"}
+		raw[field] = scanner.UninspectableJSONNumberPattern
+		if field == "patterns" || field == "findings" {
+			raw[field] = []any{"ordinary", scanner.UninspectableJSONNumberPattern}
+		}
+		report := buildExplainEventReport(raw, "test", "request_id", sanitizer)
+		if !strings.Contains(report.RemediationHint, "limits are fixed") {
+			t.Fatalf("structured %s lost hint: %+v", field, report)
+		}
 	}
 }

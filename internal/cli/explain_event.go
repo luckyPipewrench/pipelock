@@ -277,11 +277,7 @@ func matchedExplainEventFallbackID(raw map[string]any, id string) string {
 func buildExplainEventReport(raw map[string]any, id, matchedField string, sanitizer explainEventSanitizer) explainEventReport {
 	eventName := eventFieldString(raw, "event")
 	reason := firstEventField(raw, "reason", "pattern")
-	patternNames := explainEventPatternName(raw)
-	hintReason := reason
-	if strings.Contains(patternNames, scanner.UninspectableJSONNumberPattern) {
-		hintReason = scanner.UninspectableJSONNumberPattern
-	}
+	patterns := explainEventStructuredPatterns(raw)
 	scannerName := firstEventField(raw, "scanner", "layer")
 	target := firstEventField(raw, "url", "target", "resource", "endpoint", "tool", "session")
 	report := explainEventReport{
@@ -301,7 +297,8 @@ func buildExplainEventReport(raw map[string]any, id, matchedField string, saniti
 		RemediationHint: sanitizer.field(eventFieldString(raw, "remediation_hint")),
 	}
 	if report.RemediationHint == "" && scannerName != "" {
-		report.RemediationHint = sanitizer.field(scanner.OperatorHintForResult(scannerName, hintReason))
+		guidance, _ := scanner.GuidanceForResultWithPatterns(scannerName, reason, patterns)
+		report.RemediationHint = sanitizer.field(guidance.OperatorKnob)
 	}
 	for _, note := range explainEventOutcomeNotes(raw, report.Outcome) {
 		report.Notes = append(report.Notes, sanitizer.field(note))
@@ -440,6 +437,27 @@ func firstEventField(raw map[string]any, fields ...string) string {
 		}
 	}
 	return ""
+}
+
+// Display labels are presentation only. Inspect the original fields separately
+// so a substring or comma inside one name cannot become a refusal identifier.
+func explainEventStructuredPatterns(raw map[string]any) []string {
+	var patterns []string
+	for _, field := range []string{"pattern_name", "pattern"} {
+		if pattern, ok := raw[field].(string); ok {
+			patterns = append(patterns, pattern)
+		}
+	}
+	for _, field := range []string{"patterns", "findings"} {
+		if values, ok := raw[field].([]any); ok {
+			for _, value := range values {
+				if pattern, ok := value.(string); ok {
+					patterns = append(patterns, pattern)
+				}
+			}
+		}
+	}
+	return patterns
 }
 
 func explainEventPatternName(raw map[string]any) string {

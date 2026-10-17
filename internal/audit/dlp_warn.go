@@ -105,7 +105,7 @@ func (l *Logger) logDLPInformational(ctx LogContext, patternName, severity, surf
 		str("severity", severity).
 		str("transport", surface).
 		str("reason", reason).
-		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scannerpkg.ScannerDLP, patternName)).
+		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(scannerpkg.ScannerDLP, []string{patternName})).
 		str("mitre_technique", technique).
 		str("method", ctx.Method()).
 		optStr("url", loggedURL).

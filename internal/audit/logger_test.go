@@ -6169,7 +6169,17 @@ func TestJSONInspectionRemediationHints(t *testing.T) {
 			l.LogBlocked(ctx, scannerpkg.ScannerBodyDLP, "request body contains secret: "+pattern)
 		},
 		"response": func(l *Logger) { l.LogResponseScan(ctx, "block", 1, []string{pattern}, nil) },
+		"header":   func(l *Logger) { l.LogHeaderDLP(ctx, "X-Value", "block", []string{pattern}, nil) },
 		"a2a":      func(l *Logger) { l.LogBodyScan(ctx, EventType(scannerpkg.AuditA2AScan), "block", 1, []string{pattern}) },
+		"websocket-blocked": func(l *Logger) {
+			l.LogWSBlocked(WSBlockedEvent{Scanner: scannerpkg.ScannerDLP, Reason: "DLP match: " + pattern})
+		},
+		"http-fragment": func(l *Logger) {
+			l.LogBlocked(ctx, scannerpkg.AuditCrossRequestFragment, "fragment reassembly DLP match: "+pattern)
+		},
+		"mcp-fragment": func(l *Logger) {
+			l.LogBlocked(ctx, scannerpkg.AuditCrossRequestFragment, "cross-request fragment refused: "+pattern+"; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)")
+		},
 		"websocket": func(l *Logger) {
 			l.LogWSScan(WSScanEvent{Direction: DirectionClientToServer, Action: "block", PatternNames: []string{pattern}, MatchCount: 1})
 		},
@@ -6195,5 +6205,58 @@ func TestJSONInspectionRemediationHints(t *testing.T) {
 				t.Fatalf("inspection hint = %q", hint)
 			}
 		})
+	}
+}
+
+func TestRemediationNestedJSONInspectionKey(t *testing.T) {
+	for _, label := range []string{scannerpkg.ScannerSSRF, scannerpkg.ScannerDLP} {
+		t.Run(label, func(t *testing.T) {
+			reason := "SSRF blocked: 10.0.0.12 is an internal IP"
+			if label == scannerpkg.ScannerDLP {
+				reason = "DLP match: Test credential (high)"
+			}
+			path := filepath.Join(t.TempDir(), "audit.log")
+			logger, err := New("json", "file", path, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			logger.LogBlocked(LogContext{method: "GET", target: "https://api.vendor.example/"}, label, fmt.Sprintf("nested URL in query parameter %q: %s", scannerpkg.UninspectableJSONNumberPattern, reason))
+			logger.Close()
+			data, err := os.ReadFile(filepath.Clean(path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var entry map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+				t.Fatal(err)
+			}
+			hint, _ := entry["remediation_hint"].(string)
+			baseline := scannerpkg.OperatorHintForResult(label, reason)
+			if baseline == "" || !strings.HasPrefix(hint, baseline) || strings.Contains(hint, "limits are fixed") {
+				t.Fatalf("hint = %q, want %q", hint, baseline)
+			}
+		})
+	}
+}
+
+func TestJSONInspectionRemediationPatternIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.log")
+	logger, err := New("json", "file", path, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pattern := "ordinary, " + scannerpkg.UninspectableJSONNumberPattern
+	logger.LogBodyDLP(LogContext{method: "POST", target: "https://api.vendor.example/"}, "block", 1, []string{pattern}, nil)
+	logger.Close()
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(data), &entry); err != nil {
+		t.Fatal(err)
+	}
+	if entry["remediation_hint"] != scannerpkg.OperatorHintFor(scannerpkg.ScannerBodyDLP) {
+		t.Fatalf("display text changed hint: %v", entry["remediation_hint"])
 	}
 }

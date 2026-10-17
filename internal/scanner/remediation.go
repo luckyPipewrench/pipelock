@@ -412,16 +412,74 @@ func isQueryEntropyReason(reason string) bool {
 		strings.HasPrefix(reason, queryEntropyParamReasonPrefix)
 }
 
-func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
-	// Incomplete typed JSON inspection is a fixed safety limit, independent of
-	// the transport's content policy and suppression controls.
-	if strings.Contains(reason, UninspectableJSONNumberPattern) {
-		return RemediationGuidance{
-			OperatorKnob: "Reduce nesting or number size in the JSON payload at its source. Typed JSON number and depth limits are fixed; incomplete inspection is refused.",
-			Immutable:    true,
-			AgentReason:  "Request blocked: the JSON payload exceeds a fixed inspection limit.",
-		}, true
+// GuidanceForResultWithPatterns uses exact structured finding names when the
+// caller has them, without interpreting display text as a pattern identifier.
+func GuidanceForResultWithPatterns(label, reason string, patterns []string) (RemediationGuidance, bool) {
+	for _, pattern := range patterns {
+		if (TextDLPMatch{PatternName: pattern}).IsInspectionLimit() {
+			return jsonInspectionLimitGuidance(), true
+		}
 	}
+	if len(patterns) > 0 {
+		return guidanceForResult(label, reason)
+	}
+	return GuidanceForResult(label, reason)
+}
+
+func jsonInspectionLimitGuidance() RemediationGuidance {
+	return RemediationGuidance{
+		OperatorKnob: "Reduce nesting or number size in the JSON payload at its source. Typed JSON number and depth limits are fixed; incomplete inspection is refused.",
+		Immutable:    true,
+		AgentReason:  "Request blocked: the JSON payload exceeds a fixed inspection limit.",
+	}
+}
+
+// These formats are emitted by the URL scanner, HTTP body gates, and HTTP/MCP
+// fragment reassembly. Other reason text is not a pattern-name authority.
+func isJSONInspectionLimitReason(label, reason string) bool {
+	switch label {
+	case ScannerBodyDLP:
+		if names, ok := strings.CutPrefix(reason, "request body contains secret: "); ok {
+			return jsonInspectionLimitInNames(names)
+		}
+	case ScannerDLP, ScannerCoreDLP:
+		for _, prefix := range []string{"DLP match: ", "core DLP match: ", "DLP: "} {
+			if names, ok := strings.CutPrefix(reason, prefix); ok {
+				// URL DLP emits severity; WebSocket DLP emits names only,
+				// optionally followed by its adaptive-enforcement annotation.
+				names = strings.TrimSuffix(names, " (high)")
+				names = strings.TrimSuffix(names, " (escalated)")
+				return jsonInspectionLimitInNames(names)
+			}
+		}
+	case AuditCrossRequestFragment:
+		return reason == "fragment reassembly DLP match: "+UninspectableJSONNumberPattern ||
+			reason == "cross-request fragment refused: "+UninspectableJSONNumberPattern+"; reduce nesting or number size in the JSON tool arguments at their source (typed JSON number and depth limits are fixed)"
+	}
+	return false
+}
+
+func jsonInspectionLimitInNames(names string) bool {
+	for name := range strings.SplitSeq(names, ", ") {
+		if name == UninspectableJSONNumberPattern {
+			return true
+		}
+	}
+	return false
+}
+
+func GuidanceForResult(label, reason string) (RemediationGuidance, bool) {
+	// Generic events retain only the emitted reason. Strip client-chosen query
+	// keys before recognizing the closed set of inspection-refusal formats.
+	if isJSONInspectionLimitReason(label, stripNestedURLReasonPrefix(reason)) {
+		return jsonInspectionLimitGuidance(), true
+	}
+	return guidanceForResult(label, reason)
+}
+
+func guidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
+	nested := reason
+	reason = stripNestedURLReasonPrefix(reason)
 	if label == ScannerDLP && strings.Contains(reason, "; GitHub ") && strings.Contains(reason, "outside its validity window") {
 		return RemediationGuidance{
 			OperatorKnob: "Check the host clock and obtain a current GitHub URL. The grant validity window is required and is not extended by a DLP pattern exemption.",
@@ -429,8 +487,6 @@ func GuidanceForResult(label, reason string) (g RemediationGuidance, ok bool) {
 			AgentReason:  "Request blocked: the GitHub grant is outside its validity window.",
 		}, true
 	}
-	nested := reason
-	reason = stripNestedURLReasonPrefix(reason)
 	defer func() {
 		if ok {
 			g = annotateNestedURLGuidance(g, label, nested, reason)
@@ -779,5 +835,11 @@ func containsLowerASCII(text, phrase string) bool {
 // query-entropy block gets the query-entropy knob rather than the path default.
 func OperatorHintForResult(label, reason string) string {
 	g, _ := GuidanceForResult(label, reason)
+	return g.OperatorKnob
+}
+
+// OperatorHintForPatterns preserves structured pattern identity for audit callers.
+func OperatorHintForPatterns(label string, patterns []string) string {
+	g, _ := GuidanceForResultWithPatterns(label, strings.Join(patterns, ", "), patterns)
 	return g.OperatorKnob
 }

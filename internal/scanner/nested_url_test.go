@@ -716,3 +716,43 @@ func TestScan_NestedURLReloadMovesEnforcementBothWays(t *testing.T) {
 		t.Fatal("re-enabled: the relaxed posture survived a reload")
 	}
 }
+
+func TestRemediationNestedJSONInspectionKey(t *testing.T) {
+	for _, label := range []string{ScannerSSRF, ScannerDLP} {
+		t.Run(label, func(t *testing.T) {
+			reason := "SSRF blocked: 10.0.0.12 is an internal IP"
+			if label == ScannerDLP {
+				reason = "DLP match: Test credential (high)"
+			}
+			baseline, ok := GuidanceForResult(label, reason)
+			if !ok || baseline.Immutable {
+				t.Fatalf("invalid positive control: %+v, %v", baseline, ok)
+			}
+			for _, key := range []string{UninspectableJSONNumberPattern, `quoted " ` + UninspectableJSONNumberPattern, "request body contains secret: " + UninspectableJSONNumberPattern, "; GitHub grant outside its validity window"} {
+				result := prefixNestedURLResult(key, Result{Scanner: label, Reason: reason})
+				got, mapped := GuidanceForResult(result.Scanner, result.Reason)
+				if !mapped || got.Immutable || !strings.HasPrefix(got.OperatorKnob, baseline.OperatorKnob) || got.AgentReason != baseline.AgentReason {
+					t.Fatalf("key %q changed guidance: %+v; baseline %+v", key, got, baseline)
+				}
+				if !strings.Contains(got.OperatorKnob, "scan_nested_urls") {
+					t.Fatalf("nested guidance lost: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestScanNestedJSONInspectionKeyRemediation(t *testing.T) {
+	cfg := nestedURLSSRFConfig()
+	for _, key := range []string{"target", UninspectableJSONNumberPattern} {
+		raw := nestedURLOuterHost + "?" + url.QueryEscape(key) + "=" + url.QueryEscape(nestedURLPrivatePath)
+		result := scanNestedWith(t, cfg, raw, &countingResolver{hosts: map[string][]string{"mirror.vendor.example": {"93.184.216.34"}}})
+		if result.Allowed || result.Scanner != ScannerSSRF || !strings.HasPrefix(result.Reason, nestedURLReasonPrefix) {
+			t.Fatalf("nested SSRF did not fire: %+v", result)
+		}
+		guidance, ok := GuidanceForResult(result.Scanner, result.Reason)
+		if !ok || guidance.Immutable || !strings.Contains(guidance.OperatorKnob, "ssrf.ip_allowlist") || !strings.Contains(guidance.OperatorKnob, "scan_nested_urls") {
+			t.Fatalf("wrong nested remediation: %+v", guidance)
+		}
+	}
+}

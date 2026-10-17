@@ -680,7 +680,7 @@ func buildExplainSurfaceReport(cmd *cobra.Command, cfg *config.Config, cfgLabel,
 	report.Reason = explainEvidenceReason(primary, decision)
 	report.Remediation = explainRemediationForEvidence(primary)
 	if report.Remediation != nil {
-		if g, ok := scanner.GuidanceForResult(primary.Scanner, report.Reason); ok {
+		if g, ok := scanner.GuidanceForResultWithPatterns(primary.Scanner, report.Reason, []string{primary.Pattern}); ok {
 			report.AgentReason = g.AgentReason
 		}
 	}
@@ -718,7 +718,7 @@ func explainRemediationForEvidence(e decide.Evidence) *explainRemediation {
 	if reason == "" {
 		reason = e.Pattern
 	}
-	if g, ok := scanner.GuidanceForResult(e.Scanner, reason); ok {
+	if g, ok := scanner.GuidanceForResultWithPatterns(e.Scanner, reason, []string{e.Pattern}); ok {
 		return &explainRemediation{
 			Knob:      g.OperatorKnob,
 			Broader:   g.OperatorBroader,

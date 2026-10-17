@@ -4,7 +4,6 @@
 package audit
 
 import (
-	"strings"
 	"time"
 
 	"github.com/luckyPipewrench/pipelock/internal/envelope"
@@ -158,7 +157,7 @@ func (l *Logger) LogWSScan(ev WSScanEvent) {
 		str("scanner", scanner).
 		intField("match_count", ev.MatchCount).
 		strs("patterns", ev.PatternNames).
-		optStr("remediation_hint", scannerpkg.OperatorHintForResult(scanner, strings.Join(ev.PatternNames, ", "))).
+		optStr("remediation_hint", scannerpkg.OperatorHintForPatterns(scanner, ev.PatternNames)).
 		str("mitre_technique", technique)
 	if len(ev.BundleRules) > 0 {
 		e.bundleRulesField(ev.BundleRules)

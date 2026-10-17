@@ -381,7 +381,7 @@ func buildMCPExplainReportWithA2AContext(cfg *config.Config, cfgLabel, serverNam
 	report.Patterns = dedupeMCPResponsePatternNames(verdict.Matches, verdict.DLPMatches)
 	report.Allowed = report.Action == config.ActionWarn
 	if scanner.HasInspectionLimit(verdict.DLPMatches) {
-		report.Notes = append(report.Notes, scanner.OperatorHintForResult(scanner.ScannerBodyDLP, scanner.UninspectableJSONNumberPattern))
+		report.Notes = append(report.Notes, scanner.OperatorHintForPatterns(scanner.ScannerBodyDLP, []string{scanner.UninspectableJSONNumberPattern}))
 	} else if a2aActive {
 		if len(report.Patterns) == 0 {
 			report.Notes = append(report.Notes, "The A2A dispatcher returned a policy finding without a pattern name. Correct the response or its configured origin-scoped Agent Card trust.")
